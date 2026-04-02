@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BQ FinOps Optimizer</title>
+    <meta name="description" content="Optimize BigQuery storage and compute costs with actionable insights and glassmorphic UI.">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- DataTables.net (Vanilla JS version or standard jQuery if needed, let's use standard with lightweight jQuery for DataTables as per PRD recommendation if required, or simple tables if preferred. PRD says DataTables.net. Let's use standard table with sorting if possible, or DataTables CDN) -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+
+                <span class="logo-text">BQ FinOps Optimizer</span>
+            </div>
+            <nav class="nav-links">
+                <a href="#storage" class="nav-link active" id="nav-storage">
+                    <i class="fa-solid fa-database"></i>
+                    <span>Storage Cost</span>
+                </a>
+
+                <a href="#settings" class="nav-link" id="nav-settings">
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Global Settings</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+
+                <div class="global-info">
+                    <div class="info-item">
+                        <span class="label">Project:</span>
+                        <span class="value" id="current-project">Not Set</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Region:</span>
+                        <span class="value" id="current-region">region-us</span>
+                    </div>
+
+                </div>
+            </header>
+
+            <!-- Dashboard Content -->
+            <div class="dashboard-viewport">
+                
+                <!-- Settings View -->
+                <section id="view-settings" class="view" style="display: none;">
+                    <h1 class="view-title">Global Configuration</h1>
+                    <div class="glass-card config-panel">
+                        <h2>GCP Environment</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="cfg-org-project">Target Org Project ID</label>
+                                <input type="text" id="cfg-org-project" placeholder="e.g. central-billing-project">
+                                <small>Used for organization-level queries</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfg-region">Region</label>
+                                <select id="cfg-region">
+                                    <option value="region-us">US (Multi-region)</option>
+                                    <option value="region-eu">EU (Multi-region)</option>
+                                    <option value="region-us-east4">us-east4</option>
+                                    <option value="region-us-east1">us-east1</option>
+                                    <option value="region-us-west1">us-west1</option>
+                                    <option value="region-us-central1">us-central1</option>
+                                    <option value="region-europe-west1">europe-west1</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button id="save-settings-btn" class="btn-primary">Save Config</button>
+                    </div>
+                </section>
+
+                <!-- Storage Optimizer View -->
+                <section id="view-storage" class="view active">
+                    <h1 class="view-title">Storage Cost Optimizer</h1>
+                    
+                    <div class="glass-card params-panel">
+                        <h2>Pricing & Parameters</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="st-act-log">Active Logical GiB ($)</label>
+                                <input type="number" id="st-act-log" value="0.02" step="0.001">
+                            </div>
+                            <div class="form-group">
+                                <label for="st-lt-log">Long-term Logical GiB ($)</label>
+                                <input type="number" id="st-lt-log" value="0.01" step="0.001">
+                            </div>
+                            <div class="form-group">
+                                <label for="st-act-phy">Active Physical GiB ($)</label>
+                                <input type="number" id="st-act-phy" value="0.04" step="0.001">
+                            </div>
+                            <div class="form-group">
+                                <label for="st-lt-phy">Long-term Physical GiB ($)</label>
+                                <input type="number" id="st-lt-phy" value="0.02" step="0.001">
+                            </div>
+                            <div class="form-group" style="display: none;">
+                                <label for="st-tt-rescale">Time Travel Rescale</label>
+                                <input type="number" id="st-tt-rescale" value="1.0" step="0.1">
+                            </div>
+                            <div class="form-group" style="display: none;">
+                                <label for="st-tt-hours">Time Travel Hours</label>
+                                <input type="number" id="st-tt-hours" placeholder="Default (168)">
+                            </div>
+                            <div class="form-group" style="display: none;">
+                                <label for="st-min-save">Monthly savings ($)</label>
+                                <input type="number" id="st-min-save" value="0.0" step="1">
+                            </div>
+                            <div class="form-group" style="display: none;">
+                                <label for="st-min-save-pct">Monthly savings ($)</label>
+                                <input type="number" id="st-min-save-pct" value="0.0" step="0.01">
+                            </div>
+                        </div>
+                        <button id="analyze-storage-btn" class="btn-primary">Run Analysis</button>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-piggy-bank kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Potential Monthly Savings</span>
+                                <span class="kpi-value" id="st-total-savings">$0.00</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-server kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Datasets Analyzed</span>
+                                <span class="kpi-value" id="st-dataset-count">0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-triangle-exclamation kpi-icon warning"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Optimization Opps</span>
+                                <span class="kpi-value" id="st-opp-count">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Organization Level Status -->
+                    <div class="glass-card org-rec-panel" id="org-rec-panel" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
+                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                                    <h3 style="margin: 0; color: #38bdf8;">Organization Status</h3>
+                                    <button id="copy-org-ddl-btn" class="btn-action" title="Copy DDL">Copy DDL</button>
+                                </div>
+                                <p id="org-rec-text" style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5;"></p>
+                                
+                                <div style="margin-top: 1rem;">
+                                    <textarea id="org-ddl-output" readonly style="width: 100%; height: 80px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.5rem; color: #e2e8f0; font-family: monospace; font-size: 0.85rem; padding: 0.75rem; resize: none;"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel">
+                        <h2>Recommendations</h2>
+                        <div class="table-responsive">
+                            <table id="storage-results-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Project</th>
+                                        <th>Dataset</th>
+                                        <th>Current Model</th>
+                                        <th>Recommended Model</th>
+                                        <th>Monthly savings ($)</th>
+                                        <th>Savings (%)</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows will be injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Notification Container -->
+    <div id="notification-container"></div>
+
+    <script src="static/app.js"></script>
+</body>
+</html>
