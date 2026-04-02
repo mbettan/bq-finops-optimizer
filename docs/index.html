@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BQ FinOps Optimizer — Maximize BigQuery Efficiency</title>
+    <meta name="description"
+        content="Maximize BigQuery efficiency. Analyze your storage profile and find the optimal billing model for your workloads effortlessly.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <!-- ░░ BACKGROUND ░░ -->
+    <div class="bg-canvas" aria-hidden="true">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="grid-overlay"></div>
+    </div>
+
+    <!-- ░░ NAV ░░ -->
+    <nav id="navbar" role="navigation" aria-label="Main navigation">
+        <div class="container nav-content">
+            <a href="#" class="logo" aria-label="BigQuery Optimizer home">
+                <span class="logo-icon" aria-hidden="true">
+                    <i class="fas fa-chart-pie"></i>
+                </span>
+                BQ FinOps <span class="gradient-text">Optimizer</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#workflow">Workflow</a>
+                <a href="#metrics">Metrics</a>
+            </div>
+            <a href="https://github.com/mbettan/bigquery-optimizer" class="btn btn-nav" target="_blank" rel="noopener">
+                <i class="fab fa-github"></i>
+                <span>GitHub</span>
+            </a>
+        </div>
+    </nav>
+
+    <!-- ░░ HERO ░░ -->
+    <header class="hero" id="top">
+        <div class="hero-inner container">
+            <div class="hero-content">
+                <div class="hero-badge">
+                    <span class="badge-dot" aria-hidden="true"></span>
+                    Open Source & Production Ready
+                </div>
+
+                <h1>
+                    Maximize Your<br>
+                    <span class="gradient-text">BigQuery Efficiency.</span>
+                </h1>
+
+                <p class="hero-sub">
+                    BigQuery offers immense flexibility in storage billing. <strong>BQ FinOps Optimizer</strong> is your FinOps companion to find the ideal model (Logical or Physical) for every workload, effortlessly.
+                </p>
+
+                <div class="cta-group">
+                    <a href="#features" class="btn btn-primary">
+                        <i class="fas fa-bolt"></i>
+                        Explore Features
+                    </a>
+                    <a href="#workflow" class="btn btn-ghost">
+                        See the Workflow
+                        <i class="fas fa-arrow-right" aria-hidden="true"></i>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Previews / Mockups (Pure CSS/Icons) -->
+            <div class="hero-visual" aria-hidden="true">
+                <div class="bento-card" style="width: 100%; height: 400px; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div class="bento-icon"><i class="fas fa-chart-line"></i></div>
+                    <div>
+                        <h3>Organization Spend Dashboard</h3>
+                        <p>Real-time visibility into `INFORMATION_SCHEMA` across all projects.</p>
+                    </div>
+                    <div style="height: 150px; background: rgba(255,255,255,0.02); border-radius: var(--r-md); border: 1px solid var(--glass-border); display: flex; align-items: flex-end; padding: 1rem; gap: 0.5rem;">
+                        <div style="height: 30%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                        <div style="height: 50%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                        <div style="height: 45%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                        <div style="height: 80%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                        <div style="height: 60%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                        <div style="height: 90%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- ░░ TECH STACK BAR ░░ -->
+    <div class="tech-bar">
+        <div class="container tech-bar-inner">
+            <span class="tech-bar-label">Powered by</span>
+            <div class="nav-links">
+                <span class="btn btn-nav"><i class="fas fa-database"></i> BigQuery</span>
+                <span class="btn btn-nav"><i class="fas fa-server"></i> FastAPI</span>
+                <span class="btn btn-nav"><i class="fab fa-python"></i> Python</span>
+                <span class="btn btn-nav"><i class="fas fa-cloud"></i> Cloud Run</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ░░ INTERACTIVE DEMO ░░ -->
+    <section id="demo" aria-label="Interactive Demo">
+        <div class="container">
+            <div class="section-header">
+                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Live Simulation</span>
+                <h2>Behold the <span class="gradient-text">Scale of Savings</span></h2>
+                <p>Simulating an audit of <strong>957 Datasets</strong> across an enterprise organization.</p>
+            </div>
+
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem;">
+                <!-- Summary Stats -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-bottom: 3rem;">
+                    <div style="text-align: center;">
+                        <div class="gradient-text" style="font-size: 2.5rem; font-weight: 800;">957</div>
+                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Datasets Analyzed</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div class="gradient-text" style="font-size: 2.5rem; font-weight: 800;">$42,150</div>
+                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Est. Monthly Savings</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 2.5rem; font-weight: 800; color: var(--secondary);">12 min</div>
+                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Time to Audit</div>
+                    </div>
+                </div>
+
+                <!-- Table Container -->
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        <table class="showcase-table">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr>
+                                    <th style="padding: 1rem; color: var(--light);">Project</th>
+                                    <th style="padding: 1rem; color: var(--light);">Dataset</th>
+                                    <th style="padding: 1rem; color: var(--light);">Logical Cost</th>
+                                    <th style="padding: 1rem; color: var(--light);">Physical Cost</th>
+                                    <th style="padding: 1rem; color: var(--light);">Rec</th>
+                                    <th style="padding: 1rem; color: var(--light);">Savings</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mock-table-body">
+                                <!-- Data injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ FEATURES ░░ -->
+    <section id="features" aria-label="Features">
+        <div class="container">
+            <div class="section-header">
+                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Capabilities</span>
+                <h2>Zero Friction <span class="gradient-text">Cost Optimization</span></h2>
+                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration.</p>
+            </div>
+
+            <div class="features-bento">
+                <!-- Large: Storage -->
+                <div class="bento-card bento-large">
+                    <div class="bento-icon"><i class="fas fa-archive"></i></div>
+                    <div>
+                        <h3>Physical vs Logical Storage Billing</h3>
+                        <p>Identify datasets that are cheaper on physical storage models. Evaluate Time Travel and Fail-safe storage impact automatically.</p>
+                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Automated DDL Generation</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> One-click Application</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Org Views -->
+                <div class="bento-card">
+                    <div class="bento-icon"><i class="fas fa-sitemap"></i></div>
+                    <h3>Organization-Wide Scoping</h3>
+                    <p>Query `Table_Storage_By_Organization` to see the big picture across all billing accounts.</p>
+                </div>
+
+                <!-- DDL -->
+                <div class="bento-card bento-large">
+                    <div class="bento-icon"><i class="fas fa-code"></i></div>
+                    <div>
+                        <h3>Actionable DDL Statements</h3>
+                        <p>The tool doesn't just complain; it generates the exact `ALTER SCHEMA` code you need to fix the issue. Run it directly or copy to your IAC pipeline.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ WORKFLOW ░░ -->
+    <section id="workflow" aria-label="Workflow">
+        <div class="container">
+            <div class="section-header">
+                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">The Process</span>
+                <h2>From Audit to <span class="gradient-text">Execution</span></h2>
+                <p>A streamlined workflow designed for Cloud Administrators.</p>
+            </div>
+
+            <div class="pipeline-track">
+                <div class="pipeline-step">
+                    <div class="step-index">01</div>
+                    <div class="step-card">
+                        <div class="bento-icon"><i class="fas fa-link"></i></div>
+                        <h3>Connect your Project</h3>
+                        <p>Authenticate via ADC or Service Account. Specify your target Organization Project ID and Region.</p>
+                    </div>
+                </div>
+
+                <div class="pipeline-step">
+                    <div class="step-index">02</div>
+                    <div class="step-card">
+                        <div class="bento-icon"><i class="fas fa-search-dollar"></i></div>
+                        <h3>Scan & Analyze</h3>
+                        <p>Run the optimizer. The tool pulls metadata and calculates costs based on your custom region pricing.</p>
+                    </div>
+                </div>
+
+                <div class="pipeline-step">
+                    <div class="step-index">03</div>
+                    <div class="step-card">
+                        <div class="bento-icon"><i class="fas fa-play"></i></div>
+                        <h3>Apply & Save</h3>
+                        <p>Review recommendations and generated DDL. Apply changes directly from the UI to start saving immediately.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ METRICS ░░ -->
+    <section id="metrics" aria-label="Metrics">
+        <div class="container">
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-value">Up to 40%</div>
+                    <div class="metric-label">Storage Savings</div>
+                    <div class="metric-sub">By switching to Physical Billing for active datasets</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value">&lt; 1 min</div>
+                    <div class="metric-label">TimeTo Insight</div>
+                    <div class="metric-sub">Fast FastAPI backend processing queries in seconds</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value">0 s</div>
+                    <div class="metric-label">Data Movement</div>
+                    <div class="metric-sub">Calculations run in-situ on your BigQuery instance</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ CTA ░░ -->
+    <section class="cta-section" style="padding: 4rem 0;">
+        <div class="container" style="text-align: center;">
+            <div class="bento-card" style="max-width: 800px; margin: 0 auto; padding: 4rem; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
+                <h2>Ready to Optimize your <br><span class="gradient-text">BigQuery Spend?</span></h2>
+                <p>Deploy the open-source optimizer today and audit your organization in minutes.</p>
+                <div class="cta-group">
+                    <a href="https://github.com/mbettan/bigquery-optimizer" class="btn btn-primary" target="_blank" rel="noopener">
+                        <i class="fab fa-github"></i>
+                        Get Started on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ FOOTER ░░ -->
+    <footer style="padding: 4rem 0; border-top: 1px solid var(--glass-border); text-align: center;">
+        <div class="container">
+            <p style="color: var(--muted); font-size: 0.9rem;">&copy; 2026 BigQuery FinOps Optimizer. Open Source under MIT License.</p>
+        </div>
+    </footer>
+
+    <!-- Scripts for navbar scroll and mock data -->
+    <script>
+        const navbar = document.getElementById('navbar');
+        const onScroll = () => navbar.classList.toggle('scrolled', window.scrollY > 40);
+        window.addEventListener('scroll', onScroll, { passive: true });
+
+        // Mock data
+        const mockData = [
+  {
+    "id": 1,
+    "project": "ecommerce-web-5",
+    "dataset": "user_profiles_0",
+    "logical_cost": 766.34,
+    "physical_cost": 871.21,
+    "recommendation": "Logical",
+    "savings": 104.88
+  },
+  {
+    "id": 2,
+    "project": "finance-prod-1",
+    "dataset": "ab_testing_1",
+    "logical_cost": 1402.07,
+    "physical_cost": 863.53,
+    "recommendation": "Physical",
+    "savings": 538.55
+  },
+  {
+    "id": 3,
+    "project": "marketing-analytics-5",
+    "dataset": "transactions_2",
+    "logical_cost": 408.22,
+    "physical_cost": 279.89,
+    "recommendation": "Physical",
+    "savings": 128.33
+  },
+  {
+    "id": 4,
+    "project": "iot-events-4",
+    "dataset": "order_history_3",
+    "logical_cost": 342.95,
+    "physical_cost": 199.75,
+    "recommendation": "Physical",
+    "savings": 143.21
+  },
+  {
+    "id": 5,
+    "project": "identity-services-2",
+    "dataset": "click_stream_4",
+    "logical_cost": 1245.73,
+    "physical_cost": 759.8,
+    "recommendation": "Physical",
+    "savings": 485.93
+  },
+  {
+    "id": 6,
+    "project": "marketing-analytics-2",
+    "dataset": "users_5",
+    "logical_cost": 13.92,
+    "physical_cost": 17.97,
+    "recommendation": "Logical",
+    "savings": 4.05
+  },
+  {
+    "id": 7,
+    "project": "marketing-analytics-4",
+    "dataset": "transactions_6",
+    "logical_cost": 5.32,
+    "physical_cost": 7.0,
+    "recommendation": "Logical",
+    "savings": 1.69
+  },
+  {
+    "id": 8,
+    "project": "ecommerce-web-1",
+    "dataset": "inventory_7",
+    "logical_cost": 428.19,
+    "physical_cost": 210.42,
+    "recommendation": "Physical",
+    "savings": 217.77
+  },
+  {
+    "id": 9,
+    "project": "finance-prod-3",
+    "dataset": "user_profiles_8",
+    "logical_cost": 441.84,
+    "physical_cost": 220.99,
+    "recommendation": "Physical",
+    "savings": 220.86
+  },
+  {
+    "id": 10,
+    "project": "data-warehouse-prod-4",
+    "dataset": "users_9",
+    "logical_cost": 4.09,
+    "physical_cost": 1.93,
+    "recommendation": "Logical",
+    "savings": 2.16
+  },
+  {
+    "id": 11,
+    "project": "finance-prod-4",
+    "dataset": "pricing_model_10",
+    "logical_cost": 11.54,
+    "physical_cost": 7.19,
+    "recommendation": "Logical",
+    "savings": 4.35
+  },
+  {
+    "id": 12,
+    "project": "iot-events-2",
+    "dataset": "pricing_model_11",
+    "logical_cost": 1682.51,
+    "physical_cost": 1388.42,
+    "recommendation": "Physical",
+    "savings": 294.09
+  },
+  {
+    "id": 13,
+    "project": "iot-events-3",
+    "dataset": "users_12",
+    "logical_cost": 116.56,
+    "physical_cost": 139.76,
+    "recommendation": "Logical",
+    "savings": 23.2
+  },
+  {
+    "id": 14,
+    "project": "iot-events-2",
+    "dataset": "users_13",
+    "logical_cost": 545.79,
+    "physical_cost": 373.87,
+    "recommendation": "Physical",
+    "savings": 171.92
+  },
+  {
+    "id": 15,
+    "project": "marketing-analytics-4",
+    "dataset": "inventory_14",
+    "logical_cost": 19.7,
+    "physical_cost": 14.51,
+    "recommendation": "Physical",
+    "savings": 5.19
+  },
+  {
+    "id": 16,
+    "project": "ecommerce-web-1",
+    "dataset": "transactions_15",
+    "logical_cost": 81.88,
+    "physical_cost": 65.51,
+    "recommendation": "Physical",
+    "savings": 16.37
+  },
+  {
+    "id": 17,
+    "project": "data-warehouse-prod-1",
+    "dataset": "pricing_model_16",
+    "logical_cost": 18.83,
+    "physical_cost": 22.01,
+    "recommendation": "Physical",
+    "savings": 3.18
+  },
+  {
+    "id": 18,
+    "project": "identity-services-4",
+    "dataset": "device_logs_17",
+    "logical_cost": 1075.08,
+    "physical_cost": 501.31,
+    "recommendation": "Physical",
+    "savings": 573.77
+  },
+  {
+    "id": 19,
+    "project": "recommendation-engine-2",
+    "dataset": "ab_testing_18",
+    "logical_cost": 7.4,
+    "physical_cost": 6.14,
+    "recommendation": "Physical",
+    "savings": 1.26
+  },
+  {
+    "id": 20,
+    "project": "iot-events-5",
+    "dataset": "transactions_19",
+    "logical_cost": 174.86,
+    "physical_cost": 135.47,
+    "recommendation": "Physical",
+    "savings": 39.39
+  },
+  {
+    "id": 21,
+    "project": "finance-prod-5",
+    "dataset": "transactions_20",
+    "logical_cost": 11.43,
+    "physical_cost": 5.34,
+    "recommendation": "Physical",
+    "savings": 6.08
+  },
+  {
+    "id": 22,
+    "project": "finance-prod-2",
+    "dataset": "click_stream_21",
+    "logical_cost": 14.23,
+    "physical_cost": 12.39,
+    "recommendation": "Logical",
+    "savings": 1.83
+  },
+  {
+    "id": 23,
+    "project": "identity-services-1",
+    "dataset": "transactions_22",
+    "logical_cost": 337.61,
+    "physical_cost": 166.72,
+    "recommendation": "Physical",
+    "savings": 170.89
+  },
+  {
+    "id": 24,
+    "project": "finance-prod-2",
+    "dataset": "click_stream_23",
+    "logical_cost": 637.49,
+    "physical_cost": 819.84,
+    "recommendation": "Logical",
+    "savings": 182.35
+  },
+  {
+    "id": 25,
+    "project": "identity-services-1",
+    "dataset": "audit_logs_24",
+    "logical_cost": 1060.4,
+    "physical_cost": 499.16,
+    "recommendation": "Physical",
+    "savings": 561.24
+  },
+  {
+    "id": 26,
+    "project": "iot-events-3",
+    "dataset": "users_25",
+    "logical_cost": 10.7,
+    "physical_cost": 8.53,
+    "recommendation": "Physical",
+    "savings": 2.17
+  },
+  {
+    "id": 27,
+    "project": "ecommerce-web-3",
+    "dataset": "users_26",
+    "logical_cost": 24.23,
+    "physical_cost": 30.11,
+    "recommendation": "Logical",
+    "savings": 5.89
+  },
+  {
+    "id": 28,
+    "project": "data-warehouse-prod-3",
+    "dataset": "users_27",
+    "logical_cost": 157.06,
+    "physical_cost": 181.49,
+    "recommendation": "Logical",
+    "savings": 24.43
+  },
+  {
+    "id": 29,
+    "project": "recommendation-engine-3",
+    "dataset": "device_logs_28",
+    "logical_cost": 951.2,
+    "physical_cost": 997.52,
+    "recommendation": "Logical",
+    "savings": 46.32
+  },
+  {
+    "id": 30,
+    "project": "identity-services-5",
+    "dataset": "user_profiles_29",
+    "logical_cost": 1071.32,
+    "physical_cost": 493.8,
+    "recommendation": "Physical",
+    "savings": 577.52
+  },
+  {
+    "id": 31,
+    "project": "recommendation-engine-5",
+    "dataset": "users_30",
+    "logical_cost": 1529.86,
+    "physical_cost": 1565.97,
+    "recommendation": "Logical",
+    "savings": 36.11
+  },
+  {
+    "id": 32,
+    "project": "ecommerce-web-5",
+    "dataset": "audit_logs_31",
+    "logical_cost": 1916.04,
+    "physical_cost": 1028.85,
+    "recommendation": "Physical",
+    "savings": 887.19
+  },
+  {
+    "id": 33,
+    "project": "marketing-analytics-2",
+    "dataset": "users_32",
+    "logical_cost": 328.92,
+    "physical_cost": 313.25,
+    "recommendation": "Physical",
+    "savings": 15.68
+  },
+  {
+    "id": 34,
+    "project": "marketing-analytics-3",
+    "dataset": "users_33",
+    "logical_cost": 743.16,
+    "physical_cost": 608.87,
+    "recommendation": "Physical",
+    "savings": 134.29
+  },
+  {
+    "id": 35,
+    "project": "identity-services-3",
+    "dataset": "pricing_model_34",
+    "logical_cost": 3.3,
+    "physical_cost": 4.36,
+    "recommendation": "Logical",
+    "savings": 1.07
+  },
+  {
+    "id": 36,
+    "project": "data-warehouse-prod-3",
+    "dataset": "pricing_model_35",
+    "logical_cost": 1677.26,
+    "physical_cost": 1325.46,
+    "recommendation": "Physical",
+    "savings": 351.8
+  },
+  {
+    "id": 37,
+    "project": "iot-events-2",
+    "dataset": "user_profiles_36",
+    "logical_cost": 782.35,
+    "physical_cost": 461.47,
+    "recommendation": "Physical",
+    "savings": 320.89
+  },
+  {
+    "id": 38,
+    "project": "logistics-stg-1",
+    "dataset": "inventory_37",
+    "logical_cost": 13.06,
+    "physical_cost": 8.82,
+    "recommendation": "Physical",
+    "savings": 4.24
+  },
+  {
+    "id": 39,
+    "project": "recommendation-engine-5",
+    "dataset": "users_38",
+    "logical_cost": 1137.34,
+    "physical_cost": 959.2,
+    "recommendation": "Physical",
+    "savings": 178.13
+  },
+  {
+    "id": 40,
+    "project": "ecommerce-web-2",
+    "dataset": "audit_logs_39",
+    "logical_cost": 183.07,
+    "physical_cost": 137.05,
+    "recommendation": "Physical",
+    "savings": 46.03
+  },
+  {
+    "id": 41,
+    "project": "logistics-stg-1",
+    "dataset": "user_profiles_40",
+    "logical_cost": 20.12,
+    "physical_cost": 24.08,
+    "recommendation": "Physical",
+    "savings": 3.96
+  },
+  {
+    "id": 42,
+    "project": "iot-events-3",
+    "dataset": "inventory_41",
+    "logical_cost": 1880.7,
+    "physical_cost": 1007.94,
+    "recommendation": "Physical",
+    "savings": 872.75
+  },
+  {
+    "id": 43,
+    "project": "data-warehouse-prod-5",
+    "dataset": "device_logs_42",
+    "logical_cost": 34.5,
+    "physical_cost": 26.45,
+    "recommendation": "Physical",
+    "savings": 8.06
+  },
+  {
+    "id": 44,
+    "project": "logistics-stg-4",
+    "dataset": "ab_testing_43",
+    "logical_cost": 349.25,
+    "physical_cost": 290.98,
+    "recommendation": "Physical",
+    "savings": 58.27
+  },
+  {
+    "id": 45,
+    "project": "identity-services-1",
+    "dataset": "user_profiles_44",
+    "logical_cost": 415.92,
+    "physical_cost": 513.61,
+    "recommendation": "Logical",
+    "savings": 97.69
+  },
+  {
+    "id": 46,
+    "project": "ecommerce-web-4",
+    "dataset": "users_45",
+    "logical_cost": 780.45,
+    "physical_cost": 380.46,
+    "recommendation": "Physical",
+    "savings": 399.99
+  },
+  {
+    "id": 47,
+    "project": "iot-events-2",
+    "dataset": "pricing_model_46",
+    "logical_cost": 1076.51,
+    "physical_cost": 877.2,
+    "recommendation": "Physical",
+    "savings": 199.31
+  },
+  {
+    "id": 48,
+    "project": "recommendation-engine-5",
+    "dataset": "inventory_47",
+    "logical_cost": 7.52,
+    "physical_cost": 4.1,
+    "recommendation": "Physical",
+    "savings": 3.42
+  },
+  {
+    "id": 49,
+    "project": "data-warehouse-prod-1",
+    "dataset": "pricing_model_48",
+    "logical_cost": 15.01,
+    "physical_cost": 19.32,
+    "recommendation": "Physical",
+    "savings": 4.31
+  },
+  {
+    "id": 50,
+    "project": "ecommerce-web-4",
+    "dataset": "pricing_model_49",
+    "logical_cost": 662.3,
+    "physical_cost": 560.01,
+    "recommendation": "Physical",
+    "savings": 102.29
+  },
+  {
+    "id": 51,
+    "project": "iot-events-1",
+    "dataset": "users_50",
+    "logical_cost": 232.99,
+    "physical_cost": 221.97,
+    "recommendation": "Physical",
+    "savings": 11.02
+  },
+  {
+    "id": 52,
+    "project": "recommendation-engine-3",
+    "dataset": "device_logs_51",
+    "logical_cost": 747.12,
+    "physical_cost": 444.53,
+    "recommendation": "Physical",
+    "savings": 302.59
+  },
+  {
+    "id": 53,
+    "project": "iot-events-1",
+    "dataset": "audit_logs_52",
+    "logical_cost": 12.69,
+    "physical_cost": 5.49,
+    "recommendation": "Physical",
+    "savings": 7.2
+  },
+  {
+    "id": 54,
+    "project": "ecommerce-web-4",
+    "dataset": "transactions_53",
+    "logical_cost": 849.07,
+    "physical_cost": 887.68,
+    "recommendation": "Logical",
+    "savings": 38.61
+  },
+  {
+    "id": 55,
+    "project": "iot-events-4",
+    "dataset": "pricing_model_54",
+    "logical_cost": 1334.71,
+    "physical_cost": 971.96,
+    "recommendation": "Physical",
+    "savings": 362.75
+  },
+  {
+    "id": 56,
+    "project": "finance-prod-5",
+    "dataset": "ab_testing_55",
+    "logical_cost": 601.97,
+    "physical_cost": 287.64,
+    "recommendation": "Physical",
+    "savings": 314.33
+  },
+  {
+    "id": 57,
+    "project": "finance-prod-5",
+    "dataset": "user_profiles_56",
+    "logical_cost": 836.15,
+    "physical_cost": 740.16,
+    "recommendation": "Physical",
+    "savings": 95.99
+  },
+  {
+    "id": 58,
+    "project": "iot-events-1",
+    "dataset": "user_profiles_57",
+    "logical_cost": 428.7,
+    "physical_cost": 263.13,
+    "recommendation": "Physical",
+    "savings": 165.57
+  },
+  {
+    "id": 59,
+    "project": "marketing-analytics-1",
+    "dataset": "device_logs_58",
+    "logical_cost": 29.22,
+    "physical_cost": 19.38,
+    "recommendation": "Physical",
+    "savings": 9.84
+  },
+  {
+    "id": 60,
+    "project": "iot-events-3",
+    "dataset": "audit_logs_59",
+    "logical_cost": 33.51,
+    "physical_cost": 26.0,
+    "recommendation": "Physical",
+    "savings": 7.51
+  },
+  {
+    "id": 61,
+    "project": "recommendation-engine-3",
+    "dataset": "pricing_model_60",
+    "logical_cost": 789.72,
+    "physical_cost": 691.07,
+    "recommendation": "Physical",
+    "savings": 98.65
+  },
+  {
+    "id": 62,
+    "project": "ecommerce-web-2",
+    "dataset": "pricing_model_61",
+    "logical_cost": 1.64,
+    "physical_cost": 1.3,
+    "recommendation": "Logical",
+    "savings": 0.34
+  },
+  {
+    "id": 63,
+    "project": "logistics-stg-2",
+    "dataset": "pricing_model_62",
+    "logical_cost": 402.51,
+    "physical_cost": 349.93,
+    "recommendation": "Physical",
+    "savings": 52.59
+  },
+  {
+    "id": 64,
+    "project": "marketing-analytics-2",
+    "dataset": "pricing_model_63",
+    "logical_cost": 342.13,
+    "physical_cost": 322.7,
+    "recommendation": "Physical",
+    "savings": 19.43
+  },
+  {
+    "id": 65,
+    "project": "logistics-stg-4",
+    "dataset": "device_logs_64",
+    "logical_cost": 865.38,
+    "physical_cost": 922.44,
+    "recommendation": "Logical",
+    "savings": 57.06
+  },
+  {
+    "id": 66,
+    "project": "recommendation-engine-4",
+    "dataset": "user_profiles_65",
+    "logical_cost": 1515.41,
+    "physical_cost": 750.53,
+    "recommendation": "Physical",
+    "savings": 764.88
+  },
+  {
+    "id": 67,
+    "project": "recommendation-engine-3",
+    "dataset": "users_66",
+    "logical_cost": 765.69,
+    "physical_cost": 507.63,
+    "recommendation": "Physical",
+    "savings": 258.06
+  },
+  {
+    "id": 68,
+    "project": "marketing-analytics-1",
+    "dataset": "transactions_67",
+    "logical_cost": 409.4,
+    "physical_cost": 315.71,
+    "recommendation": "Physical",
+    "savings": 93.68
+  },
+  {
+    "id": 69,
+    "project": "data-warehouse-prod-2",
+    "dataset": "users_68",
+    "logical_cost": 223.94,
+    "physical_cost": 154.75,
+    "recommendation": "Physical",
+    "savings": 69.2
+  },
+  {
+    "id": 70,
+    "project": "identity-services-5",
+    "dataset": "click_stream_69",
+    "logical_cost": 509.87,
+    "physical_cost": 658.0,
+    "recommendation": "Logical",
+    "savings": 148.13
+  },
+  {
+    "id": 71,
+    "project": "iot-events-4",
+    "dataset": "inventory_70",
+    "logical_cost": 24.02,
+    "physical_cost": 27.39,
+    "recommendation": "Logical",
+    "savings": 3.37
+  },
+  {
+    "id": 72,
+    "project": "logistics-stg-4",
+    "dataset": "users_71",
+    "logical_cost": 18.67,
+    "physical_cost": 14.36,
+    "recommendation": "Logical",
+    "savings": 4.32
+  },
+  {
+    "id": 73,
+    "project": "recommendation-engine-4",
+    "dataset": "transactions_72",
+    "logical_cost": 276.08,
+    "physical_cost": 309.52,
+    "recommendation": "Logical",
+    "savings": 33.44
+  },
+  {
+    "id": 74,
+    "project": "iot-events-3",
+    "dataset": "order_history_73",
+    "logical_cost": 314.92,
+    "physical_cost": 205.55,
+    "recommendation": "Physical",
+    "savings": 109.38
+  },
+  {
+    "id": 75,
+    "project": "identity-services-3",
+    "dataset": "transactions_74",
+    "logical_cost": 78.86,
+    "physical_cost": 54.66,
+    "recommendation": "Physical",
+    "savings": 24.2
+  },
+  {
+    "id": 76,
+    "project": "recommendation-engine-3",
+    "dataset": "order_history_75",
+    "logical_cost": 762.02,
+    "physical_cost": 572.14,
+    "recommendation": "Physical",
+    "savings": 189.89
+  },
+  {
+    "id": 77,
+    "project": "ecommerce-web-4",
+    "dataset": "order_history_76",
+    "logical_cost": 1689.36,
+    "physical_cost": 2038.99,
+    "recommendation": "Logical",
+    "savings": 349.63
+  },
+  {
+    "id": 78,
+    "project": "logistics-stg-3",
+    "dataset": "audit_logs_77",
+    "logical_cost": 15.5,
+    "physical_cost": 7.87,
+    "recommendation": "Physical",
+    "savings": 7.63
+  },
+  {
+    "id": 79,
+    "project": "marketing-analytics-2",
+    "dataset": "pricing_model_78",
+    "logical_cost": 338.65,
+    "physical_cost": 428.34,
+    "recommendation": "Logical",
+    "savings": 89.69
+  },
+  {
+    "id": 80,
+    "project": "logistics-stg-1",
+    "dataset": "ab_testing_79",
+    "logical_cost": 1029.93,
+    "physical_cost": 555.1,
+    "recommendation": "Physical",
+    "savings": 474.83
+  },
+  {
+    "id": 81,
+    "project": "logistics-stg-1",
+    "dataset": "user_profiles_80",
+    "logical_cost": 7.57,
+    "physical_cost": 3.66,
+    "recommendation": "Logical",
+    "savings": 3.92
+  },
+  {
+    "id": 82,
+    "project": "iot-events-3",
+    "dataset": "pricing_model_81",
+    "logical_cost": 1595.85,
+    "physical_cost": 1392.13,
+    "recommendation": "Physical",
+    "savings": 203.72
+  },
+  {
+    "id": 83,
+    "project": "logistics-stg-2",
+    "dataset": "user_profiles_82",
+    "logical_cost": 19.47,
+    "physical_cost": 11.33,
+    "recommendation": "Physical",
+    "savings": 8.15
+  },
+  {
+    "id": 84,
+    "project": "marketing-analytics-1",
+    "dataset": "click_stream_83",
+    "logical_cost": 148.83,
+    "physical_cost": 130.41,
+    "recommendation": "Physical",
+    "savings": 18.42
+  },
+  {
+    "id": 85,
+    "project": "data-warehouse-prod-3",
+    "dataset": "users_84",
+    "logical_cost": 1016.96,
+    "physical_cost": 1105.46,
+    "recommendation": "Logical",
+    "savings": 88.5
+  },
+  {
+    "id": 86,
+    "project": "data-warehouse-prod-2",
+    "dataset": "click_stream_85",
+    "logical_cost": 1381.56,
+    "physical_cost": 1584.18,
+    "recommendation": "Logical",
+    "savings": 202.62
+  },
+  {
+    "id": 87,
+    "project": "identity-services-5",
+    "dataset": "user_profiles_86",
+    "logical_cost": 659.35,
+    "physical_cost": 456.38,
+    "recommendation": "Physical",
+    "savings": 202.97
+  },
+  {
+    "id": 88,
+    "project": "data-warehouse-prod-5",
+    "dataset": "pricing_model_87",
+    "logical_cost": 1728.16,
+    "physical_cost": 1730.19,
+    "recommendation": "Logical",
+    "savings": 2.03
+  },
+  {
+    "id": 89,
+    "project": "logistics-stg-3",
+    "dataset": "order_history_88",
+    "logical_cost": 22.32,
+    "physical_cost": 23.47,
+    "recommendation": "Logical",
+    "savings": 1.15
+  },
+  {
+    "id": 90,
+    "project": "recommendation-engine-2",
+    "dataset": "pricing_model_89",
+    "logical_cost": 180.16,
+    "physical_cost": 179.95,
+    "recommendation": "Physical",
+    "savings": 0.21
+  },
+  {
+    "id": 91,
+    "project": "iot-events-4",
+    "dataset": "device_logs_90",
+    "logical_cost": 400.36,
+    "physical_cost": 412.25,
+    "recommendation": "Logical",
+    "savings": 11.89
+  },
+  {
+    "id": 92,
+    "project": "ecommerce-web-3",
+    "dataset": "pricing_model_91",
+    "logical_cost": 747.23,
+    "physical_cost": 411.77,
+    "recommendation": "Physical",
+    "savings": 335.47
+  },
+  {
+    "id": 93,
+    "project": "recommendation-engine-2",
+    "dataset": "order_history_92",
+    "logical_cost": 70.56,
+    "physical_cost": 57.33,
+    "recommendation": "Physical",
+    "savings": 13.23
+  },
+  {
+    "id": 94,
+    "project": "marketing-analytics-1",
+    "dataset": "order_history_93",
+    "logical_cost": 718.95,
+    "physical_cost": 352.54,
+    "recommendation": "Physical",
+    "savings": 366.4
+  },
+  {
+    "id": 95,
+    "project": "finance-prod-4",
+    "dataset": "order_history_94",
+    "logical_cost": 25.52,
+    "physical_cost": 30.17,
+    "recommendation": "Logical",
+    "savings": 4.65
+  },
+  {
+    "id": 96,
+    "project": "logistics-stg-2",
+    "dataset": "ab_testing_95",
+    "logical_cost": 518.8,
+    "physical_cost": 420.46,
+    "recommendation": "Physical",
+    "savings": 98.34
+  },
+  {
+    "id": 97,
+    "project": "identity-services-1",
+    "dataset": "click_stream_96",
+    "logical_cost": 13.42,
+    "physical_cost": 7.25,
+    "recommendation": "Physical",
+    "savings": 6.17
+  },
+  {
+    "id": 98,
+    "project": "ecommerce-web-1",
+    "dataset": "audit_logs_97",
+    "logical_cost": 259.77,
+    "physical_cost": 228.26,
+    "recommendation": "Physical",
+    "savings": 31.51
+  },
+  {
+    "id": 99,
+    "project": "iot-events-4",
+    "dataset": "device_logs_98",
+    "logical_cost": 477.09,
+    "physical_cost": 393.0,
+    "recommendation": "Physical",
+    "savings": 84.09
+  },
+  {
+    "id": 100,
+    "project": "marketing-analytics-3",
+    "dataset": "inventory_99",
+    "logical_cost": 6.74,
+    "physical_cost": 4.55,
+    "recommendation": "Physical",
+    "savings": 2.18
+  }
+];
+
+        const tbody = document.getElementById('mock-table-body');
+        mockData.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+            tr.innerHTML = `
+                <td style="padding: 1rem; color: var(--muted);">${row.project}</td>
+                <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.dataset}</td>
+                <td style="padding: 1rem; color: var(--muted);">$${row.logical_cost.toFixed(2)}</td>
+                <td style="padding: 1rem; color: var(--muted);">$${row.physical_cost.toFixed(2)}</td>
+                <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: ${row.recommendation === 'Physical' ? 'var(--secondary)' : 'var(--primary)'}">${row.recommendation}</span></td>
+                <td style="padding: 1rem; color: ${row.recommendation === 'Physical' ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    </script>
+</body>
+
+</html>

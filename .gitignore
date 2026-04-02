@@ -1,0 +1,23 @@
+# Logs
+*.log
+app.log
+
+# Environment/Scratch
+venv/
+.env
+*.sh
+scratch_*.py
+scratch/
+
+# Python
+__pycache__/
+*.pyc
+
+# Docker (as per request)
+Dockerfile
+
+# Documentation (as per request)
+PRD.MD
+
+# OS
+.DS_Store
