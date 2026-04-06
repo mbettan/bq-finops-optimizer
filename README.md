@@ -2,6 +2,14 @@
 
 A tool for analyzing and optimizing BigQuery storage and compute costs by switching between logical and physical billing models.
 
+## ✨ Key Features
+
+- **Storage Optimization**: Analyze potential savings by switching between Logical and Physical storage billing models.
+- **Compute Optimization**: Compare On-Demand vs. Editions pricing for your historical query workload.
+- **Profile Categorization**: Automatically categorizes queries into **Reservation Candidates**, **On-Demand Candidates**, and **Balanced / Uncertain** based on cost efficiency.
+- **Interactive UI Filtering**: Filter top inefficient queries by their billing profile directly in the dashboard.
+- **Scalable Analysis**: Displays the top **500** most inefficient queries to focus on high-impact optimization opportunities.
+
 ---
 
 ## 🚀 Getting Started
@@ -82,8 +90,8 @@ gcloud auth application-default print-access-token
 
 ### Changing the Target Project ID
 The application dynamically scopes BigQuery clients based on incoming API requests. You do not need to hardcode a project ID in the backend. 
-- In the **Frontend UI**, you can specify the `Work Project` or `Org Project ID` in the respective input fields.
-- In **API Calls**, include the `work_project` or `org_project_id` in the JSON payload (e.g., `{"work_project": "my-target-project"}`).
+- In the **Frontend UI**, you can specify the `Org Project ID` in the respective input field.
+- In **API Calls**, include the `org_project_id` in the JSON payload (e.g., `{"org_project_id": "my-target-project"}`).
 
 ---
 
@@ -126,3 +134,13 @@ For the application to function fully (Storage, Compute, and Editions features),
 
 > [!IMPORTANT]
 > Ensure that any role required for `*_BY_ORGANIZATION` views is granted at the **Organization** resource level in the IAM console, not the project level.
+
+---
+
+## ⚠️ Security & Scale Considerations
+
+When deploying and using this tool, please be mindful of the following security and scalability considerations:
+
+1. **SQL Injection Risks**: The application currently uses direct string interpolation for some parameters (like region and project IDs) in SQL queries. Ensure strict input validation is applied if exposing this tool, and only grant the minimum necessary permissions to the executing identity.
+2. **Scale Limits with Large Organizations**: In environments with thousands of projects, querying metadata across all projects simultaneously can exceed BigQuery's query size and complexity limits, or hit quota limits. Consider batching or scoped analysis for very large scales.
+3. **No Built-in Authentication**: This tool lacks built-in authentication or authorization mechanisms. **Do not expose this application to the public internet or internally without adding an authentication layer.** It is strongly recommended to run this tool locally or within a secure internal network.
