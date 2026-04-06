@@ -13,12 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const elements = {
         // Nav
         navStorage: document.getElementById('nav-storage'),
-
+        navJobs: document.getElementById('nav-jobs'),
         navSettings: document.getElementById('nav-settings'),
         
         // Views
         viewStorage: document.getElementById('view-storage'),
-
+        viewJobs: document.getElementById('view-jobs'),
         viewSettings: document.getElementById('view-settings'),
         
         // Top Bar
@@ -49,6 +49,20 @@ document.addEventListener('DOMContentLoaded', () => {
         notificationContainer: document.getElementById('notification-container')
     };
 
+    // Custom Filter for DataTables
+    $.fn.dataTable.ext.search.push(
+        function( settings, data, dataIndex ) {
+            if (settings.nTable.id !== 'top-jobs-table') {
+                return true;
+            }
+            const filterValue = $('#profile-filter').val();
+            if (!filterValue) return true;
+            
+            const profile = data[4] || ''; // Column 4 is Profile
+            return profile.includes(filterValue);
+        }
+    );
+
     // Initialize UI from state
     const initUI = () => {
         elements.cfgOrgProject.value = state.orgProject;
@@ -66,30 +80,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // View Switching
     const switchView = (viewId) => {
         elements.viewStorage.style.display = 'none';
+        if (elements.viewJobs) elements.viewJobs.style.display = 'none';
         elements.viewSettings.style.display = 'none';
         
         elements.navStorage.classList.remove('active');
+        if (elements.navJobs) elements.navJobs.classList.remove('active');
         elements.navSettings.classList.remove('active');
 
         if (viewId === 'storage') {
             elements.viewStorage.style.display = 'block';
             elements.navStorage.classList.add('active');
+        } else if (viewId === 'jobs') {
+            if (elements.viewJobs) elements.viewJobs.style.display = 'block';
+            if (elements.navJobs) elements.navJobs.classList.add('active');
         } else if (viewId === 'settings') {
             elements.viewSettings.style.display = 'block';
             elements.navSettings.classList.add('active');
         }
     };
 
-
-
     // Event Listeners for Nav
     elements.navStorage.addEventListener('click', (e) => { e.preventDefault(); switchView('storage'); });
-
+    if (elements.navJobs) elements.navJobs.addEventListener('click', (e) => { e.preventDefault(); switchView('jobs'); });
     elements.navSettings.addEventListener('click', (e) => { e.preventDefault(); switchView('settings'); });
 
     // Save Settings
     elements.saveSettingsBtn.addEventListener('click', () => {
         state.orgProject = elements.cfgOrgProject.value.trim();
+        elements.cfgOrgProject.value = state.orgProject; // Update input field with trimmed value
         state.region = elements.cfgRegion.value;
 
         localStorage.setItem('bq_org_project', state.orgProject);
@@ -187,7 +205,152 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Analyze Jobs
+    const btnAnalyzeJobs = document.getElementById('analyze-jobs-btn');
+    if (btnAnalyzeJobs) {
+        btnAnalyzeJobs.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
 
+            setLoading(btnAnalyzeJobs, true);
+
+            const params = {
+                on_demand_rate_per_tb: parseFloat(document.getElementById('jb-od-rate').value),
+                edition_slot_hr_rate: parseFloat(document.getElementById('jb-ed-rate').value),
+                slot_step_size: parseInt(document.getElementById('jb-slot-step').value),
+                lookback_days: parseInt(document.getElementById('jb-lookback').value),
+                region: state.region,
+                org_project_id: state.orgProject,
+                min_bytes_billed: parseInt(document.getElementById('jb-min-size').value) * 1024 * 1024,
+                limit_jobs: parseInt(document.getElementById('jb-limit').value)
+            };
+
+            try {
+                const response = await fetch('/api/jobs/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to analyze jobs');
+                }
+
+                const responseData = await response.json();
+                renderJobResults(responseData);
+                showNotification('Job analysis completed.', 'success');
+            } catch (error) {
+                console.error("Job Analysis Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(btnAnalyzeJobs, false);
+            }
+        });
+    }
+
+    const renderJobResults = (data) => {
+        const summaryTbody = document.querySelector('#job-summary-table tbody');
+        const jobsTbody = document.querySelector('#top-jobs-table tbody');
+        
+        if (summaryTbody) summaryTbody.innerHTML = '';
+        if (jobsTbody) jobsTbody.innerHTML = '';
+
+        // Render Project Summaries
+        if (data.project_summaries) {
+            data.project_summaries.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.project_id}</td>
+                    <td>${formatCurrency(row.total_on_demand_cost)}</td>
+                    <td>${formatCurrency(row.total_editions_cost)}</td>
+                    <td>${formatCurrency(row.editions_error_tax)}</td>
+                    <td><strong style="color: ${row.reservation_savings > 0 ? '#4ade80' : '#f87171'}">${formatCurrency(row.reservation_savings)}</strong></td>
+                `;
+                summaryTbody.appendChild(tr);
+            });
+        }
+
+        // Render Top Jobs
+        if (data.top_jobs) {
+            data.top_jobs.forEach(row => {
+                const tr = document.createElement('tr');
+                const betterOn = row.on_demand_cost <= row.editions_cost ? 'On-Demand' : 'Editions';
+                const betterColor = betterOn === 'On-Demand' ? '#38bdf8' : '#a855f7';
+                
+                const maxCost = Math.max(row.on_demand_cost, row.editions_cost) || 1;
+                const savingsPct = (row.waste_savings > 0 ? row.waste_savings / maxCost : 0) * 100;
+                
+                // Color for category badge
+                let categoryColor = '#94a3b8'; // gray
+                let categoryBg = 'rgba(148, 163, 184, 0.15)';
+                
+                if (row.category.includes('Reservation')) {
+                    categoryColor = '#4ade80'; // green
+                    categoryBg = 'rgba(74, 222, 128, 0.15)';
+                } else if (row.category.includes('On-Demand')) {
+                    categoryColor = '#facc15'; // yellow
+                    categoryBg = 'rgba(250, 204, 21, 0.15)';
+                }
+                
+                tr.innerHTML = `
+                    <td>${row.project_id}</td>
+                    <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                    <td><span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">On-Demand</span></td>
+                    <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
+                    <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span></td>
+                    <td><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">${formatCurrency(row.waste_savings)}</span></td>
+                    <td>${savingsPct.toFixed(2)}%</td>
+                    <td>
+                        <button class="btn-action copy-job-btn" data-id="${row.job_id}">Copy ID</button>
+                    </td>
+                `;
+                jobsTbody.appendChild(tr);
+            });
+        }
+
+        document.querySelectorAll('.copy-job-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const jobId = e.target.getAttribute('data-id');
+                if (jobId) {
+                    navigator.clipboard.writeText(jobId).then(() => {
+                        showNotification('Job ID copied!', 'success');
+                    }).catch(err => {
+                        console.error(err);
+                        showNotification('Failed to copy ID.', 'error');
+                    });
+                }
+            });
+        });
+
+        // Initialize DataTables if not already init
+        if ($.fn.DataTable.isDataTable('#job-summary-table')) {
+            $('#job-summary-table').DataTable().destroy();
+        }
+        $('#job-summary-table').DataTable({ pageLength: 5, order: [[4, 'desc']], responsive: true });
+
+        if ($.fn.DataTable.isDataTable('#top-jobs-table')) {
+            $('#top-jobs-table').DataTable().destroy();
+        }
+        const table = $('#top-jobs-table').DataTable({ pageLength: 10, order: [[5, 'desc']], responsive: true });
+        
+        // Profile filter
+        const filterSelect = document.getElementById('profile-filter');
+        if (filterSelect) {
+            // Apply current filter
+            table.draw();
+            
+            // Add listener
+            $('#profile-filter').off('change').on('change', function() {
+                table.draw();
+            });
+
+            // Apply filter on change is handled by custom filter triggering draw()
+        }
+    };
 
     // Render Storage Results
     const renderStorageResults = (data) => {
@@ -284,6 +447,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Helpers
     const formatCurrency = (amount) => {
+        if (amount > 0 && amount < 0.01) {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 6 }).format(amount);
+        }
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
     };
 

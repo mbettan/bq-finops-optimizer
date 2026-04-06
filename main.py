@@ -2,9 +2,11 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from typing import Optional
 from google.cloud import bigquery
 import os
 import logging
+import math
 
 app = FastAPI()
 
@@ -25,7 +27,12 @@ logger = logging.getLogger(__name__)
 # Serve index.html at root
 @app.get("/")
 async def read_index():
-    return FileResponse(os.path.join(BASE_DIR, 'static', 'index.html'))
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
+    }
+    return FileResponse(os.path.join(BASE_DIR, 'static', 'index.html'), headers=headers)
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -40,11 +47,21 @@ class StorageParams(BaseModel):
     active_physical_price: float = 0.04
     long_term_physical_price: float = 0.02
     time_travel_rescale: float = 1.0
-    time_travel_hours: float | None = None
+    time_travel_hours: Optional[float] = None
     min_monthly_saving: float = 0.0
     min_monthly_saving_pct: float = 0.0
     region: str = "region-us"
-    org_project_id: str | None = None
+    org_project_id: Optional[str] = None
+
+class JobAnalysisParams(BaseModel):
+    on_demand_rate_per_tb: float = 6.25
+    edition_slot_hr_rate: float = 0.06
+    slot_step_size: int = 50
+    lookback_days: int = 3
+    region: str = "region-us"
+    org_project_id: Optional[str] = None
+    min_bytes_billed: int = 10485760
+    limit_jobs: int = 1000
 
 
 
@@ -186,6 +203,8 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str):
 
 @app.post("/api/storage/analyze")
 async def analyze_storage(params: StorageParams):
+    if params.org_project_id:
+        params.org_project_id = params.org_project_id.strip()
     logger.info(f"Storage Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
     
     try:
@@ -266,6 +285,142 @@ async def analyze_storage(params: StorageParams):
             }
         logger.error(f"Storage analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/analyze")
+async def analyze_jobs(params: JobAnalysisParams):
+    if params.org_project_id:
+        params.org_project_id = params.org_project_id.strip()
+    logger.info(f"Job Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
+        
+        org_project = params.org_project_id if params.org_project_id else "your-project-id"
+        
+        sql = f"""
+        SELECT
+          job_id,
+          user_email,
+          project_id,
+          COALESCE(total_bytes_billed, 0) AS total_bytes_billed,
+          total_slot_ms,
+          CASE WHEN error_result IS NOT NULL THEN TRUE ELSE FALSE END AS has_error,
+          NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0) AS actual_duration_ms,
+          GREATEST(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 60000) AS billed_duration_ms
+        FROM
+          `{org_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        WHERE
+          creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days}*24 HOUR)
+          AND state = 'DONE'
+          AND job_type = 'QUERY'
+          AND IFNULL(cache_hit, FALSE) = FALSE
+          AND total_bytes_billed >= {params.min_bytes_billed}
+        ORDER BY total_bytes_billed DESC
+        LIMIT {params.limit_jobs}
+        """
+        
+        logger.info(f"Job Analyzer SQL QUERY:\n{sql}")
+        results = run_query_and_log(scoped_client, sql, "Job Stats")
+        
+        project_metrics = {}
+        top_jobs = []
+        
+        TB_CONVERSION = 1024 ** 4
+        SLOT_HR_MS = 3600000.0
+        
+        for row in results:
+            project = row['project_id']
+            job_id = row['job_id']
+            user_email = row['user_email']
+            
+            bytes_billed = row['total_bytes_billed']
+            slot_ms = row['total_slot_ms']
+            has_error = row['has_error']
+            actual_duration_ms = row['actual_duration_ms'] or 0
+            billed_duration_ms = row['billed_duration_ms'] or 60000
+            
+            avg_slots = (slot_ms / actual_duration_ms) if (actual_duration_ms and slot_ms is not None) else 0
+            
+            # Heuristic 1: Spike Factor for short jobs (Peak Approximation)
+            spike_factor = 1.0
+            if actual_duration_ms < 60000:
+                # Scales from 3.0 at 0ms to 1.0 at 60s
+                spike_factor = 1.0 + 2.0 * (1.0 - (actual_duration_ms / 60000.0))
+            
+            effective_slots = avg_slots * spike_factor
+            
+            # Heuristic 2: Slot Sharing Discount for small queries
+            if effective_slots < 50:
+                billed_slots = effective_slots
+            else:
+                billed_slots = math.ceil(effective_slots / params.slot_step_size) * params.slot_step_size
+            
+            on_demand_cost = (bytes_billed / TB_CONVERSION) * params.on_demand_rate_per_tb
+            editions_cost = ((billed_slots * billed_duration_ms) / SLOT_HR_MS) * params.edition_slot_hr_rate
+            savings = on_demand_cost - editions_cost
+            
+            # Heuristic 3: 3-Bucket Categorization
+            if on_demand_cost > editions_cost * 1.2:
+                category = "Strong Reservation Candidate (High IO / Low CPU)"
+            elif editions_cost > on_demand_cost * 1.2:
+                category = "Strong On-Demand Candidate (Low IO / High CPU)"
+            else:
+                category = "Balanced / Uncertain"
+                
+            if project not in project_metrics:
+                project_metrics[project] = {
+                    "on_demand_cost": 0.0,
+                    "editions_cost": 0.0,
+                    "error_tax": 0.0,
+                    "net_savings": 0.0
+                }
+                
+            project_metrics[project]["on_demand_cost"] += on_demand_cost
+            project_metrics[project]["editions_cost"] += editions_cost
+            if has_error:
+                project_metrics[project]["error_tax"] += editions_cost
+            project_metrics[project]["net_savings"] += savings
+            
+            top_jobs.append({
+                "job_id": job_id,
+                "project_id": project,
+                "user_email": user_email,
+                "on_demand_cost": on_demand_cost,
+                "editions_cost": editions_cost,
+                "waste_savings": savings,
+                "has_error": has_error,
+                "category": category,
+                "avg_slots": avg_slots,
+                "effective_slots": effective_slots,
+                "billed_slots": billed_slots
+            })
+            
+        # Format project summaries
+        project_list = []
+        for p, m in project_metrics.items():
+            project_list.append({
+                "project_id": p,
+                "total_on_demand_cost": m["on_demand_cost"],
+                "total_editions_cost": m["editions_cost"],
+                "editions_error_tax": m["error_tax"],
+                "reservation_savings": m["net_savings"]
+            })
+            
+        project_list.sort(key=lambda x: x["reservation_savings"], reverse=True)
+        
+        # Format top jobs
+        top_jobs.sort(key=lambda x: x["waste_savings"], reverse=True)
+        top_candidates = top_jobs[:500] # Return top 500 for UI performance
+        
+        return {
+            "project_summaries": project_list,
+            "top_jobs": top_candidates
+        }
+        
+    except Exception as e:
+        logger.error(f"Job analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 

@@ -34,8 +34,8 @@
             </a>
             <div class="nav-links">
                 <a href="#features">Features</a>
+                <a href="#demo">Example</a>
                 <a href="#workflow">Workflow</a>
-                <a href="#metrics">Metrics</a>
             </div>
             <a href="https://github.com/mbettan/bigquery-optimizer" class="btn btn-nav" target="_blank" rel="noopener">
                 <i class="fab fa-github"></i>
@@ -50,7 +50,7 @@
             <div class="hero-content">
                 <div class="hero-badge">
                     <span class="badge-dot" aria-hidden="true"></span>
-                    Open Source & Production Ready
+                    Open Source
                 </div>
 
                 <h1>
@@ -103,7 +103,6 @@
                 <span class="btn btn-nav"><i class="fas fa-database"></i> BigQuery</span>
                 <span class="btn btn-nav"><i class="fas fa-server"></i> FastAPI</span>
                 <span class="btn btn-nav"><i class="fab fa-python"></i> Python</span>
-                <span class="btn btn-nav"><i class="fas fa-cloud"></i> Cloud Run</span>
             </div>
         </div>
     </div>
@@ -112,27 +111,16 @@
     <section id="demo" aria-label="Interactive Demo">
         <div class="container">
             <div class="section-header">
-                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Live Simulation</span>
+                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">
+                    <span class="badge-dot" aria-hidden="true"></span>
+                    Example
+                </span>
                 <h2>Behold the <span class="gradient-text">Scale of Savings</span></h2>
                 <p>Simulating an audit of <strong>957 Datasets</strong> across an enterprise organization.</p>
             </div>
 
             <div class="bento-card" style="grid-column: span 6; padding: 3rem;">
-                <!-- Summary Stats -->
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-bottom: 3rem;">
-                    <div style="text-align: center;">
-                        <div class="gradient-text" style="font-size: 2.5rem; font-weight: 800;">957</div>
-                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Datasets Analyzed</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div class="gradient-text" style="font-size: 2.5rem; font-weight: 800;">$42,150</div>
-                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Est. Monthly Savings</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div style="font-size: 2.5rem; font-weight: 800; color: var(--secondary);">12 min</div>
-                        <div style="font-size: 0.9rem; color: var(--muted); font-weight: 600;">Time to Audit</div>
-                    </div>
-                </div>
+
 
                 <!-- Table Container -->
                 <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
@@ -149,6 +137,36 @@
                                 </tr>
                             </thead>
                             <tbody id="mock-table-body">
+                                <!-- Data injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+                <p>Simulating an analysis of the <strong>Top 500 Queries</strong> to identify candidates for slot reservations (autoscaler) or on-demand.</p>
+            </div>
+
+            <!-- Compute Demo Card -->
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+
+
+                <!-- Table Container -->
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        <table class="showcase-table">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr>
+                                    <th style="padding: 1rem; color: var(--light);">Job ID</th>
+                                    <th style="padding: 1rem; color: var(--light);">User</th>
+                                    <th style="padding: 1rem; color: var(--light);">On-Demand Cost</th>
+                                    <th style="padding: 1rem; color: var(--light);">Editions Cost</th>
+                                    <th style="padding: 1rem; color: var(--light);">Profile</th>
+                                    <th style="padding: 1rem; color: var(--light);">Savings</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mock-compute-table-body">
                                 <!-- Data injected by JS -->
                             </tbody>
                         </table>
@@ -173,7 +191,7 @@
                     <div class="bento-icon"><i class="fas fa-archive"></i></div>
                     <div>
                         <h3>Physical vs Logical Storage Billing</h3>
-                        <p>Identify datasets that are cheaper on physical storage models. Evaluate Time Travel and Fail-safe storage impact automatically.</p>
+                        <p>Identify datasets that are cheaper on physical or logical storage models. Evaluate Time Travel and Fail-safe storage impact automatically.</p>
                         <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
                             <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Automated DDL Generation</span>
                             <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> One-click Application</span>
@@ -240,28 +258,7 @@
         </div>
     </section>
 
-    <!-- ░░ METRICS ░░ -->
-    <section id="metrics" aria-label="Metrics">
-        <div class="container">
-            <div class="metrics-grid">
-                <div class="metric-card">
-                    <div class="metric-value">Up to 40%</div>
-                    <div class="metric-label">Storage Savings</div>
-                    <div class="metric-sub">By switching to Physical Billing for active datasets</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value">&lt; 1 min</div>
-                    <div class="metric-label">TimeTo Insight</div>
-                    <div class="metric-sub">Fast FastAPI backend processing queries in seconds</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value">0 s</div>
-                    <div class="metric-label">Data Movement</div>
-                    <div class="metric-sub">Calculations run in-situ on your BigQuery instance</div>
-                </div>
-            </div>
-        </div>
-    </section>
+
 
     <!-- ░░ CTA ░░ -->
     <section class="cta-section" style="padding: 4rem 0;">
@@ -282,7 +279,7 @@
     <!-- ░░ FOOTER ░░ -->
     <footer style="padding: 4rem 0; border-top: 1px solid var(--glass-border); text-align: center;">
         <div class="container">
-            <p style="color: var(--muted); font-size: 0.9rem;">&copy; 2026 BigQuery FinOps Optimizer. Open Source under MIT License.</p>
+            <p style="color: var(--muted); font-size: 0.9rem;">&copy; 2026 BigQuery FinOps Optimizer. Open Source under Apache 2.0 License.</p>
         </div>
     </footer>
 
@@ -1209,6 +1206,205 @@
                 <td style="padding: 1rem; color: ${row.recommendation === 'Physical' ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
             `;
             tbody.appendChild(tr);
+        });
+
+        // Mock Data for Compute
+        const mockComputeData = [
+          {
+            "id": 1,
+            "job_id": "job_nwp_edw_dag_2026_03_20",
+            "user": "airflow@company.com",
+            "on_demand_cost": 131.03,
+            "editions_cost": 3.93,
+            "profile": "Reservation Candidate",
+            "savings": 127.10
+          },
+          {
+            "id": 2,
+            "job_id": "job_prometheus_query_456",
+            "user": "prometheus@company.com",
+            "on_demand_cost": 0.05,
+            "editions_cost": 0.96,
+            "profile": "On-Demand Candidate",
+            "savings": -0.91
+          },
+          {
+            "id": 3,
+            "job_id": "job_ad_hoc_analysis_789",
+            "user": "analyst@company.com",
+            "on_demand_cost": 50.00,
+            "editions_cost": 45.00,
+            "profile": "Balanced / Uncertain",
+            "savings": 5.00
+          },
+          {
+            "id": 4,
+            "job_id": "job_etl_load_daily_001",
+            "user": "data-eng@company.com",
+            "on_demand_cost": 245.50,
+            "editions_cost": 12.30,
+            "profile": "Reservation Candidate",
+            "savings": 233.20
+          },
+          {
+            "id": 5,
+            "job_id": "job_dashboard_refresh_101",
+            "user": "powerbi-svc@company.com",
+            "on_demand_cost": 12.40,
+            "editions_cost": 15.60,
+            "profile": "On-Demand Candidate",
+            "savings": -3.20
+          },
+          {
+            "id": 6,
+            "job_id": "job_ml_training_v2_999",
+            "user": "ml-model@company.com",
+            "on_demand_cost": 500.00,
+            "editions_cost": 480.00,
+            "profile": "Balanced / Uncertain",
+            "savings": 20.00
+          },
+          {
+            "id": 7,
+            "job_id": "job_audit_log_cleanup_555",
+            "user": "security-svc@company.com",
+            "on_demand_cost": 5.20,
+            "editions_cost": 0.50,
+            "profile": "Reservation Candidate",
+            "savings": 4.70
+          },
+          {
+            "id": 8,
+            "job_id": "job_weekly_finance_rpt_888",
+            "user": "cfo-team@company.com",
+            "on_demand_cost": 85.00,
+            "editions_cost": 92.00,
+            "profile": "On-Demand Candidate",
+            "savings": -7.00
+          },
+          {
+            "id": 9,
+            "job_id": "job_customer_segmentation_02",
+            "user": "marketing@company.com",
+            "on_demand_cost": 120.00,
+            "editions_cost": 30.00,
+            "profile": "Reservation Candidate",
+            "savings": 90.00
+          },
+          {
+            "id": 10,
+            "job_id": "job_real_time_streaming_911",
+            "user": "pubsub-svc@company.com",
+            "on_demand_cost": 15.00,
+            "editions_cost": 85.00,
+            "profile": "On-Demand Candidate",
+            "savings": -70.00
+          },
+          {
+            "id": 11,
+            "job_id": "job_daily_aggregation_007",
+            "user": "dbt-cloud@company.com",
+            "on_demand_cost": 300.00,
+            "editions_cost": 50.00,
+            "profile": "Reservation Candidate",
+            "savings": 250.00
+          },
+          {
+            "id": 12,
+            "job_id": "job_custom_report_user_123",
+            "user": "john.doe@company.com",
+            "on_demand_cost": 2.50,
+            "editions_cost": 2.60,
+            "profile": "Balanced / Uncertain",
+            "savings": -0.10
+          },
+          {
+            "id": 13,
+            "job_id": "job_backup_verification_99",
+            "user": "devops@company.com",
+            "on_demand_cost": 1.00,
+            "editions_cost": 0.10,
+            "profile": "Reservation Candidate",
+            "savings": 0.90
+          },
+          {
+            "id": 14,
+            "job_id": "job_large_export_csv_456",
+            "user": "analyst_2@company.com",
+            "on_demand_cost": 150.00,
+            "editions_cost": 160.00,
+            "profile": "Balanced / Uncertain",
+            "savings": -10.00
+          },
+          {
+            "id": 15,
+            "job_id": "job_prometheus_metric_pull_1",
+            "user": "prom-scraper@company.com",
+            "on_demand_cost": 0.10,
+            "editions_cost": 0.50,
+            "profile": "On-Demand Candidate",
+            "savings": -0.40
+          },
+          {
+            "id": 16,
+            "job_id": "job_recommendation_calc_202",
+            "user": "recommender@company.com",
+            "on_demand_cost": 450.00,
+            "editions_cost": 40.00,
+            "profile": "Reservation Candidate",
+            "savings": 410.00
+          },
+          {
+            "id": 17,
+            "job_id": "job_monthly_rollup_202603",
+            "user": "finance-svc@company.com",
+            "on_demand_cost": 800.00,
+            "editions_cost": 100.00,
+            "profile": "Reservation Candidate",
+            "savings": 700.00
+          },
+          {
+            "id": 18,
+            "job_id": "job_ad_hoc_investigation_x",
+            "user": "security_ops@company.com",
+            "on_demand_cost": 50.00,
+            "editions_cost": 60.00,
+            "profile": "Balanced / Uncertain",
+            "savings": -10.00
+          },
+          {
+            "id": 19,
+            "job_id": "job_weekly_archive_cleanup",
+            "user": "archive-svc@company.com",
+            "on_demand_cost": 10.00,
+            "editions_cost": 2.00,
+            "profile": "Reservation Candidate",
+            "savings": 8.00
+          },
+          {
+            "id": 20,
+            "job_id": "job_live_traffic_analysis",
+            "user": "analytics-svc@company.com",
+            "on_demand_cost": 5.00,
+            "editions_cost": 25.00,
+            "profile": "On-Demand Candidate",
+            "savings": -20.00
+          }
+        ];
+
+        const computeTbody = document.getElementById('mock-compute-table-body');
+        mockComputeData.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+            tr.innerHTML = `
+                <td style="padding: 1rem; color: var(--muted);">${row.job_id}</td>
+                <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.user}</td>
+                <td style="padding: 1rem; color: var(--muted);">$${row.on_demand_cost.toFixed(2)}</td>
+                <td style="padding: 1rem; color: var(--muted);">$${row.editions_cost.toFixed(2)}</td>
+                <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: ${row.profile.includes('Reservation') ? 'var(--secondary)' : row.profile.includes('On-Demand') ? 'var(--primary)' : 'var(--light)'}">${row.profile}</span></td>
+                <td style="padding: 1rem; color: ${row.savings > 0 ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
+            `;
+            computeTbody.appendChild(tr);
         });
     </script>
 </body>

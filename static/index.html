@@ -39,6 +39,11 @@
                     <span>Storage Cost</span>
                 </a>
 
+                <a href="#jobs" class="nav-link" id="nav-jobs">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span>Query Cost Optimizer</span>
+                </a>
+
                 <a href="#settings" class="nav-link" id="nav-settings">
                     <i class="fa-solid fa-gear"></i>
                     <span>Global Settings</span>
@@ -74,12 +79,12 @@
                         <h2>GCP Environment</h2>
                         <div class="form-grid">
                             <div class="form-group">
-                                <label for="cfg-org-project">Target Org Project ID</label>
+                                <label for="cfg-org-project">Project ID <span class="tooltip" data-tooltip="This project is used to execute the analysis queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="text" id="cfg-org-project" placeholder="e.g. central-billing-project">
-                                <small>Used for organization-level queries</small>
+                                <small>Used for running the queries</small>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-region">Region</label>
+                                <label for="cfg-region">Region <span class="tooltip" data-tooltip="The BigQuery region where your datasets and jobs are located."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <select id="cfg-region">
                                     <option value="region-us">US (Multi-region)</option>
                                     <option value="region-eu">EU (Multi-region)</option>
@@ -203,7 +208,124 @@
                     </div>
                 </section>
 
+                <!-- Compute / Jobs View -->
+                <section id="view-jobs" class="view" style="display: none;">
+                    <h1 class="view-title">Query Cost & Routing Optimization</h1>
+                    
+                    <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
+                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
+                            <div>
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How it works</h3>
+                                <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                    This analyzer profiles your historical BigQuery jobs to determine their most cost-effective billing model (On-Demand vs. Editions/Autoscaler). It is designed to act as an <strong>Advanced Workload Router</strong>, helping you identify structural "slot hogs" (better for On-Demand) and "data hogs" (better for Editions).
+                                </p>
+                                
+                                <p style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                    To identify the specific inefficiencies of individual queries, this tool evaluates each job in isolation. In reality, BigQuery Editions highly benefit from concurrency (sharing idle slots across many overlapping jobs). Because blending queries together hides individual bad actors, we use a Smart Job-Centric approach, applying advanced heuristics to approximate how an isolated job behaves against the BigQuery Autoscaler:
+                                </p>
+                                
+                                <ul style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 1rem 1.25rem; padding: 0;">
+                                    <li><strong>The Spike Factor:</strong> Editions charge a 1-minute minimum for provisioned slots. Short queries (&lt; 60s) are mathematically penalized here to simulate the violent peaks in slot demand that trigger this 1-minute minimum penalty.</li>
+                                    <li><strong>Autoscaler Granularity &amp; Sharing:</strong> BigQuery scales in discrete blocks of 50 slots. We round simulated slot usage up to the nearest 50. Exception: Small queries using &lt; 50 slots are assumed to seamlessly "pack" into your existing baseline capacity without triggering independent autoscaler events.</li>
+                                    <li><strong>Routing Profiles:</strong> We categorize your recurring queries into actionable buckets. Use this to build a dynamic routing table—for example, automatically routing high-CPU/low-IO queries to an On-Demand billing project.</li>
+                                </ul>
+                                
+                                <h4 style="margin: 1rem 0 0.25rem 0; color: #ef4444; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation"></i> Constraints &amp; Limitations</h4>
+                                <ul style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 0 1.25rem; padding: 0;">
+                                    <li><strong>Not for Capacity Planning:</strong> Because we test jobs in isolation to find routing candidates, this tool does not calculate your total concurrent slot demand. Do not use this view to size your overall organization's baseline commitments.</li>
+                                    <li><strong>Cost Drift:</strong> Query behavior can change over time based on data volume and parameters. Only route recurring queries that demonstrate stable, consistent savings in one specific model.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-card params-panel">
+                        <h2>Pricing & Parameters</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="jb-od-rate">On-Demand Rate ($/TB)</label>
+                                <input type="number" id="jb-od-rate" value="6.25" step="0.25">
+                            </div>
+                            <div class="form-group">
+                                <label for="jb-ed-rate">Editions Slot/Hr Rate ($)</label>
+                                <input type="number" id="jb-ed-rate" value="0.06" step="0.01">
+                            </div>
+                            <div class="form-group">
+                                <label for="jb-slot-step">Slot Step Size (Autoscaling)</label>
+                                <input type="number" id="jb-slot-step" value="50" step="50">
+                            </div>
+                            <div class="form-group">
+                                <label for="jb-lookback">Lookback Window (Days)</label>
+                                <input type="number" id="jb-lookback" value="3" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="jb-min-size">Min Job Size (MB) <span class="tooltip" data-tooltip="Ignore queries billing less than this amount."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="number" id="jb-min-size" value="10" step="10">
+                            </div>
+                            <div class="form-group">
+                                <label for="jb-limit">Max Jobs to Analyze <span class="tooltip" data-tooltip="Limit to the top N most expensive jobs."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="number" id="jb-limit" value="1000" step="100">
+                            </div>
 
+                        </div>
+                        <button id="analyze-jobs-btn" class="btn-primary">Run Job Analysis</button>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-bottom: 2rem;">
+                        <h2>Project Level Summaries</h2>
+                        <div class="table-responsive">
+                            <table id="job-summary-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Project ID</th>
+                                        <th>On-Demand Cost ($)</th>
+                                        <th>Editions Cost ($)</th>
+                                        <th>Error Tax ($)</th>
+                                        <th>Savings ($)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Top Inefficient Queries</h2>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <label for="profile-filter" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary);">Profile:</label>
+                                <select id="profile-filter" style="background: hsl(var(--input)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-sm); padding: 0.375rem 0.5rem; color: var(--text-primary); font-size: 0.85rem;">
+                                    <option value="">All Types</option>
+                                    <option value="Reservation">Reservation Candidate</option>
+                                    <option value="On-Demand">On-Demand Candidate</option>
+                                    <option value="Balanced">Balanced / Uncertain</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table id="top-jobs-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Project</th>
+                                        <th>Job ID</th>
+                                        <th>Current Model</th>
+                                        <th>Recommended Model</th>
+                                        <th>Profile</th>
+                                        <th>Savings ($)</th>
+                                        <th>Savings (%)</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
 
             </div>
         </main>
@@ -212,6 +334,6 @@
     <!-- Notification Container -->
     <div id="notification-container"></div>
 
-    <script src="static/app.js"></script>
+    <script src="static/app.js?v=2.1"></script>
 </body>
 </html>
