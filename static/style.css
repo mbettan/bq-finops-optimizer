@@ -541,8 +541,55 @@ textarea {
 
 .form-group small {
     font-size: 0.7rem;
-        color: var(--text-tertiary);
-        line-height: 1.4;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+}
+
+/* Custom Tooltip */
+.tooltip-container {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.tooltip-container .tooltip-text {
+    visibility: hidden;
+    width: 220px;
+    background-color: hsla(222, 47%, 6%, 0.95);
+    color: var(--text-primary);
+    text-align: center;
+    border-radius: var(--radius-sm);
+    padding: 0.625rem;
+    position: absolute;
+    z-index: 1000;
+    bottom: 130%;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 0;
+    transition: opacity 0.1s ease, transform 0.1s ease;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    border: 1px solid hsla(217, 91%, 60%, 0.25);
+    box-shadow: var(--shadow-lg);
+    pointer-events: none;
+}
+
+.tooltip-container:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(-50%) translateY(-2px);
+}
+
+/* Arrow for tooltip */
+.tooltip-container .tooltip-text::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: hsla(222, 47%, 6%, 0.95) transparent transparent transparent;
 }
 
 /* ─── Buttons ─── */

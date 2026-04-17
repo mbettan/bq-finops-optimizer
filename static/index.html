@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps Optimizer</title>
+    <title>BQ FinOps optimizer</title>
     <meta name="description" content="Optimize BigQuery storage and compute costs with actionable insights and glassmorphic UI.">
     <link rel="icon" type="image/png" href="/static/favicon.png">
     
@@ -24,6 +24,53 @@
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
     <link rel="stylesheet" href="static/style.css">
+    <style>
+        /* Custom Tooltip Fix */
+        .tooltip-container {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        .tooltip-container .tooltip-text {
+            visibility: hidden;
+            width: 220px;
+            background-color: hsla(222, 47%, 6%, 0.95);
+            color: #f8fafc;
+            text-align: center;
+            border-radius: 8px;
+            padding: 0.625rem;
+            position: absolute;
+            z-index: 1000;
+            top: 130%; /* Position below */
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.1s ease, transform 0.1s ease;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            border: 1px solid hsla(217, 91%, 60%, 0.25);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            pointer-events: none;
+        }
+
+        .tooltip-container:hover .tooltip-text {
+            visibility: visible;
+            opacity: 1;
+            transform: translateX(-50%) translateY(2px); /* Move down */
+        }
+
+        .tooltip-container .tooltip-text::after {
+            content: "";
+            position: absolute;
+            bottom: 100%; /* Arrow at the top */
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: transparent transparent hsla(222, 47%, 6%, 0.95) transparent; /* Arrow points up */
+        }
+    </style>
 </head>
 <body class="dark-theme">
     <div class="app-container">
@@ -36,17 +83,27 @@
             <nav class="nav-links">
                 <a href="#storage" class="nav-link active" id="nav-storage">
                     <i class="fa-solid fa-database"></i>
-                    <span>Storage Cost</span>
+                    <span>Storage cost</span>
                 </a>
 
                 <a href="#jobs" class="nav-link" id="nav-jobs">
                     <i class="fa-solid fa-bolt"></i>
-                    <span>Query Cost Optimizer</span>
+                    <span>Query cost optimizer</span>
+                </a>
+
+                <a href="#slots" class="nav-link" id="nav-slots">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>Slots optimizer</span>
+                </a>
+
+                <a href="#slots-simulator" class="nav-link" id="nav-slots-simulator">
+                    <i class="fa-solid fa-calculator"></i>
+                    <span>Edition matrix simulation</span>
                 </a>
 
                 <a href="#settings" class="nav-link" id="nav-settings">
                     <i class="fa-solid fa-gear"></i>
-                    <span>Global Settings</span>
+                    <span>Global settings</span>
                 </a>
             </nav>
         </aside>
@@ -74,7 +131,7 @@
                 
                 <!-- Settings View -->
                 <section id="view-settings" class="view" style="display: none;">
-                    <h1 class="view-title">Global Configuration</h1>
+                    <h1 class="view-title">Global configuration</h1>
                     <div class="glass-card config-panel">
                         <h2>GCP Environment</h2>
                         <div class="form-grid">
@@ -102,7 +159,7 @@
 
                 <!-- Storage Optimizer View -->
                 <section id="view-storage" class="view active">
-                    <h1 class="view-title">Storage Cost Optimizer</h1>
+                    <h1 class="view-title">Storage cost optimizer</h1>
                     
                     <div class="glass-card params-panel">
                         <h2>Pricing & Parameters</h2>
@@ -210,7 +267,7 @@
 
                 <!-- Compute / Jobs View -->
                 <section id="view-jobs" class="view" style="display: none;">
-                    <h1 class="view-title">Query Cost & Routing Optimization</h1>
+                    <h1 class="view-title">Query cost & routing optimization</h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -327,9 +384,278 @@
                     </div>
                 </section>
 
+                <!-- Slots Optimizer View -->
+                <section id="view-slots" class="view" style="display: none;">
+                    <h1 class="view-title">Slots autoscaler optimizer</h1>
+                    
+                    <div class="glass-card" style="margin-bottom: 1.5rem; padding: 1.5rem;">
+                        <h3 style="margin-top: 0; color: #60a5fa;">Understanding slot recommendations</h3>
+                        <p style="margin-bottom: 0.5rem;">BigQuery slots are virtual compute units used to execute jobs. This tool analyzes slot utilization at a high-resolution, second-by-second granularity using <a href="https://docs.cloud.google.com/bigquery/docs/information-schema-jobs-timeline" target="_blank" style="color: #60a5fa; text-decoration: underline;"><code>INFORMATION_SCHEMA.JOBS_TIMELINE</code></a> to help you size reservations effectively. While Google Cloud's <a href="https://docs.cloud.google.com/bigquery/docs/slot-estimator" target="_blank" style="color: #60a5fa; text-decoration: underline;">Slot Estimator</a> provides recommendations based on hourly averages, this high-resolution approach identifies short-lived peaks to ensure you have enough capacity to avoid slot contention during bursty workloads. It provides the following metrics:</p>
+                        <ul style="margin-bottom: 0; padding-left: 1.5rem;">
+                            <li><strong>Autoscaler baseline</strong>: Represents the minimum number of slots that should always be allocated to guarantee capacity. It is calculated by taking the target percentile (e.g., P90) of the average slot usage across your selected window size.</li>
+                            <li><strong>Autoscaler max (P90/P99/Peak)</strong>: Recommendations for your autoscaler's maximum size. By analyzing the absolute peak second within each window, it ensures you have enough capacity to avoid slot contention (queuing) during bursty workloads.</li>
+                            <li><strong>Merged reservation</strong>: Predicts the capacity requirements and efficiency gains if all reservations were consolidated into a single resource pool.</li>
+                        </ul>
+                        <p style="margin-top: 0.75rem; font-size: 0.9rem; color: #94a3b8;"><strong>Note</strong>: All recommendations are rounded to the nearest <a href="https://docs.cloud.google.com/bigquery/docs/slots#slot-autoscaling" target="_blank" style="color: #60a5fa; text-decoration: underline;">50 slots</a>, matching BigQuery's scaling increments.</p>
+                        <p style="margin-top: 0.5rem; font-size: 0.9rem; color: #94a3b8;"><strong>Scope Note</strong>: The <strong>chart</strong> shows <em>all</em> query usage across your organization (including On-Demand queries). However, the <strong>Recommendations table</strong> <em>only</em> analyzes jobs that ran within a reservation.</p>
+                    </div>
+                    
+                    <div class="glass-card params-panel">
+                        <h2>Analysis Parameters</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="sl-lookback">Lookback Window (Days) <span class="tooltip-container"><i class="fa-solid fa-circle-info" style="cursor: pointer; color: #60a5fa; margin-left: 4px;"></i><span class="tooltip-text">Number of days of historical job timeline data to analyze for patterns.</span></span></label>
+                                <input type="number" id="sl-lookback" value="7" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="sl-window">Window Size (Minutes) <span class="tooltip-container"><i class="fa-solid fa-circle-info" style="cursor: pointer; color: #60a5fa; margin-left: 4px;"></i><span class="tooltip-text">The time bucket size. We calculate average and peak usage within these windows to determine percentiles.</span></span></label>
+                                <select id="sl-window">
+                                    <option value="5">5 Minutes</option>
+                                    <option value="10">10 Minutes</option>
+                                    <option value="15">15 Minutes</option>
+                                    <option value="60">60 Minutes</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="sl-percentile">Target Percentile (P) <span class="tooltip-container"><i class="fa-solid fa-circle-info" style="cursor: pointer; color: #60a5fa; margin-left: 4px;"></i><span class="tooltip-text">Used to calculate the Autoscaler baseline. For example, P90 means 90% of window averages were below this value.</span></span></label>
+                                <input type="number" id="sl-percentile" value="90" step="1" min="1" max="100">
+                                <small>Used for baseline recommendation</small>
+                            </div>
+                        </div>
+                        <button id="analyze-slots-btn" class="btn-primary">Run Slots Analysis</button>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-bottom: 2rem;">
+                        <h2>Current reservations</h2>
+                        <div class="table-responsive">
+                            <table id="current-reservations-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Reservation ID</th>
+                                        <th>Admin Project ID</th>
+                                        <th>Region</th>
+                                        <th>Edition</th>
+                                        <th>Current Baseline</th>
+                                        <th>Current Max Slots</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel">
+                        <h2>Recommendations</h2>
+                        <div class="table-responsive">
+                            <table id="slots-recommendations-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Reservation ID</th>
+                                        <th>Autoscaler baseline (P<span id="lbl-percentile">90</span>)</th>
+                                        <th>Autoscaler max (P90)</th>
+                                        <th>Autoscaler max (P99)</th>
+                                        <th>Autoscaler max (Peak)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-top: 2rem;">
+                        <h2>Slot usage by capacity (minute average)</h2>
+                        <div style="height: 400px; position: relative;">
+                            <canvas id="slots-timeline-chart"></canvas>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Slots Simulator View -->
+                <section id="view-slots-simulator" class="view" style="display: none;">
+                    <h1 class="view-title">Edition Matrix Simulation</h1>
+                    
+                    <div class="glass-card params-panel">
+                        <h2>Simulation Parameters</h2>
+                        <p class="section-explanation" style="margin-bottom: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+                            This simulator helps you find the most cost-effective baseline by balancing the cost of idle slots (waste) against the cost of autoscaling (bursts). 
+                            It tests every baseline size and calculates the total bill for different commitment tiers. 
+                            <strong>The turning point with the lowest 1-Year Commit cost will be highlighted.</strong>
+                        </p>
+                        
+                        <div class="params-sections" style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 1.5rem;">
+                            <!-- Section 1: Range -->
+                            <div class="params-group-box" style="background: rgba(255,255,255,0.02); padding: 1rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                                <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--primary);">Simulation Range</h3>
+                                <div class="form-group" style="margin-bottom: 1rem;">
+                                    <label for="sim-max-baseline" class="tooltip-container">
+                                        Max Baseline Slots
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">The highest baseline size the simulator will test. Set this close to your peak usage to save time.</span>
+                                    </label>
+                                    <input type="number" id="sim-max-baseline" value="10000" step="500">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 1rem;">
+                                    <label for="sim-step-size" class="tooltip-container">
+                                        Step Size
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">The increment size for testing baselines (e.g., testing 0, 50, 100...). A smaller step is more precise but takes longer.</span>
+                                    </label>
+                                    <input type="number" id="sim-step-size" value="50" step="10">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sim-lookback-days" class="tooltip-container">
+                                        Lookback Window
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">The number of past days of data to analyze. 30 days is the standard for cost forecasting.</span>
+                                    </label>
+                                    <select id="sim-lookback-days" style="width: 100%; background: rgba(0,0,0,0.2); color: var(--text-primary); border: 1px solid rgba(255,255,255,0.1); padding: 0.5rem; border-radius: 4px;">
+                                        <option value="7">Last 7 Days</option>
+                                        <option value="14">Last 14 Days</option>
+                                        <option value="30" selected>Last 30 Days</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- Section 2: Pricing -->
+                            <div class="params-group-box" style="background: rgba(255,255,255,0.02); padding: 1rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                                <h3 style="font-size: 1rem; margin-bottom: 1rem; color: var(--primary);">Pricing Tiers ($ per slot/hr)</h3>
+                                <div class="form-group" style="margin-bottom: 1rem;">
+                                    <label for="sim-payg-price" class="tooltip-container">
+                                        PAYG Rate
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">Pay-As-You-Go price. This is the premium rate paid for autoscaled slots.</span>
+                                    </label>
+                                    <input type="number" id="sim-payg-price" value="0.06" step="0.01">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 1rem;">
+                                    <label for="sim-commit-1yr-price" class="tooltip-container">
+                                        1-Year Commit
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">Discounted rate if you commit to a baseline for 1 year.</span>
+                                    </label>
+                                    <input type="number" id="sim-commit-1yr-price" value="0.048" step="0.001">
+                                </div>
+                                <div class="form-group">
+                                    <label for="sim-commit-3yr-price" class="tooltip-container">
+                                        3-Year Commit
+                                        <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                        <span class="tooltip-text">Deeply discounted rate if you commit to a baseline for 3 years.</span>
+                                    </label>
+                                    <input type="number" id="sim-commit-3yr-price" value="0.036" step="0.001">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <button id="run-simulation-btn" class="btn-primary" style="width: 100%; padding: 0.75rem; font-size: 1rem;">
+                            <i class="fa-solid fa-play" style="margin-right: 8px;"></i> Run Simulation
+                        </button>
+                    </div>
+
+                    <div id="simulation-results-panel" class="glass-card results-panel" style="margin-top: 2rem; display: none;">
+                        <h2>Edition matrix simulation</h2>
+                        
+                        <!-- Explanation of the simulation -->
+                        <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1.5rem; background: rgba(255, 255, 255, 0.02); padding: 1.25rem; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.05); line-height: 1.6;">
+                            <h3 style="color: var(--primary); font-size: 1rem; margin-bottom: 0.75rem;">How to Read This Simulation</h3>
+                            <p style="margin-bottom: 0.75rem;">This matrix simulates costs across different <strong>Baseline</strong> choices. For each baseline level, we calculate how much capacity would be covered by the fixed baseline vs. how much would spill over into variable <strong>Autoscale</strong> capacity.</p>
+                            
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 0.75rem;">
+                                <div>
+                                    <p style="margin-bottom: 0.25rem;"><strong><i class="fa-solid fa-chart-bar" style="margin-right: 4px;"></i> In Buckets</strong></p>
+                                    <p style="font-size: 0.8rem;">Shows frequency distribution. E.g., how many minutes your total usage was within that specific slot range.</p>
+                                </div>
+                                <div>
+                                    <p style="margin-bottom: 0.25rem;"><strong><i class="fa-solid fa-gauge-high" style="margin-right: 4px;"></i> Utilization %</strong></p>
+                                    <p style="font-size: 0.8rem;">Measures how efficiently that baseline is used. 100% means no slots wasted; lower percentages imply idle capacity.</p>
+                                </div>
+                                <div>
+                                    <p style="margin-bottom: 0.25rem;"><strong><i class="fa-solid fa-arrow-trend-up" style="margin-right: 4px;"></i> Autoscale</strong></p>
+                                    <p style="font-size: 0.8rem;">The volume of compute (in hours or months) that exceeded the baseline and required dynamic scaling.</p>
+                                </div>
+                                <div>
+                                    <p style="margin-bottom: 0.25rem;"><strong><i class="fa-solid fa-money-bill-trend-up" style="margin-right: 4px;"></i> Total Monthly Cost</strong></p>
+                                    <p style="font-size: 0.8rem;">The final calculated sum of (Autoscale + Baseline) projected to a standard 730-hour billing month.</p>
+                                </div>
+                            </div>
+                            
+                            <p style="font-size: 0.8rem; font-style: italic;"><i class="fa-solid fa-lightbulb" style="margin-right: 4px; color: #f59e0b;"></i> <strong>Tip:</strong> Look for the row that minimizes the <strong>Total Monthly Cost</strong> for your target commitment tier to find your optimal efficiency point.</p>
+                        </div>
+                        
+                        <!-- NEW: Summary Table matching the spreadsheet -->
+                        <div style="margin-bottom: 2rem;">
+                            <h3 style="color: var(--primary); margin-bottom: 1rem;">Recommendations</h3>
+                            <table class="display" style="width:100%; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); text-align: center;">
+                                <thead style="background: rgba(255,255,255,0.05);">
+                                    <tr>
+                                        <th style="padding: 10px;">Commitment Type</th>
+                                        <th style="padding: 10px;">Autoscale Slots</th>
+                                        <th style="padding: 10px; background: rgba(34, 197, 94, 0.1);">Recommended Baseline</th>
+                                        <th style="padding: 10px;">Estimated Monthly Cost</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="summary-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; background: rgba(255, 255, 255, 0.02); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.05);">
+                            <i class="fa-solid fa-circle-info" style="margin-right: 6px; color: var(--primary);"></i>
+                            <strong>Note:</strong> The table breaks down costs into <strong>Autoscale Cost</strong> and <strong>Baseline Cost</strong>, and sums them up into the <strong>Total Monthly Cost</strong> columns. Costs are projected to a standard 730-hour billing month.
+                        </div>
+
+                        <!-- UPDATED: Main Matrix Table with Colspans -->
+                        <div class="table-container">
+                            <table id="simulation-table" class="display" style="width:100%">
+                                <thead>
+                                    <!-- Top Header Grouping -->
+                                    <tr style="background: rgba(255, 255, 255, 0.08); text-align: center;">
+                                        <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">In Buckets</th>
+                                        <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Below Baseline</th>
+                                        <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale</th>
+                                        <th colspan="1" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale Cost</th>
+                                        <th colspan="3" style="border-right: 1px solid rgba(255,255,255,0.1); background: rgba(245, 158, 11, 0.15);">Baseline Cost</th>
+                                        <th colspan="3" style="background: rgba(59, 130, 246, 0.15);">Total Monthly Cost</th>
+                                    </tr>
+                                    <!-- Sub Headers -->
+                                    <tr style="background: rgba(255, 255, 255, 0.03);">
+                                        <th>Bucket</th>
+                                        <th style="border-right: 1px solid rgba(255,255,255,0.1);">Minutes</th>
+                                        <th>Slots</th>
+                                        <th style="border-right: 1px solid rgba(255,255,255,0.1);">Utilization %</th>
+                                        <th>Slot-Hours</th>
+                                        <th style="border-right: 1px solid rgba(255,255,255,0.1);">Slot-Month</th>
+                                        <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE PAYG</th>
+                                        <th>EE PAYG</th>
+                                        <th>EE 1 Year</th>
+                                        <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE 3 Years</th>
+                                        <th>EE PAYG</th>
+                                        <th>EE 1 Year</th>
+                                        <th>EE 3 Years</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
             </div>
         </main>
     </div>
+
+    <!-- Footer Disclaimer -->
+    <footer>
+        <div style="text-align: center; padding: 2rem 1rem; color: var(--text-secondary); font-size: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.05); margin-top: 4rem;">
+            <p><i class="fa-solid fa-circle-exclamation" style="margin-right: 6px; color: #f59e0b;"></i> This tool can make mistakes, always double check the numbers and calculations before making changes.</p>
+        </div>
+    </footer>
 
     <!-- Notification Container -->
     <div id="notification-container"></div>

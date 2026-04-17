@@ -6,6 +6,7 @@ A tool for analyzing and optimizing BigQuery storage and compute costs by switch
 
 - **Storage Optimization**: Analyze potential savings by switching between Logical and Physical storage billing models.
 - **Compute Optimization**: Compare On-Demand vs. Editions pricing for your historical query workload.
+- **Edition Matrix Simulation**: Advanced statistical simulation (Geh Bucket Method) to find the optimal baseline for Autoscale scenarios. Projects costs to a standard 730-hour billing month and provides bucket frequency and utilization metrics.
 - **Profile Categorization**: Automatically categorizes queries into **Reservation Candidates**, **On-Demand Candidates**, and **Balanced / Uncertain** based on cost efficiency.
 - **Interactive UI Filtering**: Filter top inefficient queries by their billing profile directly in the dashboard.
 - **Scalable Analysis**: Displays the top **500** most inefficient queries to focus on high-impact optimization opportunities.

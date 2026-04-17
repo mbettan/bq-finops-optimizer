@@ -6,6 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
         orgProject: localStorage.getItem('bq_org_project') || '',
         region: localStorage.getItem('bq_region') || 'region-us',
         storageData: [],
+        slotsData: [],
+        slotsChart: null,
 
     };
 
@@ -14,11 +16,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // Nav
         navStorage: document.getElementById('nav-storage'),
         navJobs: document.getElementById('nav-jobs'),
+        navSlots: document.getElementById('nav-slots'),
+        navSlotsSimulator: document.getElementById('nav-slots-simulator'),
         navSettings: document.getElementById('nav-settings'),
         
         // Views
         viewStorage: document.getElementById('view-storage'),
         viewJobs: document.getElementById('view-jobs'),
+        viewSlots: document.getElementById('view-slots'),
+        viewSlotsSimulator: document.getElementById('view-slots-simulator'),
         viewSettings: document.getElementById('view-settings'),
         
         // Top Bar
@@ -45,6 +51,12 @@ document.addEventListener('DOMContentLoaded', () => {
         stOppCount: document.getElementById('st-opp-count'),
         
 
+        
+        // Slots Form & Elements
+        btnAnalyzeSlots: document.getElementById('analyze-slots-btn'),
+        slLookback: document.getElementById('sl-lookback'),
+        slWindow: document.getElementById('sl-window'),
+        slPercentile: document.getElementById('sl-percentile'),
         
         notificationContainer: document.getElementById('notification-container')
     };
@@ -81,10 +93,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const switchView = (viewId) => {
         elements.viewStorage.style.display = 'none';
         if (elements.viewJobs) elements.viewJobs.style.display = 'none';
+        if (elements.viewSlots) elements.viewSlots.style.display = 'none';
+        if (elements.viewSlotsSimulator) elements.viewSlotsSimulator.style.display = 'none';
         elements.viewSettings.style.display = 'none';
         
         elements.navStorage.classList.remove('active');
         if (elements.navJobs) elements.navJobs.classList.remove('active');
+        if (elements.navSlots) elements.navSlots.classList.remove('active');
+        if (elements.navSlotsSimulator) elements.navSlotsSimulator.classList.remove('active');
         elements.navSettings.classList.remove('active');
 
         if (viewId === 'storage') {
@@ -93,6 +109,12 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (viewId === 'jobs') {
             if (elements.viewJobs) elements.viewJobs.style.display = 'block';
             if (elements.navJobs) elements.navJobs.classList.add('active');
+        } else if (viewId === 'slots') {
+            if (elements.viewSlots) elements.viewSlots.style.display = 'block';
+            if (elements.navSlots) elements.navSlots.classList.add('active');
+        } else if (viewId === 'slots-simulator') {
+            if (elements.viewSlotsSimulator) elements.viewSlotsSimulator.style.display = 'block';
+            if (elements.navSlotsSimulator) elements.navSlotsSimulator.classList.add('active');
         } else if (viewId === 'settings') {
             elements.viewSettings.style.display = 'block';
             elements.navSettings.classList.add('active');
@@ -102,6 +124,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // Event Listeners for Nav
     elements.navStorage.addEventListener('click', (e) => { e.preventDefault(); switchView('storage'); });
     if (elements.navJobs) elements.navJobs.addEventListener('click', (e) => { e.preventDefault(); switchView('jobs'); });
+    if (elements.navSlots) elements.navSlots.addEventListener('click', (e) => { e.preventDefault(); switchView('slots'); });
+    if (elements.navSlotsSimulator) elements.navSlotsSimulator.addEventListener('click', async (e) => { 
+        e.preventDefault(); 
+        switchView('slots-simulator'); 
+        
+        // Fetch peak slots to auto-populate Max Baseline
+        if (state.orgProject) {
+            try {
+                const response = await fetch('/api/slots/peak', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        org_project_id: state.orgProject,
+                        region: state.region,
+                        lookback_days: 30
+                    })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    const peakSlots = data.peak_slots;
+                    const simMaxBaselineInput = document.getElementById('sim-max-baseline');
+                    if (simMaxBaselineInput) {
+                        // Round up to the next 500 for a clean limit, default to 1000 if 0
+                        const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
+                        simMaxBaselineInput.value = recommendedMax;
+                        console.log(`Auto-populated max baseline to ${recommendedMax} based on peak slots ${peakSlots}`);
+                    }
+                }
+            } catch (error) {
+                console.warn("Failed to fetch peak slots for auto-population:", error);
+            }
+        }
+    });
     elements.navSettings.addEventListener('click', (e) => { e.preventDefault(); switchView('settings'); });
 
     // Save Settings
@@ -444,6 +499,342 @@ document.addEventListener('DOMContentLoaded', () => {
 
     
 
+
+    // Analyze Slots
+    if (elements.btnAnalyzeSlots) {
+        elements.btnAnalyzeSlots.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeSlots, true);
+
+            const params = {
+                org_project_id: state.orgProject,
+                region: state.region,
+                lookback_days: parseInt(elements.slLookback.value),
+                window_minutes: parseInt(elements.slWindow.value),
+                percentile: parseInt(elements.slPercentile.value)
+            };
+
+            try {
+                const response = await fetch('/api/slots/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to analyze slots');
+                }
+
+                const responseData = await response.json();
+                renderSlotsResults(responseData, params.percentile);
+
+                // Fetch utilization timeline
+                const utilParams = {
+                    org_project_id: state.orgProject,
+                    region: state.region,
+                    lookback_days: params.lookback_days,
+                    timezone: 'America/New_York'
+                };
+
+                const utilResponse = await fetch('/api/slots/utilization', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(utilParams)
+                });
+
+                if (utilResponse.ok) {
+                    const utilData = await utilResponse.json();
+                    renderSlotsChart(utilData);
+                    
+                    // Automatically set Max Baseline Slots for the simulator based on peak usage
+                    const simMaxBaselineInput = document.getElementById('sim-max-baseline');
+                    if (simMaxBaselineInput && utilData.length > 0) {
+                        const peakSlots = Math.max(...utilData.map(d => d.max_slots));
+                        // Round up to the next 500 for a clean limit, default to 1000 if 0
+                        const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
+                        simMaxBaselineInput.value = recommendedMax;
+                        console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
+                    }
+                } else {
+                    console.warn("Failed to fetch slot utilization timeline");
+                }
+
+                showNotification('Slots analysis completed.', 'success');
+            } catch (error) {
+                console.error("Slots Analysis Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeSlots, false);
+            }
+        });
+    }
+
+    // Slot Simulator
+    const btnRunSimulation = document.getElementById('run-simulation-btn');
+    if (btnRunSimulation) {
+        btnRunSimulation.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
+
+            setLoading(btnRunSimulation, true);
+
+            try {
+                document.getElementById('simulation-results-panel').style.display = 'none';
+                const response = await fetch('/api/slots/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        org_project_id: state.orgProject,
+                        region: state.region,
+                        lookback_days: parseInt(document.getElementById('sim-lookback-days').value),
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        max_baseline: parseInt(document.getElementById('sim-max-baseline').value),
+                        step_size: parseInt(document.getElementById('sim-step-size').value),
+                        payg_price: parseFloat(document.getElementById('sim-payg-price').value),
+                        commit_1yr_price: parseFloat(document.getElementById('sim-commit-1yr-price').value),
+                        commit_3yr_price: parseFloat(document.getElementById('sim-commit-3yr-price').value)
+                    })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Simulation failed');
+                }
+
+                const data = await response.json();
+                renderSimulationResults(data);
+                document.getElementById('simulation-results-panel').style.display = 'block';
+                showNotification('Simulation completed successfully.', 'success');
+            } catch (error) {
+                console.error("Simulation Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(btnRunSimulation, false);
+            }
+        });
+    }
+
+    const renderSimulationResults = (data) => {
+        if ($.fn.DataTable.isDataTable('#simulation-table')) {
+            $('#simulation-table').DataTable().destroy();
+        }
+        
+        // Find optimums for the summary table
+        let bestPayg = data.reduce((prev, curr) => prev.total_payg < curr.total_payg ? prev : curr);
+        let best1Yr = data.reduce((prev, curr) => prev.total_1yr < curr.total_1yr ? prev : curr);
+        let best3Yr = data.reduce((prev, curr) => prev.total_3yr < curr.total_3yr ? prev : curr);
+
+        // Populate Summary Table
+        const summaryHtml = `
+            <tr>
+                <td style="padding: 10px;"><strong>PAYG (0 Commit)</strong></td>
+                <td style="padding: 10px;">${bestPayg.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${bestPayg.slots}</strong></td>
+                <td style="padding: 10px;">$${bestPayg.total_payg.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px;"><strong>1 Year Commit</strong></td>
+                <td style="padding: 10px;">${best1Yr.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${best1Yr.slots}</strong></td>
+                <td style="padding: 10px;">$${best1Yr.total_1yr.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px;"><strong>3 Year Commit</strong></td>
+                <td style="padding: 10px;">${best3Yr.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${best3Yr.slots}</strong></td>
+                <td style="padding: 10px;">$${best3Yr.total_3yr.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+        `;
+        const summaryTbody = document.getElementById('summary-tbody');
+        if (summaryTbody) summaryTbody.innerHTML = summaryHtml;
+
+        // Populate Matrix
+        const table = $('#simulation-table').DataTable({ 
+            pageLength: 15, 
+            responsive: true,
+            ordering: false // Usually disabled on matrix sheets to keep the natural 0->100 progression
+        });
+        table.clear();
+
+        const formatMoney = (val) => `$${val.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
+
+        data.forEach(row => {
+            table.row.add([
+                row.bucket,
+                row.minutes.toLocaleString(),
+                row.slots,
+                `${row.utilization_pct.toFixed(2)}%`,
+                row.autoscale_slot_hours.toLocaleString(),
+                row.autoscale_slot_months.toLocaleString(),
+                formatMoney(row.cost_autoscale_payg),
+                formatMoney(row.cost_base_payg),
+                formatMoney(row.cost_base_1yr),
+                formatMoney(row.cost_base_3yr),
+                formatMoney(row.total_payg),
+                formatMoney(row.total_1yr),
+                formatMoney(row.total_3yr)
+            ]).node();
+        });
+
+        table.draw();
+    };
+
+    const renderSlotsResults = (data, targetPercentile) => {
+        const reservationsTbody = document.querySelector('#current-reservations-table tbody');
+        const recommendationsTbody = document.querySelector('#slots-recommendations-table tbody');
+        
+        if (reservationsTbody) reservationsTbody.innerHTML = '';
+        if (recommendationsTbody) recommendationsTbody.innerHTML = '';
+
+        // Update label
+        const lblPercentile = document.getElementById('lbl-percentile');
+        if (lblPercentile) lblPercentile.textContent = targetPercentile;
+
+        // Render Current Reservations
+        if (data.current_reservations) {
+            data.current_reservations.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row.reservation_id}</td>
+                    <td>${row.admin_project_id || ''}</td>
+                    <td>${row.region || ''}</td>
+                    <td>${row.edition}</td>
+                    <td>${formatNumber(row.current_baseline)}</td>
+                    <td>${formatNumber(row.current_max_slots)}</td>
+                `;
+                reservationsTbody.appendChild(tr);
+            });
+        }
+
+        // Render Recommendations
+        if (data.recommendations) {
+            data.recommendations.forEach(row => {
+                const tr = document.createElement('tr');
+                
+                // Clean up reservation ID to remove project and region prefix
+                let displayResId = row.reservation_id;
+                if (displayResId && displayResId.includes('.')) {
+                    displayResId = displayResId.split('.').pop();
+                }
+                
+                tr.innerHTML = `
+                    <td>${displayResId}</td>
+                    <td><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td>${formatNumber(row.recommended_max_p90)}</td>
+                    <td>${formatNumber(row.recommended_max_p99)}</td>
+                    <td>${formatNumber(row.recommended_max_peak)}</td>
+                `;
+                recommendationsTbody.appendChild(tr);
+            });
+        }
+
+        // Initialize DataTables
+        if ($.fn.DataTable.isDataTable('#current-reservations-table')) {
+            $('#current-reservations-table').DataTable().destroy();
+        }
+        $('#current-reservations-table').DataTable({ pageLength: 5, responsive: true });
+
+        if ($.fn.DataTable.isDataTable('#slots-recommendations-table')) {
+            $('#slots-recommendations-table').DataTable().destroy();
+        }
+        $('#slots-recommendations-table').DataTable({ pageLength: 5, order: [[1, 'desc']], responsive: true });
+    };
+
+    const renderSlotsChart = (data) => {
+        const ctx = document.getElementById('slots-timeline-chart').getContext('2d');
+        
+        if (state.slotsChart) {
+            state.slotsChart.destroy();
+        }
+        
+        // Reverse data to show chronological order (API returns descending)
+        const reversedData = [...data].reverse();
+        
+        const labels = reversedData.map(d => {
+            const date = new Date(d.timestamp);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        });
+        
+        const timeAvg = reversedData.map(d => d.time_average);
+        const p90 = reversedData.map(d => d.p90_slots);
+        const maxSlots = reversedData.map(d => d.max_slots);
+        
+        state.slotsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Time Average',
+                        data: timeAvg,
+                        borderColor: '#38bdf8',
+                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        borderWidth: 1.5
+                    },
+                    {
+                        label: 'P90',
+                        data: p90,
+                        borderColor: '#a855f7',
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        borderWidth: 1.5
+                    },
+                    {
+                        label: 'Max Slots',
+                        data: maxSlots,
+                        borderColor: '#ef4444',
+                        borderDash: [2, 2],
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 0,
+                        borderWidth: 1.5
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Slots'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            }
+        });
+    };
 
     // Helpers
     const formatCurrency = (amount) => {
