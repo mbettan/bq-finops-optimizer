@@ -173,6 +173,49 @@
                     </div>
                 </div>
             </div>
+
+            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+                <p>Simulating an <strong>Edition Matrix Simulation</strong> to find the optimal baseline for Autoscale scenarios.</p>
+            </div>
+
+            <!-- Simulation Demo Card -->
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+                <!-- Table Container -->
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        <table class="showcase-table">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr style="background: rgba(255, 255, 255, 0.08); text-align: center;">
+                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">In Buckets</th>
+                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Below Baseline</th>
+                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale</th>
+                                    <th colspan="1" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale Cost</th>
+                                    <th colspan="3" style="border-right: 1px solid rgba(255,255,255,0.1); background: rgba(245, 158, 11, 0.15);">Baseline Cost</th>
+                                    <th colspan="3" style="background: rgba(59, 130, 246, 0.15);">Total Monthly Cost</th>
+                                </tr>
+                                <tr style="background: rgba(255, 255, 255, 0.03);">
+                                    <th>Bucket</th>
+                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Minutes</th>
+                                    <th>Slots</th>
+                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Utilization %</th>
+                                    <th>Slot-Hours</th>
+                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Slot-Month</th>
+                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE PAYG</th>
+                                    <th>EE PAYG</th>
+                                    <th>EE 1 Year</th>
+                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE 3 Years</th>
+                                    <th>EE PAYG</th>
+                                    <th>EE 1 Year</th>
+                                    <th>EE 3 Years</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mock-simulation-table-body">
+                                <!-- Data injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -213,6 +256,13 @@
                         <h3>Actionable DDL Statements</h3>
                         <p>The tool doesn't just complain; it generates the exact `ALTER SCHEMA` code you need to fix the issue. Run it directly or copy to your IAC pipeline.</p>
                     </div>
+                </div>
+
+                <!-- Simulation -->
+                <div class="bento-card">
+                    <div class="bento-icon"><i class="fas fa-chart-pie"></i></div>
+                    <h3>Edition Matrix Simulation</h3>
+                    <p>Advanced statistical simulation to find the optimal baseline for Autoscale scenarios, projecting costs to a standard 730-hour billing month.</p>
                 </div>
             </div>
         </div>
@@ -1405,6 +1455,77 @@
                 <td style="padding: 1rem; color: ${row.savings > 0 ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
             `;
             computeTbody.appendChild(tr);
+        });
+
+        // Mock Data for Simulation
+        const mockSimulationData = [
+          {
+            "bucket": "[0 → 0]",
+            "mins": 1440,
+            "slots": 0,
+            "utilization": 0,
+            "slot_hours": 12000,
+            "slot_month": 16.4,
+            "autoscale_cost": 12000,
+            "base_payg": 0,
+            "base_1yr": 0,
+            "base_3yr": 0,
+            "total_payg": 12000,
+            "total_1yr": 12000,
+            "total_3yr": 12000
+          },
+          {
+            "bucket": "[0 → 100]",
+            "mins": 720,
+            "slots": 100,
+            "utilization": 50,
+            "slot_hours": 6000,
+            "slot_month": 8.2,
+            "autoscale_cost": 6000,
+            "base_payg": 5000,
+            "base_1yr": 4000,
+            "base_3yr": 3000,
+            "total_payg": 11000,
+            "total_1yr": 10000,
+            "total_3yr": 9000
+          },
+          {
+            "bucket": "[100 → 200]",
+            "mins": 360,
+            "slots": 200,
+            "utilization": 80,
+            "slot_hours": 2000,
+            "slot_month": 2.7,
+            "autoscale_cost": 2000,
+            "base_payg": 10000,
+            "base_1yr": 8000,
+            "base_3yr": 6000,
+            "total_payg": 12000,
+            "total_1yr": 10000,
+            "total_3yr": 8000
+          }
+        ];
+
+        const simTbody = document.getElementById('mock-simulation-table-body');
+        mockSimulationData.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+            tr.innerHTML = `
+                <td style="padding: 0.75rem; color: var(--light); text-align: center;">${row.bucket}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.mins}</td>
+                <td style="padding: 0.75rem; color: var(--light); text-align: center;">${row.slots}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.utilization}%</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">${row.slot_hours}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.slot_month}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">$${row.autoscale_cost}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.base_payg}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.base_1yr}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">$${row.base_3yr}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.total_payg}</td>
+                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.total_1yr}</td>
+                <td style="padding: 0.75rem; color: var(--light); text-align: center; font-weight: 700; background: rgba(59, 130, 246, 0.1);">$${row.total_3yr}</td>
+            `;
+            simTbody.appendChild(tr);
         });
     </script>
 </body>

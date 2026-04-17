@@ -7,6 +7,7 @@ from google.cloud import bigquery
 import os
 import logging
 import math
+import numpy as np
 
 app = FastAPI()
 
@@ -422,6 +423,363 @@ async def analyze_jobs(params: JobAnalysisParams):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class SlotsParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    window_minutes: int = 5
+    percentile: int = 90
 
+@app.post("/api/slots/analyze")
+async def analyze_slots(params: SlotsParams):
+    logger.info(f"Slots Analysis Request: org_project={params.org_project_id}, region={params.region}, window={params.window_minutes}m, P{params.percentile}")
+    
+    window_seconds = params.window_minutes * 60
+    
+    recommendations_sql = f"""
+    WITH per_second_usage AS (
+        SELECT
+          period_start,
+          reservation_id,
+          SUM(period_slot_ms) / 1000 AS concurrent_slots
+        FROM
+          `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+        WHERE 
+          period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          AND reservation_id IS NOT NULL
+        GROUP BY
+          period_start, reservation_id
+    ),
+    windowed_stats AS (
+        SELECT
+          TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(period_start), {window_seconds}) * {window_seconds}) AS window_start,
+          reservation_id,
+          SUM(concurrent_slots) / {window_seconds} AS avg_slots,
+          MAX(concurrent_slots) AS max_slots
+        FROM per_second_usage
+        GROUP BY window_start, reservation_id
+    ),
+    per_res AS (
+        SELECT 
+            reservation_id,
+            APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
+            APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
+            APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
+            MAX(max_slots) AS recommended_max_peak
+        FROM 
+            windowed_stats
+        GROUP BY 
+            reservation_id
+    ),
+    merged_per_second AS (
+        SELECT
+          period_start,
+          SUM(concurrent_slots) AS concurrent_slots
+        FROM
+          per_second_usage
+        GROUP BY
+          period_start
+    ),
+    merged_windowed AS (
+        SELECT
+          TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(period_start), {window_seconds}) * {window_seconds}) AS window_start,
+          SUM(concurrent_slots) / {window_seconds} AS avg_slots,
+          MAX(concurrent_slots) AS max_slots
+        FROM merged_per_second
+        GROUP BY window_start
+    ),
+    merged_res AS (
+        SELECT 
+            'MERGED (Simulated)' AS reservation_id,
+            APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
+            APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
+            APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
+            MAX(max_slots) AS recommended_max_peak
+        FROM 
+            merged_windowed
+    )
+    SELECT * FROM per_res
+    UNION ALL
+    SELECT * FROM merged_res
+    """
+    
+    reservations_sql = f"""
+    SELECT
+      reservation_name AS reservation_id,
+      slot_capacity AS current_baseline,
+      autoscale.max_slots AS current_max_slots,
+      edition
+    FROM
+      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
+    """
+    
+    logger.info(f"Executing Slots Recommendations Query")
+    logger.info(f"SQL QUERY (Recommendations):\n{recommendations_sql}")
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        
+        recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations")
+        recommendations_data = []
+        for row in recommendations_results:
+            d = dict(row)
+            for key in ['recommended_baseline', 'recommended_max_p90', 'recommended_max_p99', 'recommended_max_peak']:
+                if key in d and d[key] is not None:
+                    d[key] = int(round(d[key] / 50.0) * 50)
+            recommendations_data.append(d)
+        
+        current_reservations_data = []
+        
+        # Extract admin projects from reservation IDs in recommendations
+        admin_projects = set()
+        for row in recommendations_data:
+            res_id = row.get('reservation_id')
+            if res_id and ':' in res_id:
+                # Format is usually project_id:region.reservation_name
+                parts = res_id.split(':')
+                admin_projects.add(parts[0])
+                
+        # Fallback to the provided org_project_id if no specific admin project found
+        if not admin_projects:
+            admin_projects.add(params.org_project_id)
+            
+        for admin_proj in admin_projects:
+            reservations_sql = f"""
+            SELECT
+              reservation_name AS reservation_id,
+              slot_capacity AS current_baseline,
+              autoscale.max_slots AS current_max_slots,
+              edition
+            FROM
+              `{admin_proj}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
+            """
+            try:
+                logger.info(f"Executing Current Reservations Query for project {admin_proj}")
+                logger.info(f"SQL QUERY (Reservations):\n{reservations_sql}")
+                reservations_results = run_query_and_log(scoped_client, reservations_sql, f"Current Reservations ({admin_proj})")
+                for row in reservations_results:
+                    d = dict(row)
+                    d['admin_project_id'] = admin_proj
+                    d['region'] = params.region
+                    current_reservations_data.append(d)
+            except Exception as res_err:
+                logger.warning(f"Failed to query RESERVATIONS in {admin_proj}: {res_err}")
+            
+        return {
+            "recommendations": recommendations_data,
+            "current_reservations": current_reservations_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Slots analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SlotUtilizationParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    timezone: str = "America/New_York"
+
+@app.post("/api/slots/utilization")
+async def analyze_slot_utilization(params: SlotUtilizationParams):
+    logger.info(f"Slot Utilization Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    sql = f"""
+    SELECT
+      TIMESTAMP_TRUNC(period_start, MINUTE) AS period_min,
+      SUM(period_slot_ms) / 1000 / 60 AS time_average,
+      MAX(period_slot_ms / 1000) AS max_slots,
+      APPROX_QUANTILES(period_slot_ms / 1000, 100)[OFFSET(90)] AS p90_slots,
+      APPROX_QUANTILES(period_slot_ms / 1000, 100)[OFFSET(99)] AS p99_slots,
+      SUM(total_bytes_billed) / 60 AS bytes_billed_avg,
+      SUM(total_bytes_processed) / 60 AS bytes_processed_avg
+    FROM
+      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+    WHERE
+      period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+      AND job_type = 'QUERY'
+      AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+    GROUP BY
+      period_min
+    ORDER BY period_min ASC
+    """
+    
+    logger.info(f"Executing Slot Utilization Query")
+    logger.info(f"SQL QUERY:\n{sql}")
+    
+    try:
+        from zoneinfo import ZoneInfo
+        try:
+            tz = ZoneInfo(params.timezone)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {params.timezone}")
+
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data")
+        
+        processed_results = []
+        for row in results:
+            ts = row['period_min']
+            ts_tz = ts.astimezone(tz)
+            
+            processed_results.append({
+                "timestamp": ts_tz.isoformat(),
+                "max_slots": round(row['max_slots'] or 0, 2),
+                "median_slots": 0,
+                "p90_slots": round(row['p90_slots'] or 0, 3),
+                "p99_slots": round(row['p99_slots'] or 0, 3),
+                "time_average": round(row['time_average'] or 0, 4),
+                "bytes_billed_avg": round(row['bytes_billed_avg'] or 0, 2),
+                "bytes_processed_avg": round(row['bytes_processed_avg'] or 0, 4)
+            })
+            
+        processed_results.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return processed_results
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Slot utilization analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SlotSimulationParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    timezone: str = "America/New_York"
+    max_baseline: int = 10000
+    step_size: int = 50
+    payg_price: float = 0.06
+    commit_1yr_price: float = 0.048
+    commit_3yr_price: float = 0.036
+
+@app.post("/api/slots/simulate")
+async def simulate_slots(params: SlotSimulationParams):
+    logger.info(f"Slot Simulation Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    sql = f"""
+    SELECT
+      TIMESTAMP_TRUNC(period_start, MINUTE) AS usage_minute,
+      SUM(period_slot_ms) / (1000 * 60) AS avg_slots
+    FROM `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+    WHERE 
+      period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+      AND job_type = 'QUERY'
+      AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    
+    logger.info(f"Executing Slot Simulation Raw Data Query")
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data")
+        
+        avg_slots_list = [float(row['avg_slots'] or 0.0) for row in results]
+        avg_slots_array = np.array(avg_slots_list)
+        if len(avg_slots_array) == 0:
+            return []
+            
+        # Time calculations
+        actual_hours_in_data = params.lookback_days * 24.0
+        actual_minutes_in_data = actual_hours_in_data * 60.0
+        
+        # BQ Editions are billed on a standard 730-hour month. 
+        # We calculate a multiplier to project the X days of data into a full 30.41-day month.
+        monthly_multiplier = 730.0 / actual_hours_in_data
+        
+        processed_results = []
+        sum_all_slots = np.sum(avg_slots_array)
+        logger.info(f"Simulation data loaded: {len(avg_slots_array)} minutes of usage.")
+        
+        for baseline in range(0, params.max_baseline + params.step_size, params.step_size):
+            # 1. Bucket Calculations (How many minutes spent in this exact slot band)
+            if baseline == 0:
+                bucket_name = "[0 → 0]"
+                bucket_mins = int(np.sum(avg_slots_array == 0))
+            else:
+                prev_baseline = baseline - params.step_size
+                bucket_name = f"[{prev_baseline} → {baseline}]"
+                bucket_mins = int(np.sum((avg_slots_array > prev_baseline) & (avg_slots_array <= baseline)))
+            
+            # 2. Autoscale Calculations (Projected to a full month)
+            autoscale_slot_hours_raw = float(np.maximum(avg_slots_array - baseline, 0).sum()) / 60.0
+            autoscale_slot_hours_mo = autoscale_slot_hours_raw * monthly_multiplier
+            autoscale_slot_months = autoscale_slot_hours_mo / 730.0
+            
+            # 3. Utilization Calculations (How well is the baseline being used?)
+            max_baseline_hours_raw = baseline * actual_hours_in_data
+            idle_slot_hours_raw = autoscale_slot_hours_raw - (sum_all_slots - (actual_minutes_in_data * baseline)) / 60.0
+            idle_slot_hours_raw = max(0, idle_slot_hours_raw)
+            
+            used_baseline_hours_raw = max_baseline_hours_raw - idle_slot_hours_raw
+            utilization_pct = (used_baseline_hours_raw / max_baseline_hours_raw) if max_baseline_hours_raw > 0 else 0.0
+            
+            # 4. Cost Calculations (Monthly)
+            autoscale_cost_payg = autoscale_slot_hours_mo * params.payg_price
+            
+            baseline_cost_payg = baseline * 730.0 * params.payg_price
+            baseline_cost_1yr  = baseline * 730.0 * params.commit_1yr_price
+            baseline_cost_3yr  = baseline * 730.0 * params.commit_3yr_price
+            
+            processed_results.append({
+                "bucket": bucket_name,
+                "minutes": bucket_mins,
+                "slots": baseline,
+                "utilization_pct": round(utilization_pct * 100, 2),
+                "autoscale_slot_hours": round(autoscale_slot_hours_mo, 0),
+                "autoscale_slot_months": round(autoscale_slot_months, 0),
+                "cost_autoscale_payg": round(autoscale_cost_payg, 2),
+                "cost_base_payg": round(baseline_cost_payg, 2),
+                "cost_base_1yr": round(baseline_cost_1yr, 2),
+                "cost_base_3yr": round(baseline_cost_3yr, 2),
+                "total_payg": round(baseline_cost_payg + autoscale_cost_payg, 2),
+                "total_1yr": round(baseline_cost_1yr + autoscale_cost_payg, 2),
+                "total_3yr": round(baseline_cost_3yr + autoscale_cost_payg, 2)
+            })
+            
+        logger.info(f"Slot simulation completed with {len(processed_results)} results")
+        return processed_results
+        
+    except Exception as e:
+        logger.error(f"Slot simulation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PeakSlotsParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 30
+
+@app.post("/api/slots/peak")
+async def get_peak_slots(params: PeakSlotsParams):
+    sql = f"""
+    WITH concurrent_usage AS (
+        SELECT period_start, SUM(period_slot_ms) / 1000 AS concurrent_slots
+        FROM `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+        WHERE 
+          period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          AND job_type = 'QUERY'
+          AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+        GROUP BY 1
+    )
+    SELECT MAX(concurrent_slots) AS peak_slots FROM concurrent_usage
+    """
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        results = run_query_and_log(scoped_client, sql, "Get Peak Slots")
+        
+        peak_slots = 0
+        for row in results:
+            peak_slots = float(row['peak_slots']) if row['peak_slots'] else 0
+            
+        return {"peak_slots": peak_slots}
+        
+    except Exception as e:
+        logger.error(f"Failed to get peak slots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 

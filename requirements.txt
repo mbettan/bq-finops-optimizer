@@ -3,4 +3,5 @@ uvicorn
 google-cloud-bigquery
 pydantic
 pyOpenSSL
+numpy
 
