@@ -174,6 +174,57 @@
                 </div>
             </div>
 
+            <!-- Slot Optimizer Chart Demo Card -->
+            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+                <p>Visualizing <strong>Slot Utilization</strong> at high-resolution to find the perfect baseline.</p>
+            </div>
+
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); padding: 2rem;">
+                    <h3 style="color: var(--light); margin-bottom: 1rem;">Slot Utilization Timeline</h3>
+                    
+                    <!-- Chart area -->
+                    <div style="height: 200px; position: relative; display: flex; align-items: flex-end; gap: 4px; padding-top: 2rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                        <!-- Baseline line -->
+                        <div style="position: absolute; top: 80px; left: 0; right: 0; border-top: 2px dashed #f59e0b; z-index: 2;">
+                            <span style="position: absolute; top: -25px; right: 0; color: #f59e0b; font-size: 0.75rem; font-weight: 600;">Recommended Baseline: 100 Slots</span>
+                        </div>
+                        
+                        <!-- Bars representing usage -->
+                        <div style="height: 20%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 35%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 50%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 75%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <!-- Peak above baseline -->
+                        <div style="height: 90%; width: 6%; background: #ef4444; border-radius: 4px 4px 0 0; position: relative;">
+                            <span style="position: absolute; top: -25px; left: 50%; transform: translateX(-50%); color: #ef4444; font-size: 0.75rem; font-weight: 600;">Peak</span>
+                        </div>
+                        <div style="height: 60%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 40%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 30%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 55%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 85%; width: 6%; background: #ef4444; border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 45%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 25%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 20%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 15%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                        <div style="height: 10%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
+                    </div>
+                    
+                    <!-- Legend -->
+                    <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1.5rem; font-size: 0.85rem;">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <div style="width: 12px; height: 12px; background: rgba(96, 165, 250, 0.3); border-radius: 2px;"></div>
+                            <span style="color: var(--muted);">Baseline Coverage</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <div style="width: 12px; height: 12px; background: #ef4444; border-radius: 2px;"></div>
+                            <span style="color: var(--muted);">Autoscale Spillover</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Simulating an <strong>Edition Matrix Simulation</strong> to find the optimal baseline for Autoscale scenarios.</p>
             </div>
