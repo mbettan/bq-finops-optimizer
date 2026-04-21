@@ -240,6 +240,63 @@
             </div>
 
             <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+                <p>Identifying <strong>Top Offending Queries</strong> causing inefficient autoscaler activations.</p>
+            </div>
+
+            <!-- Workload Profiler Demo Card -->
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+                <!-- Table Container -->
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        <table class="showcase-table">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr>
+                                    <th style="padding: 1rem; color: var(--light); width: 30%;">Query Text</th>
+                                    <th style="padding: 1rem; color: var(--light);">Project</th>
+                                    <th style="padding: 1rem; color: var(--light);">Job ID</th>
+                                    <th style="padding: 1rem; color: var(--light);">Frequency</th>
+                                    <th style="padding: 1rem; color: var(--light);">Avg Slot Hours</th>
+                                    <th style="padding: 1rem; color: var(--light);">Avg Duration (s)</th>
+                                    <th style="padding: 1rem; color: var(--light);">Avg Bytes</th>
+                                    <th style="padding: 1rem; color: var(--light);">Rec</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mock-profiler-table-body">
+                                <!-- Data injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+                <p>Identifying <strong>Top Spenders</strong> to allocate costs and optimize usage.</p>
+            </div>
+
+            <!-- Top Spenders Demo Card -->
+            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+                <!-- Table Container -->
+                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
+                    <div style="max-height: 400px; overflow-y: auto;">
+                        <table class="showcase-table">
+                            <thead style="position: sticky; top: 0; z-index: 1;">
+                                <tr>
+                                    <th style="padding: 1rem; color: var(--light);">User Email</th>
+                                    <th style="padding: 1rem; color: var(--light);">Query Count</th>
+                                    <th style="padding: 1rem; color: var(--light);">Total Data Billed</th>
+                                    <th style="padding: 1rem; color: var(--light);">Total Slot Hours</th>
+                                    <th style="padding: 1rem; color: var(--light);">Est. Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody id="mock-top-spenders-table-body">
+                                <!-- Data injected by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Simulating an <strong>Edition Matrix Simulation</strong> to find the optimal baseline for Autoscale scenarios.</p>
             </div>
 
@@ -328,6 +385,22 @@
                     <div class="bento-icon"><i class="fas fa-chart-pie"></i></div>
                     <h3>Edition Matrix Simulation</h3>
                     <p>Advanced statistical simulation to find the optimal baseline for Autoscale scenarios, projecting costs to a standard 730-hour billing month.</p>
+                </div>
+
+                <!-- Cost Attribution -->
+                <div class="bento-card bento-large">
+                    <div class="bento-icon"><i class="fas fa-calculator"></i></div>
+                    <div>
+                        <h3>Hybrid Cost Attribution</h3>
+                        <p>Accurately attribute BigQuery Editions costs to individual projects. Proportionally distribute reservation waste and eliminate the "admin dump" mystery.</p>
+                    </div>
+                </div>
+
+                <!-- Capacity Planning -->
+                <div class="bento-card">
+                    <div class="bento-icon"><i class="fas fa-clock"></i></div>
+                    <h3>Capacity Planning</h3>
+                    <p>Calculate exact slot-hours spent on unpredictable autoscaling vs uncommitted baseline capacity down to the second.</p>
                 </div>
             </div>
         </div>
@@ -1521,6 +1594,110 @@
             `;
             computeTbody.appendChild(tr);
         });
+
+        // Mock Data for Workload Profiler
+        const mockProfilerData = [
+            {
+                "query": "COMMIT TRANSACTION",
+                "project": "identity-services-2",
+                "job_id": "job_commit_123",
+                "frequency": 21456,
+                "avg_slot_hours": 0.000138,
+                "avg_duration_seconds": 0.01,
+                "avg_bytes": 0,
+                "recommendation": "Candidate"
+            },
+            {
+                "query": "BEGIN TRANSACTION",
+                "project": "identity-services-2",
+                "job_id": "job_begin_123",
+                "frequency": 24188,
+                "avg_slot_hours": 0.000000,
+                "avg_duration_seconds": 0.00,
+                "avg_bytes": 0,
+                "recommendation": "Candidate"
+            },
+            {
+                "query": "SELECT * FROM `analytics_project.ecommerce.products`",
+                "project": "ecommerce-web-5",
+                "job_id": "job_select_456",
+                "frequency": 5259,
+                "avg_slot_hours": 0.000000,
+                "avg_duration_seconds": 0.00,
+                "avg_bytes": 1048576,
+                "recommendation": "Candidate"
+            },
+            {
+                "query": "INSERT INTO `marketing_project.campaigns.metrics`",
+                "project": "marketing-analytics-5",
+                "job_id": "job_insert_789",
+                "frequency": 7642,
+                "avg_slot_hours": 0.000000,
+                "avg_duration_seconds": 1.22,
+                "avg_bytes": 0,
+                "recommendation": "Candidate"
+            }
+        ];
+
+        // Mock Data for Top Spenders
+        const mockTopSpendersData = [
+            {
+                "user": "airflow@company.com",
+                "count": 145000,
+                "bytes": 1567621120000,
+                "slots": 120.5,
+                "cost": 1250.00
+            },
+            {
+                "user": "analyst@company.com",
+                "count": 25000,
+                "bytes": 500000000000,
+                "slots": 45.2,
+                "cost": 350.00
+            },
+            {
+                "user": "powerbi-svc@company.com",
+                "count": 12000,
+                "bytes": 100000000000,
+                "slots": 15.6,
+                "cost": 75.00
+            }
+        ];
+
+        const profilerTbody = document.getElementById('mock-profiler-table-body');
+        if (profilerTbody) {
+            mockProfilerData.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+                tr.innerHTML = `
+                    <td style="padding: 1rem; color: var(--light); font-family: monospace; font-size: 0.8rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.query}">${row.query}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.project}</td>
+                    <td style="padding: 1rem; color: var(--muted); font-family: monospace; font-size: 0.75rem;">${row.job_id}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.frequency.toLocaleString()}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.avg_slot_hours.toFixed(4)}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.avg_duration_seconds.toFixed(2)}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${(row.avg_bytes / (1024 * 1024)).toFixed(2)} MB</td>
+                    <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: var(--primary); color: var(--primary);">${row.recommendation}</span></td>
+                `;
+                profilerTbody.appendChild(tr);
+            });
+        }
+
+        const spendersTbody = document.getElementById('mock-top-spenders-table-body');
+        if (spendersTbody) {
+            mockTopSpendersData.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+                tr.innerHTML = `
+                    <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.user}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.count.toLocaleString()}</td>
+                    <td style="padding: 1rem; color: var(--muted);">${(row.bytes / (1024**4)).toFixed(2)} TB</td>
+                    <td style="padding: 1rem; color: var(--muted);">${row.slots.toFixed(1)}</td>
+                    <td style="padding: 1rem; color: var(--secondary); font-weight: 700;">$${row.cost.toFixed(2)}</td>
+                `;
+                spendersTbody.appendChild(tr);
+            });
+        }
 
         // Mock Data for Simulation
         const mockSimulationData = [

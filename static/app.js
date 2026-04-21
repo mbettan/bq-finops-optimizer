@@ -4,11 +4,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // State
     const state = {
         orgProject: localStorage.getItem('bq_org_project') || '',
+        adminProject: localStorage.getItem('bq_admin_project') || '',
         region: localStorage.getItem('bq_region') || 'region-us',
         storageData: [],
         slotsData: [],
         slotsChart: null,
-
+        actualProvisioningChart: null
     };
 
     // DOM Elements
@@ -29,10 +30,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Top Bar
         currentProject: document.getElementById('current-project'),
+        currentAdminProject: document.getElementById('current-admin-project'),
         currentRegion: document.getElementById('current-region'),
         
         // Settings Form
         cfgOrgProject: document.getElementById('cfg-org-project'),
+        cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         
@@ -56,9 +59,32 @@ document.addEventListener('DOMContentLoaded', () => {
         btnAnalyzeSlots: document.getElementById('analyze-slots-btn'),
         slLookback: document.getElementById('sl-lookback'),
         slWindow: document.getElementById('sl-window'),
+        slResolution: document.getElementById('sl-resolution'),
         slPercentile: document.getElementById('sl-percentile'),
         
-        notificationContainer: document.getElementById('notification-container')
+        notificationContainer: document.getElementById('notification-container'),
+        
+        // Cost Attribution
+        navCostAttribution: document.getElementById('nav-cost-attribution'),
+        viewCostAttribution: document.getElementById('view-cost-attribution'),
+        
+        // Workload Profiler
+        navProfiler: document.getElementById('nav-profiler'),
+        viewProfiler: document.getElementById('view-profiler'),
+        btnAnalyzeProfiler: document.getElementById('analyze-profiler-btn'),
+        btnCalculateCostAttribution: document.getElementById('calculate-cost-attribution-btn'),
+        cbWasteRule: document.getElementById('cb-waste-rule'),
+        cbCentralProject: document.getElementById('cb-central-project'),
+        cbBorrowingRule: document.getElementById('cb-borrowing-rule'),
+        cbMonthStart: document.getElementById('cb-month-start'),
+        cbMonthEnd: document.getElementById('cb-month-end'),
+        cbReservationsContainer: document.getElementById('cb-reservations-container'),
+        cbAddReservationBtn: document.getElementById('cb-add-reservation-btn'),
+        
+        // Top Spenders
+        navUsers: document.getElementById('nav-users'),
+        viewUsers: document.getElementById('view-users'),
+        btnAnalyzeUsers: document.getElementById('analyze-users-btn')
     };
 
     // Custom Filter for DataTables
@@ -78,10 +104,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize UI from state
     const initUI = () => {
         elements.cfgOrgProject.value = state.orgProject;
+        if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
         
         elements.currentProject.textContent = state.orgProject || 'Not Set';
+        if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
         elements.currentRegion.textContent = state.region;
+
+        // Set default dates for cost attribution (previous month)
+        const now = new Date();
+        const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+        
+        const formatDate = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+        
+        if (elements.cbMonthStart) elements.cbMonthStart.value = formatDate(prevMonthStart);
+        if (elements.cbMonthEnd) elements.cbMonthEnd.value = formatDate(prevMonthEnd);
 
         if (!state.orgProject) {
             showNotification('Please configure GCP Settings first.', 'warning');
@@ -95,12 +138,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (elements.viewJobs) elements.viewJobs.style.display = 'none';
         if (elements.viewSlots) elements.viewSlots.style.display = 'none';
         if (elements.viewSlotsSimulator) elements.viewSlotsSimulator.style.display = 'none';
+        if (elements.viewCostAttribution) elements.viewCostAttribution.style.display = 'none';
+        if (elements.viewProfiler) elements.viewProfiler.style.display = 'none';
+        if (elements.viewUsers) elements.viewUsers.style.display = 'none';
         elements.viewSettings.style.display = 'none';
         
         elements.navStorage.classList.remove('active');
         if (elements.navJobs) elements.navJobs.classList.remove('active');
         if (elements.navSlots) elements.navSlots.classList.remove('active');
         if (elements.navSlotsSimulator) elements.navSlotsSimulator.classList.remove('active');
+        if (elements.navCostAttribution) elements.navCostAttribution.classList.remove('active');
+        if (elements.navProfiler) elements.navProfiler.classList.remove('active');
+        if (elements.navUsers) elements.navUsers.classList.remove('active');
         elements.navSettings.classList.remove('active');
 
         if (viewId === 'storage') {
@@ -115,6 +164,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (viewId === 'slots-simulator') {
             if (elements.viewSlotsSimulator) elements.viewSlotsSimulator.style.display = 'block';
             if (elements.navSlotsSimulator) elements.navSlotsSimulator.classList.add('active');
+        } else if (viewId === 'cost-attribution') {
+            if (elements.viewCostAttribution) elements.viewCostAttribution.style.display = 'block';
+            if (elements.navCostAttribution) elements.navCostAttribution.classList.add('active');
+        } else if (viewId === 'profiler') {
+            if (elements.viewProfiler) elements.viewProfiler.style.display = 'block';
+            if (elements.navProfiler) elements.navProfiler.classList.add('active');
+        } else if (viewId === 'users') {
+            if (elements.viewUsers) elements.viewUsers.style.display = 'block';
+            if (elements.navUsers) elements.navUsers.classList.add('active');
         } else if (viewId === 'settings') {
             elements.viewSettings.style.display = 'block';
             elements.navSettings.classList.add('active');
@@ -125,6 +183,8 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.navStorage.addEventListener('click', (e) => { e.preventDefault(); switchView('storage'); });
     if (elements.navJobs) elements.navJobs.addEventListener('click', (e) => { e.preventDefault(); switchView('jobs'); });
     if (elements.navSlots) elements.navSlots.addEventListener('click', (e) => { e.preventDefault(); switchView('slots'); });
+    if (elements.navProfiler) elements.navProfiler.addEventListener('click', (e) => { e.preventDefault(); switchView('profiler'); });
+    if (elements.navUsers) elements.navUsers.addEventListener('click', (e) => { e.preventDefault(); switchView('users'); });
     if (elements.navSlotsSimulator) elements.navSlotsSimulator.addEventListener('click', async (e) => { 
         e.preventDefault(); 
         switchView('slots-simulator'); 
@@ -162,13 +222,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // Save Settings
     elements.saveSettingsBtn.addEventListener('click', () => {
         state.orgProject = elements.cfgOrgProject.value.trim();
-        elements.cfgOrgProject.value = state.orgProject; // Update input field with trimmed value
+        elements.cfgOrgProject.value = state.orgProject;
+        if (elements.cfgAdminProject) {
+            state.adminProject = elements.cfgAdminProject.value.trim();
+            elements.cfgAdminProject.value = state.adminProject;
+            localStorage.setItem('bq_admin_project', state.adminProject);
+        }
         state.region = elements.cfgRegion.value;
 
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
         elements.currentProject.textContent = state.orgProject || 'Not Set';
+        if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
         elements.currentRegion.textContent = state.region;
 
         showNotification('Settings saved successfully.', 'success');
@@ -251,6 +317,7 @@ document.addEventListener('DOMContentLoaded', () => {
             state.storageData = responseData.datasets;
             renderStorageResults(responseData.datasets);
             renderOrgStatus(responseData.org_status);
+            localStorage.setItem('bq_storage_results', JSON.stringify(responseData));
             showNotification('Storage analysis completed.', 'success');
         } catch (error) {
             logger_error(error);
@@ -297,6 +364,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const responseData = await response.json();
                 renderJobResults(responseData);
+                localStorage.setItem('bq_job_results', JSON.stringify(responseData));
                 showNotification('Job analysis completed.', 'success');
             } catch (error) {
                 console.error("Job Analysis Error:", error);
@@ -539,7 +607,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     org_project_id: state.orgProject,
                     region: state.region,
                     lookback_days: params.lookback_days,
-                    timezone: 'America/New_York'
+                    timezone: 'America/New_York',
+                    resolution: elements.slResolution.value
                 };
 
                 const utilResponse = await fetch('/api/slots/utilization', {
@@ -550,8 +619,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (utilResponse.ok) {
                     const utilData = await utilResponse.json();
-                    renderSlotsChart(utilData);
                     
+                    // Fetch actual provisioning
+                    const actualParams = {
+                        org_project_id: state.orgProject,
+                        region: state.region,
+                        lookback_days: params.lookback_days,
+                        timezone: 'America/New_York',
+                        edition: 'ENTERPRISE',
+                        admin_project_id: state.adminProject
+                    };
+
+                    let provisioningTimeline = null;
+                    try {
+                        const actualResponse = await fetch('/api/slots/actual_provisioning', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(actualParams)
+                        });
+
+                        if (actualResponse.ok) {
+                            const actualData = await actualResponse.json();
+                            document.getElementById('act-autoscaled-hours').textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours));
+                            document.getElementById('act-baseline-hours').textContent = formatNumber(Math.round(actualData.baseline_slot_hours));
+                            document.getElementById('act-total-hours').textContent = formatNumber(Math.round(actualData.total_slot_hours));
+                            provisioningTimeline = actualData.timeline;
+                            
+                            renderActualProvisioningDonut(actualData.autoscaled_slot_hours, actualData.baseline_slot_hours);
+                        }
+                    } catch (error) {
+                        console.warn("Failed to fetch actual provisioning:", error);
+                    }
+
+                    renderSlotsChart(utilData, provisioningTimeline);
+                    
+
+
                     // Automatically set Max Baseline Slots for the simulator based on peak usage
                     const simMaxBaselineInput = document.getElementById('sim-max-baseline');
                     if (simMaxBaselineInput && utilData.length > 0) {
@@ -749,7 +852,204 @@ document.addEventListener('DOMContentLoaded', () => {
         $('#slots-recommendations-table').DataTable({ pageLength: 5, order: [[1, 'desc']], responsive: true });
     };
 
-    const renderSlotsChart = (data) => {
+    const renderProfilerResults = (data) => {
+        const tbody = document.querySelector('#slots-profiler-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Clean up reservation ID
+            let displayResId = row.reservation_id;
+            if (displayResId && displayResId.includes('.')) {
+                displayResId = displayResId.split('.').pop();
+            }
+            
+            tr.innerHTML = `
+                <td>${displayResId}</td>
+                <td>${formatNumber(row.total_flagged_hours)}</td>
+                <td>${formatNumber(row.peak_hourly_queries)}</td>
+                <td>${row.top_projects}</td>
+                <td><span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b;">Consider Baseline</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        if ($.fn.DataTable.isDataTable('#slots-profiler-table')) {
+            $('#slots-profiler-table').DataTable().destroy();
+        }
+        $('#slots-profiler-table').DataTable({ pageLength: 5, order: [[2, 'desc']], responsive: true });
+    };
+
+    const renderHeatmap = (timeline) => {
+        const tbody = document.querySelector('#heatmap-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        // Initialize 24x7 grid
+        const grid = Array(24).fill(0).map(() => Array(7).fill(0));
+
+        // Populate grid
+        timeline.forEach(row => {
+            const date = new Date(row.hour_bucket);
+            const day = date.getDay(); // 0 = Sun, 1 = Mon, etc.
+            const hour = date.getHours();
+            grid[hour][day] += row.hourly_queries;
+        });
+
+        // Find max value for scaling intensity
+        let maxVal = 0;
+        for (let h = 0; h < 24; h++) {
+            for (let d = 0; d < 7; d++) {
+                if (grid[h][d] > maxVal) maxVal = grid[h][d];
+            }
+        }
+
+        // Render rows
+        for (let h = 0; h < 24; h++) {
+            const tr = document.createElement('tr');
+            
+            // Hour label
+            const tdHour = document.createElement('td');
+            tdHour.textContent = `${String(h).padStart(2, '0')}:00`;
+            tdHour.style.fontWeight = 'bold';
+            tr.appendChild(tdHour);
+
+            // Days
+            for (let d = 0; d < 7; d++) {
+                const td = document.createElement('td');
+                const val = grid[h][d];
+                
+                if (val > 0) {
+                    const intensity = val / maxVal;
+                    td.style.background = `rgba(239, 68, 68, ${intensity * 0.8 + 0.1})`;
+                    td.style.color = intensity > 0.5 ? '#fff' : 'var(--text-secondary)';
+                    td.innerHTML = `<strong>${formatNumber(val)}</strong>`;
+                    td.title = `${val} queries`;
+                } else {
+                    td.textContent = '-';
+                    td.style.color = 'var(--text-secondary)';
+                    td.style.opacity = '0.3';
+                }
+                
+                td.style.padding = '0.5rem';
+                td.style.border = '1px solid rgba(255,255,255,0.05)';
+                
+                tr.appendChild(td);
+            }
+            
+            tbody.appendChild(tr);
+        }
+    };
+
+    const renderProfilerQueries = (data) => {
+        const tbody = document.querySelector('#profiler-queries-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const formatSlotHours = (num) => {
+            if (num > 0 && num < 0.01) {
+                return new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(num);
+            }
+            return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
+        };
+
+        data.forEach(row => {
+            console.log("[BIGQUERY-OPTIMIZER] Row data:", row);
+            const tr = document.createElement('tr');
+            
+            const avgBytes = row.avg_bytes_processed || 0;
+            const recommendation = row.recommendation || 'N/A';
+            const isCandidate = recommendation !== 'N/A';
+            const badgeBg = isCandidate ? 'rgba(34, 197, 94, 0.15)' : 'rgba(148, 163, 184, 0.15)';
+            const badgeColor = isCandidate ? '#22c55e' : '#94a3b8';
+            const badgeText = isCandidate ? 'Candidate' : 'N/A';
+            
+            tr.innerHTML = `
+                <td style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.query}">${row.query}</td>
+                <td>
+                    <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
+                        ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
+                    </div>
+                </td>
+                <td>${formatNumber(row.frequency)}</td>
+                <td>${formatSlotHours(row.avg_slot_hours)}</td>
+                <td>${formatNumber(row.avg_duration_seconds)}</td>
+                <td>${formatNumber(avgBytes / (1024 * 1024))} MB</td>
+                <td><span class="badge" style="background: ${badgeBg}; color: ${badgeColor};" title="${recommendation}">${badgeText}</span></td>
+            `;
+            tbody.appendChild(tr);
+
+            const copyBtn = tr.querySelector('.copy-job-id-btn');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard.writeText(row.example_job_id).then(() => {
+                        showNotification('Job ID copied to clipboard', 'success');
+                        console.log(`[BIGQUERY-OPTIMIZER] Copied Job ID: ${row.example_job_id}`);
+                    }).catch(err => {
+                        console.error('[BIGQUERY-OPTIMIZER] Failed to copy: ', err);
+                        showNotification('Failed to copy Job ID', 'error');
+                    });
+                });
+            }
+        });
+
+        // Initialize DataTable
+        if ($.fn.DataTable.isDataTable('#profiler-queries-table')) {
+            $('#profiler-queries-table').DataTable().destroy();
+        }
+        $('#profiler-queries-table').DataTable({ pageLength: 10, order: [[3, 'desc']], responsive: true });
+    };
+
+    const renderActualProvisioningDonut = (autoscaledHours, baselineHours) => {
+        const ctx = document.getElementById('actual-provisioning-donut').getContext('2d');
+        
+        if (state.actualProvisioningChart) {
+            state.actualProvisioningChart.destroy();
+        }
+        
+        state.actualProvisioningChart = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Autoscaled Hours', 'Baseline Hours'],
+                datasets: [{
+                    data: [autoscaledHours, baselineHours],
+                    backgroundColor: ['#facc15', '#38bdf8'],
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.raw || 0;
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((value / total) * 100).toFixed(2) + '%';
+                                return `${label}: ${formatNumber(value)} (${percentage})`;
+                            }
+                        }
+                    }
+                },
+                cutout: '70%'
+            }
+        });
+    };
+
+    const renderSlotsChart = (data, provisioningTimeline = null) => {
         const ctx = document.getElementById('slots-timeline-chart').getContext('2d');
         
         if (state.slotsChart) {
@@ -768,42 +1068,87 @@ document.addEventListener('DOMContentLoaded', () => {
         const p90 = reversedData.map(d => d.p90_slots);
         const maxSlots = reversedData.map(d => d.max_slots);
         
+        let baselineData = [];
+        let currentData = [];
+
+        if (provisioningTimeline && provisioningTimeline.length > 0) {
+            provisioningTimeline.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+            reversedData.forEach(d => {
+                const currentTs = new Date(d.timestamp);
+                let activeProvisioning = { baseline_slots: 0, current_slots: 0 };
+                for (let i = provisioningTimeline.length - 1; i >= 0; i--) {
+                    if (new Date(provisioningTimeline[i].ts) <= currentTs) {
+                        activeProvisioning = provisioningTimeline[i];
+                        break;
+                    }
+                }
+                baselineData.push(activeProvisioning.baseline_slots);
+                currentData.push(activeProvisioning.current_slots);
+            });
+        }
+        
+        const datasets = [
+            {
+                label: 'Time Average',
+                data: timeAvg,
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 0,
+                borderWidth: 1.5
+            },
+            {
+                label: 'P90',
+                data: p90,
+                borderColor: '#a855f7',
+                borderDash: [5, 5],
+                fill: false,
+                tension: 0.4,
+                pointRadius: 0,
+                borderWidth: 1.5
+            },
+            {
+                label: 'Max Slots',
+                data: maxSlots,
+                borderColor: '#ef4444',
+                borderDash: [2, 2],
+                fill: false,
+                tension: 0.1,
+                pointRadius: 0,
+                borderWidth: 1.5
+            }
+        ];
+
+        if (baselineData.length > 0) {
+            datasets.push({
+                label: 'Actual Baseline',
+                data: baselineData,
+                borderColor: '#f59e0b',
+                borderDash: [5, 5],
+                fill: false,
+                stepped: 'before',
+                pointRadius: 0,
+                borderWidth: 2
+            });
+            datasets.push({
+                label: 'Total Provisioned',
+                data: currentData,
+                borderColor: '#10b981',
+                borderDash: [2, 2],
+                fill: false,
+                stepped: 'before',
+                pointRadius: 0,
+                borderWidth: 2
+            });
+        }
+
         state.slotsChart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: labels,
-                datasets: [
-                    {
-                        label: 'Time Average',
-                        data: timeAvg,
-                        borderColor: '#38bdf8',
-                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                        fill: true,
-                        tension: 0.4,
-                        pointRadius: 0,
-                        borderWidth: 1.5
-                    },
-                    {
-                        label: 'P90',
-                        data: p90,
-                        borderColor: '#a855f7',
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.4,
-                        pointRadius: 0,
-                        borderWidth: 1.5
-                    },
-                    {
-                        label: 'Max Slots',
-                        data: maxSlots,
-                        borderColor: '#ef4444',
-                        borderDash: [2, 2],
-                        fill: false,
-                        tension: 0.1,
-                        pointRadius: 0,
-                        borderWidth: 1.5
-                    }
-                ]
+                datasets: datasets
             },
             options: {
                 responsive: true,
@@ -884,6 +1229,363 @@ document.addEventListener('DOMContentLoaded', () => {
     const logger_error = (error) => {
         console.error("Application Error:", error);
     };
+
+    // Cost Attribution Logic
+    if (elements.navCostAttribution) {
+        elements.navCostAttribution.addEventListener('click', async (e) => {
+            e.preventDefault();
+            switchView('cost-attribution');
+            await loadCostAttributionConfig();
+        });
+    }
+
+    const renderReservationsForm = (reservations) => {
+        const container = elements.cbReservationsContainer;
+        if (!container) return;
+        container.innerHTML = '';
+
+        Object.entries(reservations).forEach(([resId, config]) => {
+            addReservationRow(resId, config.sku_rate, config.total_admin_bill);
+        });
+    };
+
+    const addReservationRow = (resId = '', skuRate = '', totalBill = '') => {
+        const container = elements.cbReservationsContainer;
+        if (!container) return;
+
+        const row = document.createElement('div');
+        row.className = 'reservation-row';
+        row.style.display = 'flex';
+        row.style.gap = '0.5rem';
+        row.style.marginBottom = '0.5rem';
+        row.style.alignItems = 'center';
+
+        row.innerHTML = `
+            <input type="text" class="cb-res-id" placeholder="Reservation ID" value="${resId}" style="flex: 2; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <input type="number" class="cb-res-rate" placeholder="SKU Rate" step="0.001" value="${skuRate}" style="flex: 1; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <input type="number" class="cb-res-bill" placeholder="Total Bill ($)" step="0.01" value="${totalBill}" style="flex: 1; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <button class="btn-action cb-remove-res-btn" style="padding: 0.375rem 0.5rem;"><i class="fa-solid fa-trash"></i></button>
+        `;
+
+        row.querySelector('.cb-remove-res-btn').addEventListener('click', () => {
+            row.remove();
+        });
+
+        container.appendChild(row);
+    };
+
+    const getReservationsFromForm = () => {
+        const reservations = {};
+        const rows = document.querySelectorAll('.reservation-row');
+        rows.forEach(row => {
+            const resId = row.querySelector('.cb-res-id').value.trim();
+            const skuRate = parseFloat(row.querySelector('.cb-res-rate').value);
+            const totalBill = parseFloat(row.querySelector('.cb-res-bill').value);
+            
+            if (resId) {
+                reservations[resId] = {
+                    sku_rate: skuRate || 0.0,
+                    total_admin_bill: totalBill || 0.0
+                };
+            }
+        });
+        return reservations;
+    };
+
+    if (elements.cbAddReservationBtn) {
+        elements.cbAddReservationBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            addReservationRow();
+        });
+    }
+
+    const loadCostAttributionConfig = async () => {
+        try {
+            const response = await fetch('/api/cost-attribution/config');
+            if (response.ok) {
+                const config = await response.json();
+                elements.cbWasteRule.value = config.waste_rule;
+                elements.cbCentralProject.value = config.central_cost_center_project || '';
+                elements.cbBorrowingRule.value = config.borrowing_rule;
+                renderReservationsForm(config.reservations);
+            }
+        } catch (error) {
+            console.error("Failed to load cost attribution config:", error);
+        }
+    };
+
+    if (elements.btnCalculateCostAttribution) {
+        elements.btnCalculateCostAttribution.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
+
+            const monthStart = elements.cbMonthStart.value;
+            const monthEnd = elements.cbMonthEnd.value;
+
+            if (!monthStart || !monthEnd) {
+                showNotification('Please select both start and end dates.', 'error');
+                return;
+            }
+
+            setLoading(elements.btnCalculateCostAttribution, true);
+
+            try {
+                // First save config
+                const config = {
+                    waste_rule: elements.cbWasteRule.value,
+                    central_cost_center_project: elements.cbCentralProject.value.trim() || null,
+                    borrowing_rule: elements.cbBorrowingRule.value,
+                    reservations: getReservationsFromForm()
+                };
+
+                await fetch('/api/cost-attribution/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                // Then calculate
+                const params = {
+                    billing_month_start: monthStart,
+                    billing_month_end: monthEnd,
+                    org_project_id: state.orgProject,
+                    region: state.region,
+                    admin_project_id: state.adminProject
+                };
+
+                const response = await fetch('/api/cost-attribution/calculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Calculation failed');
+                }
+
+                const data = await response.json();
+                renderCostAttributionResults(data);
+                showNotification('Cost attribution calculated successfully.', 'success');
+            } catch (error) {
+                console.error("Cost Attribution Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnCalculateCostAttribution, false);
+            }
+        });
+    }
+
+    const renderCostAttributionResults = (data) => {
+        let table;
+        if ($.fn.DataTable.isDataTable('#cost-attribution-results-table')) {
+            table = $('#cost-attribution-results-table').DataTable();
+        } else {
+            table = $('#cost-attribution-results-table').DataTable({
+                pageLength: 10,
+                order: [[4, 'desc']],
+                responsive: true
+            });
+        }
+        
+        table.clear();
+        
+        data.forEach(row => {
+            let displayResId = row.reservation_id;
+            if (displayResId && displayResId.includes('.')) {
+                displayResId = displayResId.split('.').pop();
+            } else if (displayResId && displayResId.includes(':')) {
+                displayResId = displayResId.split(':').pop();
+            }
+
+            table.row.add([
+                row.project_id,
+                displayResId,
+                formatCurrency(row.direct_usage_cost_usd),
+                formatCurrency(row.allocated_waste_cost_usd),
+                `<strong>${formatCurrency(row.total_cost_attribution_usd)}</strong>`
+            ]);
+        });
+        
+        table.draw();
+    };
+
+    if (elements.btnAnalyzeProfiler) {
+        elements.btnAnalyzeProfiler.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeProfiler, true);
+
+            const params = {
+                org_project_id: state.orgProject,
+                region: state.region,
+                lookback_days: parseInt(elements.slLookback.value) || 7,
+                admin_project_id: state.adminProject
+            };
+
+            try {
+                const response = await fetch('/api/slots/profiler', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to analyze workload profile');
+                }
+
+                const data = await response.json();
+                renderProfilerResults(data.summary);
+                renderHeatmap(data.timeline);
+                localStorage.setItem('bq_profiler_summary', JSON.stringify(data.summary));
+                localStorage.setItem('bq_profiler_timeline', JSON.stringify(data.timeline));
+                
+                // Fetch top queries
+                const queriesResponse = await fetch('/api/slots/profiler/queries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+                
+                if (queriesResponse.ok) {
+                    const queriesData = await queriesResponse.json();
+                    renderProfilerQueries(queriesData);
+                    localStorage.setItem('bq_profiler_queries', JSON.stringify(queriesData));
+                }
+                showNotification('Workload profile analysis completed.', 'success');
+            } catch (error) {
+                console.error("Profiler Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeProfiler, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeUsers) {
+        elements.btnAnalyzeUsers.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                switchView('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeUsers, true);
+
+            const params = {
+                org_project_id: state.orgProject,
+                region: state.region,
+                lookback_days: parseInt(elements.slLookback.value) || 7,
+                admin_project_id: state.adminProject,
+                od_price: parseFloat(document.getElementById('jb-od-rate').value) || 6.25,
+                ed_price: parseFloat(document.getElementById('jb-ed-rate').value) || 0.06
+            };
+
+            try {
+                const response = await fetch('/api/users/top_spenders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to analyze top spenders');
+                }
+
+                const data = await response.json();
+                renderTopSpenders(data);
+                localStorage.setItem('bq_top_spenders', JSON.stringify(data));
+                showNotification('Top spenders analysis completed.', 'success');
+            } catch (error) {
+                console.error("Top Spenders Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeUsers, false);
+            }
+        });
+    }
+
+    const renderTopSpenders = (data) => {
+        const tbody = document.querySelector('#top-spenders-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${row.user_email}</td>
+                <td>${formatNumber(row.query_count)}</td>
+                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TB</td>
+                <td>${formatNumber(row.total_slot_hours)}</td>
+                <td>${formatCurrency(row.est_on_demand_cost)}</td>
+                <td>${formatCurrency(row.est_editions_cost)}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
+            $('#top-spenders-table').DataTable().destroy();
+        }
+        $('#top-spenders-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+    };
+
+    // Load cached top spenders data
+    const cachedSpenders = localStorage.getItem('bq_top_spenders');
+    if (cachedSpenders) {
+        try {
+            renderTopSpenders(JSON.parse(cachedSpenders));
+        } catch (e) { console.warn("Failed to parse cached top spenders", e); }
+    }
+
+    // Load cached storage data
+    const cachedStorage = localStorage.getItem('bq_storage_results');
+    if (cachedStorage) {
+        try {
+            const storageData = JSON.parse(cachedStorage);
+            state.storageData = storageData.datasets;
+            renderStorageResults(storageData.datasets);
+            renderOrgStatus(storageData.org_status);
+        } catch (e) { console.warn("Failed to parse cached storage results", e); }
+    }
+
+    // Load cached job data
+    const cachedJob = localStorage.getItem('bq_job_results');
+    if (cachedJob) {
+        try {
+            renderJobResults(JSON.parse(cachedJob));
+        } catch (e) { console.warn("Failed to parse cached job results", e); }
+    }
+
+    // Load cached profiler data
+    const cachedSummary = localStorage.getItem('bq_profiler_summary');
+    const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
+    const cachedQueries = localStorage.getItem('bq_profiler_queries');
+
+    if (cachedSummary) {
+        try {
+            renderProfilerResults(JSON.parse(cachedSummary));
+        } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
+    }
+    if (cachedTimeline) {
+        try {
+            renderHeatmap(JSON.parse(cachedTimeline));
+        } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
+    }
+    if (cachedQueries) {
+        try {
+            renderProfilerQueries(JSON.parse(cachedQueries));
+        } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
+    }
 
     // App Start
     initUI();

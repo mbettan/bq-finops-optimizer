@@ -10,6 +10,8 @@ A tool for analyzing and optimizing BigQuery storage and compute costs by switch
 - **Profile Categorization**: Automatically categorizes queries into **Reservation Candidates**, **On-Demand Candidates**, and **Balanced / Uncertain** based on cost efficiency.
 - **Interactive UI Filtering**: Filter top inefficient queries by their billing profile directly in the dashboard.
 - **Scalable Analysis**: Displays the top **500** most inefficient queries to focus on high-impact optimization opportunities.
+- **Workload Profiler**: Identifies reservations experiencing a "continuous trickle" of small, frequent queries. Identifies candidates for **Short Query Optimizations** in the Advanced Runtime.
+- **Top Spenders**: Identifies the users consuming the most resources (data billed and slot hours) in your organization to help with cost attribution and optimization.
 
 ---
 
@@ -145,3 +147,24 @@ When deploying and using this tool, please be mindful of the following security 
 1. **SQL Injection Risks**: The application currently uses direct string interpolation for some parameters (like region and project IDs) in SQL queries. Ensure strict input validation is applied if exposing this tool, and only grant the minimum necessary permissions to the executing identity.
 2. **Scale Limits with Large Organizations**: In environments with thousands of projects, querying metadata across all projects simultaneously can exceed BigQuery's query size and complexity limits, or hit quota limits. Consider batching or scoped analysis for very large scales.
 3. **No Built-in Authentication**: This tool lacks built-in authentication or authorization mechanisms. **Do not expose this application to the public internet or internally without adding an authentication layer.** It is strongly recommended to run this tool locally or within a secure internal network.
+
+---
+
+## 📊 Example Output: Top Offending Queries
+
+Here is an example of the output from the **Workload Profiler** showing the most frequent small queries that can cause autoscaler waste:
+
+| Query Text | Project | Example Job ID | Frequency | Avg Slot Hours | Avg Duration (s) | Avg Bytes | Recommendation |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `COMMIT TRANSACTION` | `identity-services-2` | `script_job_e38a440...` | 21,456 | 0.000138 | 0.01 | 0 MB | Candidate |
+| `BEGIN TRANSACTION` | `identity-services-2` | `script_job_41a26b5...` | 24,188 | 0.000000 | 0.00 | 0 MB | Candidate |
+| `SELECT * FROM \`analytics_project.ecommerce.products\`` | `ecommerce-web-5` | `job_xvB6HRmV8Tec6i...` | 5,259 | 0.000000 | 0.00 | 1.0 MB | Candidate |
+| `INSERT INTO \`marketing_project.campaigns.metrics\`` | `marketing-analytics-5` | `job_uNhCQFFnhCdGax...` | 7,642 | 0.000000 | 1.22 | 0 MB | Candidate |
+
+---
+
+## ⚠️ Disclaimer
+
+This tool is provided "as is" without warranty of any kind. It performs complex calculations and simulations based on BigQuery metadata. Calculations may contain mistakes or not reflect all aspects of your specific billing situation (such as custom discounts or blended rates). 
+
+**Always verify the results and generated DDL statements manually before making any changes to your production environment.**
