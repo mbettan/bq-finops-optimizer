@@ -8,8 +8,10 @@ import os
 import logging
 import math
 import numpy as np
+from cost_attribution import router as cost_attribution_router
 
 app = FastAPI()
+app.include_router(cost_attribution_router)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -314,6 +316,7 @@ async def analyze_jobs(params: JobAnalysisParams):
           creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days}*24 HOUR)
           AND state = 'DONE'
           AND job_type = 'QUERY'
+          AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
           AND IFNULL(cache_hit, FALSE) = FALSE
           AND total_bytes_billed >= {params.min_bytes_billed}
         ORDER BY total_bytes_billed DESC
@@ -462,6 +465,10 @@ async def analyze_slots(params: SlotsParams):
     per_res AS (
         SELECT 
             reservation_id,
+            CAST(IF(CONTAINS_SUBSTR(reservation_id, ":"), 
+               SPLIT(REPLACE(reservation_id, ".", ":"), ":")[OFFSET(0)], 
+               NULL) AS STRING) AS admin_project_id,
+            ARRAY_REVERSE(SPLIT(REPLACE(reservation_id, ".", ":"), ":"))[OFFSET(0)] AS clean_reservation_id,
             APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
             APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
             APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
@@ -491,6 +498,8 @@ async def analyze_slots(params: SlotsParams):
     merged_res AS (
         SELECT 
             'MERGED (Simulated)' AS reservation_id,
+            CAST(NULL AS STRING) AS admin_project_id,
+            'MERGED (Simulated)' AS clean_reservation_id,
             APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
             APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
             APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
@@ -531,13 +540,7 @@ async def analyze_slots(params: SlotsParams):
         current_reservations_data = []
         
         # Extract admin projects from reservation IDs in recommendations
-        admin_projects = set()
-        for row in recommendations_data:
-            res_id = row.get('reservation_id')
-            if res_id and ':' in res_id:
-                # Format is usually project_id:region.reservation_name
-                parts = res_id.split(':')
-                admin_projects.add(parts[0])
+        admin_projects = {row.get('admin_project_id') for row in recommendations_data if row.get('admin_project_id')}
                 
         # Fallback to the provided org_project_id if no specific admin project found
         if not admin_projects:
@@ -580,15 +583,23 @@ class SlotUtilizationParams(BaseModel):
     region: str = "region-us"
     lookback_days: int = 7
     timezone: str = "America/New_York"
+    resolution: str = "MINUTE"
 
 @app.post("/api/slots/utilization")
 async def analyze_slot_utilization(params: SlotUtilizationParams):
     logger.info(f"Slot Utilization Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
+    resolution = params.resolution
+    duration_ms = 60000
+    if resolution == "HOUR":
+        duration_ms = 3600000
+    elif resolution == "DAY":
+        duration_ms = 86400000
+        
     sql = f"""
     SELECT
-      TIMESTAMP_TRUNC(period_start, MINUTE) AS period_min,
-      SUM(period_slot_ms) / 1000 / 60 AS time_average,
+      TIMESTAMP_TRUNC(period_start, {resolution}) AS period_min,
+      SUM(CAST(period_slot_ms AS NUMERIC)) / {duration_ms} AS time_average,
       MAX(period_slot_ms / 1000) AS max_slots,
       APPROX_QUANTILES(period_slot_ms / 1000, 100)[OFFSET(90)] AS p90_slots,
       APPROX_QUANTILES(period_slot_ms / 1000, 100)[OFFSET(99)] AS p99_slots,
@@ -599,7 +610,7 @@ async def analyze_slot_utilization(params: SlotUtilizationParams):
     WHERE
       period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
-      AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
     GROUP BY
       period_min
     ORDER BY period_min ASC
@@ -667,7 +678,7 @@ async def simulate_slots(params: SlotSimulationParams):
     WHERE 
       period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
-      AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
     GROUP BY 1
     ORDER BY 1 ASC
     """
@@ -748,6 +759,193 @@ async def simulate_slots(params: SlotSimulationParams):
         logger.error(f"Slot simulation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class SlotActualParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    timezone: str = "America/New_York"
+    edition: str = "ENTERPRISE"
+    admin_project_id: Optional[str] = None
+
+@app.post("/api/slots/actual_provisioning")
+async def get_actual_provisioning(params: SlotActualParams):
+    logger.info(f"Slot Actual Provisioning Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(params.timezone)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid timezone: {params.timezone}")
+
+    from datetime import datetime, timedelta
+    now = datetime.now(ZoneInfo('UTC'))
+    start_time = now - timedelta(days=params.lookback_days)
+    end_time = now
+
+    # Format timestamps for BQ
+    start_str = start_time.strftime('%Y-%m-%d %H:%M:%S UTC')
+    end_str = end_time.strftime('%Y-%m-%d %H:%M:%S UTC')
+
+    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+
+    # Base CTEs for both queries
+    base_ctes = f"""
+WITH
+  autoscale_slot_data AS (
+  SELECT
+    change_timestamp,
+    reservation_name,
+    CASE action
+      WHEN "CREATE" THEN autoscale.current_slots
+      WHEN "UPDATE" THEN IFNULL(autoscale.current_slots - LAG(autoscale.current_slots) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC), IFNULL(autoscale.current_slots, IFNULL(-1 * LAG(autoscale.current_slots) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC), 0)))
+      WHEN "DELETE" THEN IF (LAG(action) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC) IN ('CREATE', 'UPDATE'), -1 * autoscale.current_slots, 0)
+  END
+    AS current_slot_delta,
+    CASE action
+      WHEN "CREATE" THEN slot_capacity
+      WHEN "UPDATE" THEN IFNULL(slot_capacity - LAG(slot_capacity) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC), IFNULL(slot_capacity, IFNULL(-1 * LAG(slot_capacity) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC), 0)))
+      WHEN "DELETE" THEN IF (LAG(action) OVER (PARTITION BY project_id, reservation_name ORDER BY change_timestamp ASC, action ASC) IN ('CREATE', 'UPDATE'), -1 * slot_capacity, 0)
+  END
+    AS baseline_slot_delta,
+  FROM
+    `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATION_CHANGES
+  WHERE
+    change_timestamp <= TIMESTAMP('{end_str}')
+    AND edition = "{params.edition}"
+  UNION ALL
+  SELECT
+    TIMESTAMP('{start_str}'),
+    "Start",
+    0,
+    0
+  UNION ALL
+  SELECT
+    TIMESTAMP('{end_str}'),
+    "End",
+    0,
+    0),
+  running_total AS (
+  SELECT
+    change_timestamp,
+    SUM(current_slot_delta) OVER (ORDER BY change_timestamp RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS current_slots,
+    SUM(baseline_slot_delta) OVER (ORDER BY change_timestamp RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS baseline_slots,
+  FROM
+    autoscale_slot_data),
+  capacity_commitments AS (
+  SELECT
+    capacity_commitment_id,
+    CASE
+      WHEN action = "CREATE" OR action = "UPDATE" THEN 
+        IFNULL(
+          IF(LAG(action) OVER (PARTITION BY capacity_commitment_id ORDER BY change_timestamp ASC, action ASC) IN ('CREATE', 'UPDATE'),
+             slot_count - LAG(slot_count) OVER (PARTITION BY capacity_commitment_id ORDER BY change_timestamp ASC, action ASC),
+             slot_count),
+          slot_count)
+      WHEN action = "DELETE" THEN
+        IF(LAG(action) OVER (PARTITION BY capacity_commitment_id ORDER BY change_timestamp ASC, action ASC) IN ('CREATE', 'UPDATE'),
+           -1 * slot_count,
+           0)
+      ELSE 0
+    END AS slot_count_delta,
+    change_timestamp
+  FROM
+    `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.CAPACITY_COMMITMENT_CHANGES
+  WHERE
+    state = "ACTIVE"
+    AND edition = "{params.edition}"
+    AND change_timestamp <= TIMESTAMP('{end_str}')
+  UNION ALL
+  SELECT
+    "Start" AS capacity_commitment_id,
+    0 AS slot_count_delta,
+    TIMESTAMP('{start_str}') AS change_timestamp
+  UNION ALL
+  SELECT
+    "End" AS capacity_commitment_id,
+    0 AS slot_count_delta,
+    TIMESTAMP('{end_str}') AS change_timestamp ),
+  running_total_commitment AS (
+  SELECT
+    change_timestamp,
+    SUM(slot_count_delta) OVER (ORDER BY change_timestamp RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS capacity_slots,
+  FROM
+    capacity_commitments),
+  merged_slots AS (
+  SELECT
+    TIMESTAMP_TRUNC(change_timestamp, SECOND) as change_timestamp,
+    TIMESTAMP_TRUNC(IFNULL(LEAD(change_timestamp) OVER (ORDER BY change_timestamp ASC), TIMESTAMP('{end_str}')), SECOND) AS end_timestamp,
+    IFNULL(LAST_VALUE(current_slots IGNORE NULLS) OVER (ORDER BY change_timestamp ASC), 0) AS current_slots,
+    IFNULL(LAST_VALUE(baseline_slots IGNORE NULLS) OVER (ORDER BY change_timestamp ASC), 0) AS baseline_slots,
+    IFNULL(LAST_VALUE(capacity_slots IGNORE NULLS) OVER (ORDER BY change_timestamp ASC), 0) AS capacity_slots,
+  FROM
+    running_total
+  FULL OUTER JOIN
+    running_total_commitment
+  USING
+    (change_timestamp)
+  ORDER BY
+    change_timestamp ASC)
+"""
+
+    agg_sql = base_ctes + f"""
+SELECT
+  SUM(TIMESTAMP_DIFF(end_timestamp, change_timestamp, SECOND) * current_slots) / 60 / 60 AS autoscaled_slot_hours,
+  SUM(TIMESTAMP_DIFF(end_timestamp, change_timestamp, SECOND) *
+  IF
+    (baseline_slots > capacity_slots, baseline_slots - capacity_slots, 0)) / 60 / 60 AS baseline_slot_hours,
+  SUM(TIMESTAMP_DIFF(end_timestamp, change_timestamp, SECOND) * (current_slots +
+  IF
+    (baseline_slots > capacity_slots, baseline_slots - capacity_slots, 0))) / 60 / 60 AS total_slot_hours
+FROM
+  merged_slots
+WHERE
+  change_timestamp >= TIMESTAMP('{start_str}')
+"""
+
+    timeline_sql = base_ctes + f"""
+SELECT * FROM merged_slots WHERE change_timestamp >= TIMESTAMP('{start_str}')
+"""
+
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        
+        logger.info("Executing Aggregated Actual Provisioning Query")
+        agg_results = run_query_and_log(scoped_client, agg_sql, "Aggregated Actual Provisioning")
+        
+        logger.info("Executing Timeline Actual Provisioning Query")
+        timeline_results = run_query_and_log(scoped_client, timeline_sql, "Timeline Actual Provisioning")
+        
+        autoscaled_slot_hours = 0.0
+        baseline_slot_hours = 0.0
+        total_slot_hours = 0.0
+        
+        for row in agg_results:
+            autoscaled_slot_hours = row['autoscaled_slot_hours'] or 0.0
+            baseline_slot_hours = row['baseline_slot_hours'] or 0.0
+            total_slot_hours = row['total_slot_hours'] or 0.0
+            
+        timeline_data = []
+        for row in timeline_results:
+            timeline_data.append({
+                "ts": row['change_timestamp'].isoformat() if hasattr(row['change_timestamp'], 'isoformat') else str(row['change_timestamp']),
+                "current_slots": row['current_slots'],
+                "baseline_slots": row['baseline_slots'],
+                "capacity_slots": row['capacity_slots']
+            })
+            
+        return {
+            "autoscaled_slot_hours": round(autoscaled_slot_hours, 2),
+            "baseline_slot_hours": round(baseline_slot_hours, 2),
+            "total_slot_hours": round(total_slot_hours, 2),
+            "timeline": timeline_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Actual provisioning analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class PeakSlotsParams(BaseModel):
     org_project_id: str
     region: str = "region-us"
@@ -762,7 +960,7 @@ async def get_peak_slots(params: PeakSlotsParams):
         WHERE 
           period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
-          AND (statement_type <> 'SCRIPT' AND statement_type IS NOT NULL)
+          AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
         GROUP BY 1
     )
     SELECT MAX(concurrent_slots) AS peak_slots FROM concurrent_usage
@@ -780,6 +978,359 @@ async def get_peak_slots(params: PeakSlotsParams):
         
     except Exception as e:
         logger.error(f"Failed to get peak slots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SlotProfilerParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    admin_project_id: Optional[str] = None
+
+@app.post("/api/slots/profiler")
+async def analyze_workload_profile(params: SlotProfilerParams):
+    logger.info(f"Slot Profiler Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    
+    sql = f"""
+    WITH hourly_profile AS (
+      SELECT
+        TIMESTAMP_TRUNC(creation_time, HOUR) AS hour_bucket,
+        reservation_id,
+        project_id,
+        COUNT(*) AS query_count,
+        AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
+        APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
+      FROM
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+      WHERE
+        creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+        AND job_type = 'QUERY'
+        AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+        AND reservation_id IS NOT NULL
+      GROUP BY
+        hour_bucket, reservation_id, project_id
+    ),
+    flagged_hours AS (
+      SELECT
+        hour_bucket,
+        reservation_id,
+        SUM(query_count) AS hourly_queries
+      FROM
+        hourly_profile
+      GROUP BY
+        hour_bucket, reservation_id
+      HAVING
+        hourly_queries > 60 
+        AND AVG(avg_slots_per_query) < 100 
+        AND AVG(median_duration_seconds) < 5 
+    ),
+    project_stats AS (
+      SELECT
+        reservation_id,
+        project_id,
+        SUM(query_count) AS total_queries,
+        ROW_NUMBER() OVER (PARTITION BY reservation_id ORDER BY SUM(query_count) DESC) AS rank
+      FROM
+        hourly_profile
+      JOIN
+        flagged_hours
+      USING (hour_bucket, reservation_id)
+      GROUP BY
+        reservation_id, project_id
+    ),
+    top_projects_agg AS (
+      SELECT
+        reservation_id,
+        STRING_AGG(CONCAT(project_id, ' (', total_queries, ')'), ', ' ORDER BY rank) AS top_projects
+      FROM
+        project_stats
+      WHERE
+        rank <= 3
+      GROUP BY
+        reservation_id
+    )
+    SELECT
+      reservation_id,
+      COUNT(DISTINCT hour_bucket) AS total_flagged_hours,
+      MAX(hourly_queries) AS peak_hourly_queries,
+      top_projects
+    FROM
+      flagged_hours
+    JOIN
+      top_projects_agg
+    USING (reservation_id)
+    GROUP BY
+      reservation_id, top_projects
+    """
+    
+    timeline_sql = f"""
+    WITH hourly_profile AS (
+      SELECT
+        TIMESTAMP_TRUNC(creation_time, HOUR) AS hour_bucket,
+        reservation_id,
+        project_id,
+        COUNT(*) AS query_count,
+        AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
+        APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
+      FROM
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+      WHERE
+        creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+        AND job_type = 'QUERY'
+        AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+        AND reservation_id IS NOT NULL
+      GROUP BY
+        hour_bucket, reservation_id, project_id
+    ),
+    flagged_hours AS (
+      SELECT
+        hour_bucket,
+        reservation_id,
+        SUM(query_count) AS hourly_queries
+      FROM
+        hourly_profile
+      GROUP BY
+        hour_bucket, reservation_id
+      HAVING
+        hourly_queries > 60 
+        AND AVG(avg_slots_per_query) < 100 
+        AND AVG(median_duration_seconds) < 5 
+    )
+    SELECT
+      hour_bucket,
+      reservation_id,
+      hourly_queries
+    FROM
+      flagged_hours
+    ORDER BY
+      hour_bucket ASC
+    """
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        
+        logger.info("Executing Profiler Summary Query")
+        results = run_query_and_log(scoped_client, sql, "Workload Profiler Summary")
+        
+        logger.info("Executing Profiler Timeline Query")
+        timeline_results = run_query_and_log(scoped_client, timeline_sql, "Workload Profiler Timeline")
+        
+        profile_records = []
+        for row in results:
+            profile_records.append({
+                "reservation_id": row['reservation_id'],
+                "total_flagged_hours": row['total_flagged_hours'],
+                "peak_hourly_queries": row['peak_hourly_queries'],
+                "top_projects": row['top_projects']
+            })
+            
+        timeline_records = []
+        for row in timeline_results:
+            timeline_records.append({
+                "hour_bucket": row['hour_bucket'].isoformat() if hasattr(row['hour_bucket'], 'isoformat') else str(row['hour_bucket']),
+                "reservation_id": row['reservation_id'],
+                "hourly_queries": row['hourly_queries']
+            })
+            
+        return {
+            "summary": profile_records,
+            "timeline": timeline_records
+        }
+        
+    except Exception as e:
+        logger.error(f"Workload profiler failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/slots/profiler/queries")
+async def get_top_profiler_queries(params: SlotProfilerParams):
+    logger.info(f"Slot Profiler Queries Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    
+    sql = f"""
+    WITH hourly_profile AS (
+      SELECT
+        TIMESTAMP_TRUNC(creation_time, HOUR) AS hour_bucket,
+        reservation_id,
+        project_id,
+        COUNT(*) AS query_count,
+        AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
+        APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
+      FROM
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+      WHERE
+        creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+        AND job_type = 'QUERY'
+        AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+        AND reservation_id IS NOT NULL
+      GROUP BY
+        hour_bucket, reservation_id, project_id
+    ),
+    flagged_hours AS (
+      SELECT
+        hour_bucket,
+        reservation_id
+      FROM
+        hourly_profile
+      GROUP BY
+        hour_bucket, reservation_id
+      HAVING
+        SUM(query_count) > 60 
+        AND AVG(avg_slots_per_query) < 100 
+        AND AVG(median_duration_seconds) < 5 
+    ),
+    jobs_with_bucket AS (
+      SELECT
+        reservation_id,
+        TIMESTAMP_TRUNC(creation_time, HOUR) AS hour_bucket,
+        job_id,
+        project_id,
+        total_slot_ms,
+        total_bytes_processed,
+        start_time,
+        end_time,
+        query_info.query_hashes.normalized_literals AS query_hash
+      FROM
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+      WHERE
+        creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+        AND job_type = 'QUERY'
+        AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+        AND reservation_id IS NOT NULL
+    )
+    SELECT
+      query_hash,
+      ANY_VALUE(job_id) AS example_job_id,
+      ANY_VALUE(project_id) AS example_project_id,
+      COUNT(*) AS frequency,
+      AVG(total_slot_ms / 1000 / 60 / 60) AS avg_slot_hours,
+      AVG(TIMESTAMP_DIFF(end_time, start_time, SECOND)) AS avg_duration_seconds,
+      AVG(total_bytes_processed) AS avg_bytes_processed
+    FROM
+      jobs_with_bucket
+    JOIN
+      flagged_hours
+    USING (reservation_id, hour_bucket)
+    GROUP BY
+      query_hash
+    ORDER BY
+      frequency DESC
+    LIMIT 10
+    """
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        logger.info(f"Profiler Top Queries SQL:\n{sql}")
+        results = run_query_and_log(scoped_client, sql, "Profiler Top Queries")
+        
+        query_records = []
+        for row in results:
+            query_text = "Query text not found"
+            example_job_id = row['example_job_id']
+            example_project_id = row['example_project_id']
+            
+            if example_job_id and example_project_id:
+                # Query JOBS_BY_PROJECT to get the query text
+                text_sql = f"""
+                SELECT query
+                FROM `{example_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+                WHERE job_id = '{example_job_id}'
+                LIMIT 1
+                """
+                try:
+                    logger.info(f"Fetching query text for job {example_job_id} in project {example_project_id}")
+                    text_results = scoped_client.query(text_sql).result()
+                    for text_row in text_results:
+                        query_text = text_row['query']
+                except Exception as text_err:
+                    logger.warning(f"Failed to fetch query text for job {example_job_id}: {text_err}")
+                    query_text = f"Error fetching query text: {text_err}"
+            
+            avg_bytes = row['avg_bytes_processed'] or 0.0
+            recommendation = "N/A"
+            if avg_bytes < 100 * 1024 * 1024 and row['avg_duration_seconds'] < 5:
+                recommendation = "Candidate for Short Query Optimization. Consider enabling Advanced Runtime and Optional Job Creation."
+                
+            query_records.append({
+                "query": query_text[:500] + '...' if len(query_text) > 500 else query_text,
+                "example_job_id": example_job_id,
+                "project_id": example_project_id,
+                "frequency": row['frequency'],
+                "avg_slot_hours": round(row['avg_slot_hours'] or 0.0, 4),
+                "avg_duration_seconds": round(row['avg_duration_seconds'] or 0.0, 2),
+                "avg_bytes_processed": round(avg_bytes, 2),
+                "recommendation": recommendation
+            })
+            
+        return query_records
+        
+    except Exception as e:
+        logger.error(f"Failed to get profiler queries: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UserProfilerParams(BaseModel):
+    org_project_id: str
+    region: str = "region-us"
+    lookback_days: int = 7
+    admin_project_id: Optional[str] = None
+    od_price: float = 6.25
+    ed_price: float = 0.06
+
+@app.post("/api/users/top_spenders")
+async def get_top_spenders(params: UserProfilerParams):
+    logger.info(f"Top Spenders Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    
+    sql = f"""
+    SELECT
+      user_email,
+      COUNT(*) AS query_count,
+      SUM(total_bytes_billed) AS total_bytes_billed,
+      SUM(total_slot_ms) / (1000 * 60 * 60) AS total_slot_hours
+    FROM
+      `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+    WHERE
+      creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+      AND job_type = 'QUERY'
+    GROUP BY
+      user_email
+    ORDER BY
+      total_bytes_billed DESC
+    LIMIT 50
+    """
+    
+    try:
+        scoped_client = bigquery.Client(project=params.org_project_id)
+        logger.info(f"Top Spenders SQL:\n{sql}")
+        results = run_query_and_log(scoped_client, sql, "Top Spenders")
+        
+        user_records = []
+        for row in results:
+            bytes_billed = row['total_bytes_billed'] or 0
+            slot_hours = row['total_slot_hours'] or 0.0
+            
+            # Calculate costs
+            est_od_cost = (bytes_billed / (1024**4)) * params.od_price
+            est_ed_cost = slot_hours * params.ed_price
+            
+            user_records.append({
+                "user_email": row['user_email'],
+                "query_count": row['query_count'],
+                "total_bytes_billed": bytes_billed,
+                "total_slot_hours": round(slot_hours, 2),
+                "est_on_demand_cost": round(est_od_cost, 2),
+                "est_editions_cost": round(est_ed_cost, 2)
+            })
+            
+        return user_records
+        
+    except Exception as e:
+        logger.error(f"Failed to get top spenders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

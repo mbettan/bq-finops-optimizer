@@ -101,6 +101,21 @@
                     <span>Edition matrix simulation</span>
                 </a>
 
+                <a href="#cost-attribution" class="nav-link" id="nav-cost-attribution">
+                    <i class="fa-solid fa-file-invoice-dollar"></i>
+                    <span>Cost attribution</span>
+                </a>
+
+                <a href="#profiler" class="nav-link" id="nav-profiler">
+                    <i class="fa-solid fa-gauge-high"></i>
+                    <span>Workload profiler</span>
+                </a>
+
+                <a href="#users" class="nav-link" id="nav-users">
+                    <i class="fa-solid fa-users"></i>
+                    <span>Top Spenders</span>
+                </a>
+
                 <a href="#settings" class="nav-link" id="nav-settings">
                     <i class="fa-solid fa-gear"></i>
                     <span>Global settings</span>
@@ -115,8 +130,12 @@
 
                 <div class="global-info">
                     <div class="info-item">
-                        <span class="label">Project:</span>
+                        <span class="label">Execution Project:</span>
                         <span class="value" id="current-project">Not Set</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Admin Project:</span>
+                        <span class="value" id="current-admin-project">Not Set</span>
                     </div>
                     <div class="info-item">
                         <span class="label">Region:</span>
@@ -136,9 +155,14 @@
                         <h2>GCP Environment</h2>
                         <div class="form-grid">
                             <div class="form-group">
-                                <label for="cfg-org-project">Project ID <span class="tooltip" data-tooltip="This project is used to execute the analysis queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <label for="cfg-org-project">Execution Project ID <span class="tooltip" data-tooltip="This project is used to execute the analysis queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="text" id="cfg-org-project" placeholder="e.g. central-billing-project">
                                 <small>Used for running the queries</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfg-admin-project">Admin Project ID <span class="tooltip" data-tooltip="This project is used to query reservation and commitment metadata."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-admin-project" placeholder="e.g. reservation-admin-project">
+                                <small>Used for fetching metadata</small>
                             </div>
                             <div class="form-group">
                                 <label for="cfg-region">Region <span class="tooltip" data-tooltip="The BigQuery region where your datasets and jobs are located."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
@@ -278,6 +302,10 @@
                                     This analyzer profiles your historical BigQuery jobs to determine their most cost-effective billing model (On-Demand vs. Editions/Autoscaler). It is designed to act as an <strong>Advanced Workload Router</strong>, helping you identify structural "slot hogs" (better for On-Demand) and "data hogs" (better for Editions).
                                 </p>
                                 
+                                <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                    <i class="fa-solid fa-lightbulb" style="color: #f59e0b; margin-right: 5px;"></i>
+                                    <strong>Pro-Tip for Spikey Workloads:</strong> For extremely sparse workloads with high peaks, it is often cheaper to move those specific projects back to **On-Demand billing** (paying per TB processed) instead of Editions. This eliminates the cost of idle slots during cool downs entirely. This analyzer is designed to identify exactly these candidates!
+                                
                                 <p style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0 0 1rem 0;">
                                     To identify the specific inefficiencies of individual queries, this tool evaluates each job in isolation. In reality, BigQuery Editions highly benefit from concurrency (sharing idle slots across many overlapping jobs). Because blending queries together hides individual bad actors, we use a Smart Job-Centric approach, applying advanced heuristics to approximate how an isolated job behaves against the BigQuery Autoscaler:
                                 </p>
@@ -412,8 +440,16 @@
                                 <select id="sl-window">
                                     <option value="5">5 Minutes</option>
                                     <option value="10">10 Minutes</option>
-                                    <option value="15">15 Minutes</option>
+                                    <option value="15" selected>15 Minutes</option>
                                     <option value="60">60 Minutes</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="sl-resolution">Resolution <span class="tooltip-container"><i class="fa-solid fa-circle-info" style="cursor: pointer; color: #60a5fa; margin-left: 4px;"></i><span class="tooltip-text">The time resolution for slot utilization chart.</span></span></label>
+                                <select id="sl-resolution">
+                                    <option value="MINUTE">Minute</option>
+                                    <option value="HOUR">Hour</option>
+                                    <option value="DAY">Day</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -423,6 +459,72 @@
                             </div>
                         </div>
                         <button id="analyze-slots-btn" class="btn-primary">Run Slots Analysis</button>
+                    </div>
+
+                    <h2 style="margin-top: 2rem; margin-bottom: 0.5rem;">Actual Provisioning Totals</h2>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem;">
+                        This view answers two critical questions for capacity planning:
+                    </p>
+                    <ul style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem; list-style-type: disc; margin-left: 1.5rem;">
+                        <li>How much exposure did we have to unpredictable autoscaling costs?</li>
+                        <li>How much did we overpay for baseline capacity not covered by commitments?</li>
+                    </ul>
+                    <p style="color: var(--text-secondary); font-size: 0.75rem; font-style: italic; margin-bottom: 1rem;">
+                        Descriptive: Based on configuration logs of what was actually provisioned and billed.
+                    </p>
+                    <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.5rem; line-height: 1.5;">
+                        <i class="fa-solid fa-circle-info" style="color: #38bdf8; margin-right: 5px;"></i>
+                        <strong>Why this matters:</strong> BigQuery Enterprise slot capacity is highly dynamic. Autoscaling fluctuates continuously based on workload, and capacity commitments can change at any time. To understand your true cost, we must calculate the exact "area under the curve" (time x slots) down to the second. This view helps you understand your compute overages and optimize commitments.
+                    </p>
+                    <div class="kpi-grid" style="margin-bottom: 1rem;">
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-bolt kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label tooltip-container">
+                                    Autoscale hours
+                                    <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                    <span class="tooltip-text">How much exposure did we have to unpredictable autoscaling costs?</span>
+                                </span>
+                                <span class="kpi-value" id="act-autoscaled-hours">0.00</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-database kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label tooltip-container">
+                                    Baseline hours
+                                    <i class="fa-solid fa-circle-info" style="margin-left: 5px; font-size: 0.8rem; opacity: 0.7;"></i>
+                                    <span class="tooltip-text">How much did we overpay for baseline capacity not covered by commitments?</span>
+                                </span>
+                                <span class="kpi-value" id="act-baseline-hours">0.00</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-chart-pie kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Total hours</span>
+                                <span class="kpi-value" id="act-total-hours">0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.85rem; font-style: italic; margin-bottom: 2rem;">
+                        <i class="fa-solid fa-lightbulb" style="margin-right: 4px; color: #f59e0b;"></i>
+                        Note: These metrics represent the compute capacity provisioned and billed by Google Cloud, not the actual slots consumed by your queries.
+                    </p>
+
+                    <div class="glass-card results-panel" style="margin-bottom: 2rem;">
+                        <h2>Actual Provisioning Ratio</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.25rem;">
+                            What percentage of our compute hours were spent on autoscaling vs our baseline?
+                        </p>
+                        <p style="color: var(--text-secondary); font-size: 0.75rem; font-style: italic; margin-bottom: 1rem;">
+                            Descriptive: Shows the proportion of provisioned capacity types.
+                        </p>
+                        <div style="height: 200px; position: relative; display: flex; justify-content: center;">
+                            <div style="width: 200px;">
+                                <canvas id="actual-provisioning-donut"></canvas>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="glass-card results-panel" style="margin-bottom: 2rem;">
@@ -448,6 +550,12 @@
 
                     <div class="glass-card results-panel">
                         <h2>Recommendations</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.25rem;">
+                            Based on our real query history, what size should our reservations be?
+                        </p>
+                        <p style="color: var(--text-secondary); font-size: 0.75rem; font-style: italic; margin-bottom: 1rem;">
+                            Prescriptive: Suggested optimal capacity based on actual query workload demand.
+                        </p>
                         <div class="table-responsive">
                             <table id="slots-recommendations-table" class="display nowrap" style="width:100%">
                                 <thead>
@@ -465,6 +573,8 @@
                             </table>
                         </div>
                     </div>
+
+
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
                         <h2>Slot usage by capacity (minute average)</h2>
@@ -640,6 +750,314 @@
                                 </thead>
                                 <tbody>
                                     <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Cost Attribution View -->
+                <section id="view-cost-attribution" class="view" style="display: none;">
+                    <h1 class="view-title">Cost attribution</h1>
+                    
+                    <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
+                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
+                            <div>
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How Cost Attribution Works</h3>
+                                <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
+                                    Google Cloud billing does not attribute BigQuery Editions costs to the specific projects that ran the queries. Following hybrid cost attribution model is helping with that:
+                                </p>
+                                <ul style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-left: 1.25rem; padding: 0;">
+                                    <li>We measure the exact slot-hours each project consumed and multiply it by the reservation's SKU rate (direct usage cost)</li>
+                                    <li>The difference between your total admin bill and the sum of direct costs is considered "waste" (e.g., idle baseline capacity). Depending on the waste rule selected, we either distribute this waste back to projects proportionally based on their usage share or we distribute this waste back to a specific project such as the original admin project for Central IT to cover the cost.</li>
+                                </ul>
+                                <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-top: 1rem;">
+                                    <strong>BigQuery Autoscaling Facts & Waste Drivers:</strong>
+                                    <ul style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-left: 1.25rem; padding: 0; margin-top: 0.25rem;">
+                                        <li><strong>Idle Baseline Capacity</strong>: Paying for configured baseline slots that were not fully utilized by queries.</li>
+                                        <li><strong>Cool Down Period</strong>: Autoscaled capacity is retained for at least 60 seconds after demand drops, incurring costs with 0 usage.</li>
+                                        <li><strong>No Cross-Reservation Sharing</strong>: Autoscaled idle slots are not shared across different reservations.</li>
+                                        <li><strong>Quantization</strong>: Scaling up happens in multiples of 50 slots, often allocating excess capacity.</li>
+                                        <li><strong>Intermittent Penalties</strong>: High-frequency intermittent queries can result in continuous slot usage due to repeated cool downs.</li>
+                                        <li><strong>Admin Project Isolation</strong>: Using separate Admin Projects prevents idle slot sharing between reservations.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="glass-card params-panel">
+                        <h2>Attribution Rules & Parameters</h2>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="cb-waste-rule">Waste Rule</label>
+                                <select id="cb-waste-rule">
+                                    <option value="A">Proportional (Rule A)</option>
+                                    <option value="B">Central Dump (Rule B)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="cb-central-project">Central IT Project</label>
+                                <input type="text" id="cb-central-project" placeholder="e.g. central-it-cost-center">
+                            </div>
+                            <div class="form-group">
+                                <label for="cb-borrowing-rule">Borrowing Rule</label>
+                                <select id="cb-borrowing-rule">
+                                    <option value="lender_pays">Lender Pays</option>
+                                    <option value="borrower_pays">Borrower Pays</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="cb-month-start">Billing Month Start</label>
+                                <input type="date" id="cb-month-start">
+                            </div>
+                            <div class="form-group">
+                                <label for="cb-month-end">Billing Month End</label>
+                                <input type="date" id="cb-month-end">
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 1.5rem;">
+                            <h3>Reservations Configuration</h3>
+                            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.25rem; font-weight: 600; font-size: 0.8rem; color: var(--text-secondary); align-items: center;">
+                                <div style="flex: 2;">Reservation ID</div>
+                                <div style="flex: 1;">SKU Rate ($)</div>
+                                <div style="flex: 1;">Total Bill ($)</div>
+                                <div style="width: 32px;"></div>
+                            </div>
+                            <div id="cb-reservations-container" style="margin-bottom: 1rem;">
+                                <!-- Dynamic rows will be injected here -->
+                            </div>
+                            <button id="cb-add-reservation-btn" type="button" class="btn-action" style="font-size: 0.85rem;"><i class="fa-solid fa-plus"></i> Add Reservation</button>
+                        </div>
+                        
+                        <button id="calculate-cost-attribution-btn" class="btn-primary" style="margin-top: 1rem;">Calculate Cost Attribution</button>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-top: 2rem;">
+                        <h2>Attribution Results</h2>
+                        <div class="table-responsive">
+                            <table id="cost-attribution-results-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Project ID</th>
+                                        <th>Reservation ID</th>
+                                        <th>Direct Usage Cost ($)</th>
+                                        <th>Allocated Waste ($)</th>
+                                        <th>Total Cost Attribution ($)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Workload Profiler View -->
+                <section id="view-profiler" class="view" style="display: none;">
+                    <h1 class="view-title">Workload profiler</h1>
+                    
+                    <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
+                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                            <i class="fa-solid fa-graduation-cap" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
+                            <div>
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">Optimizing for High-Frequency, Short Queries</h3>
+                                <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
+                                    This tool identifies reservations experiencing a <strong>"continuous trickle"</strong> of small, frequent queries. Documentation and expert guidelines recommend specific strategies to optimize these workloads and avoid unnecessary autoscaler activation overhead.
+                                </p>
+                                
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1rem;">
+                                    <div>
+                                        <h4 style="color: #e2e8f0; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-shield-halved" style="color: #10b981;"></i> Strategy A: Baseline Absorption & Sharing</h4>
+                                        <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.5rem;">
+                                            Setting a <strong>Baseline > 0</strong> is recommended to trade a small fixed cost for lower query latency. The slots are already allocated, allowing light interactive queries to start instantly without waking up the autoscaler.
+                                        </p>
+                                        <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                            <strong>Pro-Tip (Slot Sharing):</strong> To reduce waste, place multiple reservations on the same Admin Project. Idle baseline slots are automatically shared with other workloads!
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <h4 style="color: #e2e8f0; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-bolt" style="color: #f59e0b;"></i> Strategy B: Routing to On-Demand Pricing</h4>
+                                        <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.5rem;">
+                                            Since these "trickle" queries usually scan very little data (low I/O) but are penalized by the 1-minute slot minimum on Editions, they are often much cheaper on the <strong>On-Demand model</strong> (which charges purely per TB processed).
+                                        </p>
+                                        <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                            <strong>Implementation:</strong> You can mix pricing models in your organization. Simply bind the projects running these small queries to a dedicated <strong>Billing Project</strong> configured for On-Demand.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 1rem; margin-bottom: 1rem; background: rgba(56, 189, 248, 0.05); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(56, 189, 248, 0.2);">
+                                    <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-rocket" style="color: #38bdf8;"></i> Advanced Runtime: Short Query Optimizations</h4>
+                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.5rem;">
+                                        BigQuery's <strong>Advanced Runtime</strong> can automatically optimize short queries by consolidating execution into a single stage and skipping the shuffle layer. This reduces slot usage and latency dramatically.
+                                    </p>
+                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                        <strong>Tip:</strong> To leverage this, keep query working sets small and result sizes small. Ensure you have enabled the Advanced Runtime for your project. Read more in the <a href="https://cloud.google.com/blog/products/data-analytics/short-query-optimizations-in-bigquery-advanced-runtime" target="_blank" style="color: #38bdf8; text-decoration: underline;">Google Cloud Blog</a>.
+                                    </p>
+                                </div>
+
+                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05);">
+                                    <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-circle-info"></i> How to Decide: The Math</h4>
+                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                        Compare the cost of the job under both models: calculate the On-Demand cost based on <code>total_bytes_billed</code> and compare it against the Editions cost based on <code>total_slot_ms</code> (factoring in the 1-minute minimum for bursts). Use the <strong>Query cost optimizer</strong> tab in this tool to see these specific cost comparisons for individual jobs!
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="glass-card params-panel" style="margin-top: 2rem; margin-bottom: 2rem;">
+                        <h2>Profiler Parameters</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                            Uses global settings for Project, Region, and Lookback Window.
+                        </p>
+                        <button id="analyze-profiler-btn" class="btn-primary">Run Profiler Analysis</button>
+                    </div>
+
+                    <!-- Table moved here -->
+                    <div class="glass-card results-panel" style="margin-top: 2rem;">
+                        <h2>Workload profile warnings</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.25rem;">
+                            Are we paying for idle slots due to a continuous trickle of small queries?
+                        </p>
+                        <p style="color: var(--text-secondary); font-size: 0.75rem; font-style: italic; margin-bottom: 1rem;">
+                            Prescriptive: Identifies reservations with high frequency of low-slot queries that might benefit from a fixed baseline.
+                        </p>
+                        <div class="table-responsive">
+                            <table id="slots-profiler-table" class="display nowrap" style="width:100%">
+                                <thead>
+                                    <tr>
+                                        <th>Reservation ID</th>
+                                        <th>Total Flagged Hours</th>
+                                        <th>Peak Hourly Queries</th>
+                                        <th>Top Offending Projects</th>
+                                        <th>Recommendation</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-top: 2rem;">
+                        <h2>Temporal Heatmap</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
+                            Grid showing when the trickle happens across the week (Hour of Day vs Day of Week).
+                        </p>
+                        <div class="table-responsive">
+                            <table id="heatmap-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: center;">
+                                <thead>
+                                    <tr>
+                                        <th>Hour</th>
+                                        <th>Sun</th>
+                                        <th>Mon</th>
+                                        <th>Tue</th>
+                                        <th>Wed</th>
+                                        <th>Thu</th>
+                                        <th>Fri</th>
+                                        <th>Sat</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows 0-23 injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="glass-card results-panel" style="margin-top: 2rem;">
+                        <h2>Top Offending Queries</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 0.5rem;">
+                            <strong>Are these queries causing inefficient scale-ups?</strong> This table reveals the most frequent small queries that run during periods of high query counts but low slot usage. Look for queries with high frequency but very low (or 0 MB) data processed (like transactions or literal inserts).
+                        </p>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem; background: rgba(255, 255, 255, 0.02); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.05);">
+                            <ul style="margin: 0 0 0.75rem 0; padding-left: 1.25rem; list-style-type: disc;">
+                                <li><strong>Can they use Advanced Runtime?</strong> Check if they are marked as a "Candidate" to benefit from 1-stage execution.</li>
+                                <li><strong>Can they be batched?</strong> Frequent small inserts can often be combined into fewer, larger jobs to reduce overhead.</li>
+                                <li><strong>Should they be on On-Demand?</strong> If they process 0 MB, they are extremely cheap on the On-Demand model.</li>
+                            </ul>
+                            <p style="margin: 0; font-size: 0.8rem; line-height: 1.4; color: #94a3b8;">
+                                <i class="fa-solid fa-lightbulb" style="color: #f59e0b; margin-right: 4px;"></i>
+                                <strong>Why 0 MB?</strong> These queries are the perfect example of what the blog post calls "short" or "trickle" queries. They process no data but still consume slot time and trigger overhead. They are excellent candidates for Short Query Optimizations or for being routed to On-Demand pricing (where a 0 MB query costs nothing or at most the 10MB minimum charge, avoiding the 1-minute slot penalty on Editions).
+                            </p>
+                        </div>
+                        <div class="table-responsive">
+                            <table id="profiler-queries-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 25%;">Query Text</th>
+                                        <th style="width: 15%;">Project</th>
+                                        <th style="width: 15%;">Example Job ID</th>
+                                        <th>Frequency</th>
+                                        <th>Avg Slot Hours</th>
+                                        <th>Avg Duration (s)</th>
+                                        <th>Avg Bytes Processed</th>
+                                        <th>Recommendation</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Top Spenders View -->
+                <section id="view-users" class="view" style="display: none;">
+                    <h1 class="view-title">Top Spenders</h1>
+                    
+                    <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
+                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
+                            <div>
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">Identify Top Resource Consumers</h3>
+                                <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
+                                    This view helps you identify which users are running the most queries, scanning the most data, and consuming the most slot hours. Use this information to optimize workloads, educate users, or allocate costs.
+                                </p>
+                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05); margin-top: 1rem;">
+                                    <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-scale-unbalanced"></i> Note on Cost Attribution</h4>
+                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                        <strong>Status:</strong> The current implementation uses a direct usage calculation (Data Billed × On-Demand Rate) and (Slot Hours × Editions Rate).
+                                    </p>
+                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-top: 0.5rem;">
+                                        <strong>Complexity:</strong> In a shared reservation environment, attributing exact costs to users is hard because idle slots are shared and bursts are unpredictable. True cost might require a **proportional** allocation of reservation waste.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="glass-card params-panel" style="margin-bottom: 2rem;">
+                        <h2>Profiler Parameters</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                            Uses global settings for Project, Region, and Lookback Window.
+                        </p>
+                        <button id="analyze-users-btn" class="btn-primary">Run Spenders Analysis</button>
+                    </div>
+
+                    <div class="glass-card results-panel">
+                        <h2>Top Spenders Results</h2>
+                        <div class="table-responsive">
+                            <table id="top-spenders-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                                <thead>
+                                    <tr>
+                                        <th>User Email</th>
+                                        <th>Query Count</th>
+                                        <th>Total Data Billed</th>
+                                        <th>Total Slot Hours</th>
+                                        <th>Est. On-Demand Cost</th>
+                                        <th>Est. Editions Cost</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Rows injected here -->
                                 </tbody>
                             </table>
                         </div>
