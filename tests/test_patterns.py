@@ -1,4 +1,4 @@
-from main import _extract_pattern, _rank_and_cap
+from src.main import _extract_pattern, _rank_and_cap
 
 def test_extract_pattern_uuid():
     # UUID should be masked to <uuid>

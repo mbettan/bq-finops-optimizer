@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from fluid_scaling import (
+from src.fluid_scaling import (
     DAYS_PER_MONTH,
     DAYS_PER_YEAR,
     SECONDS_PER_HOUR,

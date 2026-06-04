@@ -16,9 +16,9 @@ import json
 import re
 import pandas as pd
 from google.api_core import exceptions as gax_exc
-from cost_attribution import router as cost_attribution_router
-from hbo import router as hbo_router
-from fluid_scaling import (
+from .cost_attribution import router as cost_attribution_router
+from .hbo import router as hbo_router
+from .fluid_scaling import (
     router as fluid_scaling_router,
     _safe_ident,
     _normalize_region,
