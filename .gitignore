@@ -21,3 +21,14 @@ PRD.MD
 
 # OS
 .DS_Store
+
+# Open Questions
+questions.md
+
+# Cost Attribution Plan
+cost_attribution_plan.md
+
+# Combined handoff dump
+claude_combined_codebase.txt
+finops-snapshot_*.json
+!docs/finops-snapshot_dummy.json

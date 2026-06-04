@@ -4,7 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps Optimizer — Maximize BigQuery Efficiency</title>
+    <link rel="icon" type="image/png" href="./static/favicon.png">
+    <title>BQ FinOps optimizer — maximize BigQuery efficiency</title>
     <meta name="description"
         content="Maximize BigQuery efficiency. Analyze your storage profile and find the optimal billing model for your workloads effortlessly.">
     <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer">
@@ -41,9 +42,7 @@
     <nav id="navbar" role="navigation" aria-label="Main navigation">
         <div class="container nav-content">
             <a href="#" class="logo" aria-label="BigQuery Optimizer home">
-                <span class="logo-icon" aria-hidden="true">
-                    <i class="fas fa-chart-pie"></i>
-                </span>
+                    <img src="./static/favicon.png" alt="logo" style="width: 24px; height: 24px; object-fit: contain;">
                 BQ FinOps <span class="gradient-text">Optimizer</span>
             </a>
             <div class="nav-links">
@@ -77,9 +76,9 @@
                 </p>
 
                 <div class="cta-group">
-                    <a href="#features" class="btn btn-primary">
-                        <i class="fas fa-bolt"></i>
-                        Explore Features
+                    <a href="./simulator.html" class="btn btn-primary" target="_blank">
+                        <i class="fas fa-magic"></i>
+                        Simulator
                     </a>
                     <a href="#workflow" class="btn btn-ghost">
                         See the Workflow
@@ -93,7 +92,7 @@
                 <div class="bento-card" style="width: 100%; height: 400px; display: flex; flex-direction: column; justify-content: space-between;">
                     <div class="bento-icon"><i class="fas fa-chart-line"></i></div>
                     <div>
-                        <h3>Organization Spend Dashboard</h3>
+                        <h3>Organization spend dashboard</h3>
                         <p>Real-time visibility into `INFORMATION_SCHEMA` across all projects.</p>
                     </div>
                     <div style="height: 150px; background: rgba(255,255,255,0.02); border-radius: var(--r-md); border: 1px solid var(--glass-border); display: flex; align-items: flex-end; padding: 1rem; gap: 0.5rem;">
@@ -129,7 +128,7 @@
                     <span class="badge-dot" aria-hidden="true"></span>
                     Example
                 </span>
-                <h2>Behold the <span class="gradient-text">Scale of Savings</span></h2>
+                <h2>Behold the <span class="gradient-text">scale of savings</span></h2>
                 <p>Simulating an audit of <strong>957 Datasets</strong> across an enterprise organization.</p>
             </div>
 
@@ -346,7 +345,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Capabilities</span>
-                <h2>Zero Friction <span class="gradient-text">Cost Optimization</span></h2>
+                <h2>Zero friction <span class="gradient-text">cost optimization</span></h2>
                 <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration.</p>
             </div>
 
@@ -355,7 +354,7 @@
                 <div class="bento-card bento-large">
                     <div class="bento-icon"><i class="fas fa-archive"></i></div>
                     <div>
-                        <h3>Physical vs Logical Storage Billing</h3>
+                        <h3>Physical vs logical storage billing</h3>
                         <p>Identify datasets that are cheaper on physical or logical storage models. Evaluate Time Travel and Fail-safe storage impact automatically.</p>
                         <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
                             <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Automated DDL Generation</span>
@@ -367,7 +366,7 @@
                 <!-- Org Views -->
                 <div class="bento-card">
                     <div class="bento-icon"><i class="fas fa-sitemap"></i></div>
-                    <h3>Organization-Wide Scoping</h3>
+                    <h3>Organization-wide scoping</h3>
                     <p>Query `Table_Storage_By_Organization` to see the big picture across all billing accounts.</p>
                 </div>
 
@@ -375,7 +374,7 @@
                 <div class="bento-card bento-large">
                     <div class="bento-icon"><i class="fas fa-code"></i></div>
                     <div>
-                        <h3>Actionable DDL Statements</h3>
+                        <h3>Actionable DDL statements</h3>
                         <p>The tool doesn't just complain; it generates the exact `ALTER SCHEMA` code you need to fix the issue. Run it directly or copy to your IAC pipeline.</p>
                     </div>
                 </div>
@@ -383,15 +382,15 @@
                 <!-- Simulation -->
                 <div class="bento-card">
                     <div class="bento-icon"><i class="fas fa-chart-pie"></i></div>
-                    <h3>Edition Matrix Simulation</h3>
-                    <p>Advanced statistical simulation to find the optimal baseline for Autoscale scenarios, projecting costs to a standard 730-hour billing month.</p>
+                    <h3>Edition matrix simulation</h3>
+                    <p>Advanced statistical simulation to find the optimal baseline for Autoscale scenarios. <strong>Now supports Fluid Scaling simulation</strong> to forecast savings from per-second billing on spiky workloads.</p>
                 </div>
 
                 <!-- Cost Attribution -->
                 <div class="bento-card bento-large">
                     <div class="bento-icon"><i class="fas fa-calculator"></i></div>
                     <div>
-                        <h3>Hybrid Cost Attribution</h3>
+                        <h3>Hybrid cost attribution</h3>
                         <p>Accurately attribute BigQuery Editions costs to individual projects. Proportionally distribute reservation waste and eliminate the "admin dump" mystery.</p>
                     </div>
                 </div>
@@ -399,8 +398,17 @@
                 <!-- Capacity Planning -->
                 <div class="bento-card">
                     <div class="bento-icon"><i class="fas fa-clock"></i></div>
-                    <h3>Capacity Planning</h3>
+                    <h3>Capacity planning</h3>
                     <p>Calculate exact slot-hours spent on unpredictable autoscaling vs uncommitted baseline capacity down to the second.</p>
+                </div>
+
+                <!-- Shareable Snapshots -->
+                <div class="bento-card bento-large">
+                    <div class="bento-icon"><i class="fas fa-file-export"></i></div>
+                    <div>
+                        <h3>Local snapshots &amp; shareable JSON</h3>
+                        <p>Export all optimized recommendations and slot simulation states as a shareable JSON file. Supports client-side PII scrubbing (user email &amp; query text redaction) and quota protection for offline audits.</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -411,7 +419,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">The Process</span>
-                <h2>From Audit to <span class="gradient-text">Execution</span></h2>
+                <h2>From audit to <span class="gradient-text">execution</span></h2>
                 <p>A streamlined workflow designed for Cloud Administrators.</p>
             </div>
 
@@ -420,7 +428,7 @@
                     <div class="step-index">01</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-link"></i></div>
-                        <h3>Connect your Project</h3>
+                        <h3>Connect your project</h3>
                         <p>Authenticate via ADC or Service Account. Specify your target Organization Project ID and Region.</p>
                     </div>
                 </div>
@@ -429,7 +437,7 @@
                     <div class="step-index">02</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-search-dollar"></i></div>
-                        <h3>Scan & Analyze</h3>
+                        <h3>Scan & analyze</h3>
                         <p>Run the optimizer. The tool pulls metadata and calculates costs based on your custom region pricing.</p>
                     </div>
                 </div>
@@ -438,7 +446,7 @@
                     <div class="step-index">03</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-play"></i></div>
-                        <h3>Apply & Save</h3>
+                        <h3>Apply & save</h3>
                         <p>Review recommendations and generated DDL. Apply changes directly from the UI to start saving immediately.</p>
                     </div>
                 </div>
@@ -452,7 +460,7 @@
     <section class="cta-section" style="padding: 4rem 0;">
         <div class="container" style="text-align: center;">
             <div class="bento-card" style="max-width: 800px; margin: 0 auto; padding: 4rem; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
-                <h2>Ready to Optimize your <br><span class="gradient-text">BigQuery Spend?</span></h2>
+                <h2>Ready to optimize your <br><span class="gradient-text">BigQuery spend?</span></h2>
                 <p>Deploy the open-source optimizer today and audit your organization in minutes.</p>
                 <div class="cta-group">
                     <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener">
@@ -1398,6 +1406,15 @@
 
         // Mock Data for Compute
         const mockComputeData = [
+          {
+            "id": 0,
+            "job_id": "job_spiky_bi_dashboard_fluid",
+            "user": "dashboard@company.com",
+            "on_demand_cost": 5.00,
+            "editions_cost": 0.08,
+            "profile": "Fluid Scaling Candidate",
+            "savings": 4.92
+          },
           {
             "id": 1,
             "job_id": "job_nwp_edw_dag_2026_03_20",
