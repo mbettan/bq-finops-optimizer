@@ -1,34 +1,25 @@
 # Logs
 *.log
-app.log
 
 # Environment/Scratch
 venv/
+venv-audit/
+.venv/
 .env
 *.sh
-scratch_*.py
+scratch_*
 scratch/
 
 # Python
 __pycache__/
 *.pyc
 
-# Docker (as per request)
-Dockerfile
-
-# Documentation (as per request)
+# Documentation
 PRD.MD
 
 # OS
 .DS_Store
 
-# Open Questions
-questions.md
-
 # Cost Attribution Plan
 cost_attribution_plan.md
 
-# Combined handoff dump
-claude_combined_codebase.txt
-finops-snapshot_*.json
-!docs/finops-snapshot_dummy.json

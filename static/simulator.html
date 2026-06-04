@@ -1,9 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script>
+        window.IS_SIMULATOR = true;
+        window.SIMULATOR_JSON_DATA = __SIMULATOR_JSON_DATA_PLACEHOLDER__;
+        
+        const simStorage = {};
+        const origGetItem = Storage.prototype.getItem;
+        const origSetItem = Storage.prototype.setItem;
+        const origRemoveItem = Storage.prototype.removeItem;
+        const origClear = Storage.prototype.clear;
+        
+        Storage.prototype.getItem = function(key) {
+            if (window.SIMULATOR_JSON_DATA && window.SIMULATOR_JSON_DATA[key]) {
+                return window.SIMULATOR_JSON_DATA[key];
+            }
+            if (key in simStorage) {
+                return simStorage[key];
+            }
+            return null;
+        };
+        Storage.prototype.setItem = function(key, val) {
+            simStorage[key] = val;
+        };
+        Storage.prototype.removeItem = function(key) {
+            delete simStorage[key];
+        };
+        Storage.prototype.clear = function() {
+            for (let k in simStorage) delete simStorage[k];
+        };
+        
+        const origFetch = window.fetch;
+        window.fetch = async function(url, options) {
+            if (url.includes("/api/")) {
+                return new Response(JSON.stringify({ error: "API disabled in Simulator mode" }), { status: 400 });
+            }
+            return origFetch(url, options);
+        };
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps optimizer</title>
+    <title>Simulator · FinOps Optimizer</title>
     <meta name="description" content="Optimize BigQuery storage and compute costs with actionable insights and glassmorphic UI.">
     <link rel="icon" type="image/png" href="/static/favicon.png">
     
@@ -78,7 +115,7 @@
         <aside class="sidebar">
           <div class="sidebar__header">
             <img src="/static/favicon.png" alt="logo" style="width: 24px; height: 24px; object-fit: contain;">
-            <span>FinOps Optimizer</span>
+            <span>FinOps Optimizer <span style="font-size: 0.6em; background: #eab308; color: #000; padding: 2px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle; font-weight: bold; letter-spacing: 1px;">SIMULATOR</span></span>
           </div>
 
           <nav class="sidebar__nav" aria-label="Main">
@@ -152,9 +189,6 @@
             <header class="top-bar">
 
                 <div class="snapshot-controls">
-                    <a href="/simulator" target="_blank" class="btn-snapshot" title="View Simulator with dummy data for inspiration" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">
-                        <i class="fa-solid fa-magic"></i> Simulator
-                    </a>
                     <button id="btn-export-snapshot" class="btn-snapshot" title="Download all cached results as a shareable JSON">
                         <i class="fa-solid fa-download"></i> Export
                     </button>
@@ -1765,7 +1799,14 @@
                             </div>
                         </div>
                     </div>
-
+                    
+                    <div class="glass-card params-panel" style="margin-bottom: 2rem;">
+                        <h2>Scanner parameters</h2>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                            Uses global settings for Project and Region. Lookback is fixed to 1 day as per anti-pattern definition.
+                        </p>
+                        <button id="analyze-antipatterns-btn" class="btn-primary">Run Anti-Pattern Scan</button>
+                    </div>
 
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(245, 158, 11, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1783,10 +1824,7 @@
                     </div>
 
                     <div class="glass-card results-panel mb-8">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Query Optimization Opportunities</h2>
-                            <button id="analyze-linter-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Query Optimization Opportunities</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table identifies expensive queries (>100 GB scanned) using inefficient patterns. Each row shows the impact, root cause, and suggested fix.
                         </p>
@@ -1812,10 +1850,7 @@
                     </div>
 
                     <div class="glass-card results-panel">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Flagged Users (DML Abuse)</h2>
-                            <button id="analyze-dml-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Flagged Users (DML Abuse)</h2>
                         <div class="table-responsive">
                             <table id="antipatterns-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -1835,10 +1870,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Materialized View Refresh Costs</h2>
-                            <button id="analyze-mv-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Materialized View Refresh Costs</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table shows the compute cost (slot hours) consumed by background refreshes for each Materialized View. High refresh costs with low query usage indicate waste.
                         </p>
@@ -1861,10 +1893,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Data Skew Candidates</h2>
-                            <button id="analyze-skew-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Data Skew Candidates</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists jobs where a single worker node took 10x longer than average to process data, indicating unbalanced joins or grouping keys.
                         </p>
@@ -1889,10 +1918,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Interactive vs. Batch Candidates</h2>
-                            <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Interactive vs. Batch Candidates</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists heavy queries running with <code>INTERACTIVE</code> priority that are candidates for <code>BATCH</code> priority.
                         </p>
@@ -1916,10 +1942,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Datasets Missing Expiration Policy</h2>
-                            <button id="analyze-expiration-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Datasets Missing Expiration Policy</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             Temporary, dev, and sandbox datasets without expiration rules are one of the biggest sources of passive storage waste.
                         </p>
@@ -1940,10 +1963,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Partitioned Tables Missing Filter Guardrail</h2>
-                            <button id="analyze-filter-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Partitioned Tables Missing Filter Guardrail</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             If "Require Partition Filter" is off, users will accidentally run full-table scans on massive tables instead of filtering by date.
                         </p>
@@ -1965,10 +1985,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Materialized View Rejections</h2>
-                            <button id="analyze-mv-rejections-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Materialized View Rejections</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists queries where a Materialized View was considered but rejected by the optimizer.
                         </p>
@@ -1990,10 +2007,7 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                            <h2 style="margin: 0;">Proactive Resource Warnings</h2>
-                            <button id="analyze-warnings-btn" class="btn-primary btn-sm">Run scan</button>
-                        </div>
+                        <h2>Proactive Resource Warnings</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists queries that triggered resource warnings (e.g., approaching limits).
                         </p>
@@ -2027,15 +2041,6 @@
                                     BigQuery analyzes query execution stages and publishes performance telemetry. 
                                     This dashboard identifies queries affected by performance bottlenecks, including slot contention, insufficient shuffle quota, and significant changes in input data volume.
                                 </p>
-                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05); margin-top: 1rem;">
-                                    <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-circle-question"></i> Understanding Data Volume Anomalies</h4>
-                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.5rem;">
-                                        BigQuery identifies input data change insights by comparing the records read in the current execution against the historical average of equivalent runs (grouped by their normalized query hash).
-                                    </p>
-                                    <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
-                                        <strong>Why are some increases so huge?</strong> If a query's history contains mostly dry-runs, tests on empty partitions, or tiny staging tables, the baseline average divisor is extremely low (e.g., 1 row). When the query runs on full production data, the relative difference escalates exponentially (e.g., a 20,000% increase is formatted as a <code>+200x</code> multiplier).
-                                    </p>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -2118,7 +2123,7 @@
                                         <th>Job ID</th>
                                         <th>User Email</th>
                                         <th>Project ID</th>
-                                        <th>Data Increase</th>
+                                        <th>Data Increase %</th>
                                     </tr>
                                 </thead>
                                 <tbody>

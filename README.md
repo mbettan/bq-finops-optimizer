@@ -2,7 +2,7 @@
 
 A tool for analyzing and optimizing BigQuery storage and compute costs by switching between logical and physical billing models.
 
-## ✨ Key Features
+## ✨ Key features
 
 - **Storage Optimization**: Analyze potential savings by switching between Logical and Physical storage billing models.
 - **Compute Optimization**: Compare On-Demand vs. Editions pricing for your historical query workload.
@@ -15,7 +15,7 @@ A tool for analyzing and optimizing BigQuery storage and compute costs by switch
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Getting started
 
 ### 1. Installation
 1. Navigate to the project directory.
@@ -28,50 +28,50 @@ A tool for analyzing and optimizing BigQuery storage and compute costs by switch
    pip install -r requirements.txt
    ```
 
-### 2. Launching the App
+### 2. Launching the app
 Run the FastAPI server using `uvicorn`:
 ```bash
-uvicorn main:app --reload
+uvicorn src.main:app --reload
 ```
 The application will be accessible at `http://127.0.0.1:8000`.
 
 ---
 
-## 🔑 Authentication & Configuration
+## 🔑 Authentication & configuration
 
-### 🔑 Complete Authentication Setup (Local Development)
+### 🔑 Complete authentication setup (local development)
 
 If you are running the tool locally, follow these steps to ensure your environment is correctly configured for BigQuery access and billing.
 
-#### Step 1: Login to gcloud CLI
+#### Step 1: login to gcloud CLI
 This authenticates your primary user account for the gcloud CLI.
 
 ```bash
 gcloud auth login
 ```
 
-#### Step 2: Set your Active Project
+#### Step 2: set your active project
 Set the default project for the gcloud CLI context.
 
 ```bash
 gcloud config set project <YOUR_PROJECT_ID>
 ```
 
-#### Step 3: Generate Application Default Credentials (ADC)
+#### Step 3: generate application default credentials (ADC)
 This is what the Python BigQuery Client uses to authenticate your API calls.
 
 ```bash
 gcloud auth application-default login
 ```
 
-#### Step 4: Set the Quota Project for ADC (Crucial for API Billing)
+#### Step 4: set the quota project for ADC (crucial for API billing)
 If you encounter `Access Denied` or `jobs.create` errors (especially with `INFORMATION_SCHEMA` queries), it means the API needs a defined project for quota and billing. This command writes the quota project into your ADC file.
 
 ```bash
 gcloud auth application-default set-quota-project <YOUR_PROJECT_ID>
 ```
 
-#### 🔍 Verification: Check your setup
+#### 🔍 Verification: check your setup
 
 To verify your active configuration:
 
@@ -91,48 +91,50 @@ gcloud auth application-default print-access-token
    export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
    ```
 
-### Changing the Target Project ID
+### Changing the target project ID
 The application dynamically scopes BigQuery clients based on incoming API requests. You do not need to hardcode a project ID in the backend. 
 - In the **Frontend UI**, you can specify the `Org Project ID` in the respective input field.
 - In **API Calls**, include the `org_project_id` in the JSON payload (e.g., `{"org_project_id": "my-target-project"}`).
 
 ---
 
-## 🔒 Permissions & Roles
+## 🔒 Permissions & roles
 
 This document outlines the required Identity and Access Management (IAM) roles and permissions to run the BigQuery FinOps Optimizer application successfully, particularly when querying organization-wide `INFORMATION_SCHEMA` views.
 
-## Resolving 403 Access Denied for Organization Views
+## Resolving 403 access denied for organization views
 
 If you encounter an error like:
 `Access Denied: Table ... INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION: User does not have permission to query table...`
 
 This issue occurs because querying organization-wide views requires permissions at the **Organization level**, not just the project level.
 
-### Required Permission
-*   `bigquery.jobs.listAll` for the **Organization**.
+### Recommended approach (least privilege)
+To follow the principle of least privilege, try granting roles that only allow reading metadata at the organization level:
 
-### Recommended Roles (Granted at the Organization Level)
-To resolve this, grant one of the following roles to the Service Account running the application at the **Google Cloud Organization level**:
+*   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Grant this at the **Organization level** to allow reading schema and storage metadata without administrative rights.
+*   **Custom Role**: Create a custom role at the organization level with only the required permissions (e.g., `bigquery.tables.get`, `bigquery.tables.list`).
 
-*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`)
-*   **Organization Admin** (`roles/resourcemanager.organizationAdmin`)
-*   **Organization Owner**
+### Broad roles (use with caution)
+If the above more granular roles do not suffice (due to specific requirements of some organization views), you may need to consider broader roles, but apply caution:
+
+*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Grants full control over BigQuery resources (including reservations).
+*   **Organization Admin** (`roles/resourcemanager.organizationAdmin`): *Extremely broad*. Do not use unless strictly necessary.
 
 ---
 
-## Complete Permission Requirements
+## Complete permission requirements
 
 For the application to function fully (Storage, Compute, and Editions features), the Service Account requires the following permissions across your environment:
 
-### 1. Project-Level Permissions (Where the app runs/queries)
+### 1. Project-level permissions (where the app runs/queries)
 *   **BigQuery Job User** (`roles/bigquery.jobUser`): Required to execute queries.
 *   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Required to read standard `INFORMATION_SCHEMA` views (like tables and schemas).
 
-### 2. Organization-Level Permissions (For `*_BY_ORGANIZATION` views)
+### 2. Organization-level permissions (for `*_BY_ORGANIZATION` views)
 *   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Required to read `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, and `TABLE_STORAGE_BY_ORGANIZATION`. It also allows viewing/modifying reservations.
 
-### 3. Dataset-Level Permissions (For Storage Actions)
+### 3. Dataset-level permissions (for storage actions)
 *   **BigQuery Data Owner** (`roles/bigquery.dataOwner`): Required if you want the tool to execute `ALTER SCHEMA` DDL statements to switch storage billing models for datasets.
 
 > [!IMPORTANT]
@@ -140,7 +142,7 @@ For the application to function fully (Storage, Compute, and Editions features),
 
 ---
 
-## ⚠️ Security & Scale Considerations
+## ⚠️ Security & scale considerations
 
 When deploying and using this tool, please be mindful of the following security and scalability considerations:
 
@@ -150,7 +152,7 @@ When deploying and using this tool, please be mindful of the following security 
 
 ---
 
-## 📊 Example Output: Top Offending Queries
+## 📊 Example output: top offending queries
 
 Here is an example of the output from the **Workload Profiler** showing the most frequent small queries that can cause autoscaler waste:
 

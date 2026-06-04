@@ -4,4 +4,6 @@ google-cloud-bigquery
 pydantic
 pyOpenSSL
 numpy
-
+pandas
+google-cloud-bigquery-storage
+db-dtypes

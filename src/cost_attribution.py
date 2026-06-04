@@ -13,6 +13,9 @@ router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
 
 CONFIG_FILE = "cost_attribution_config.json"
 
+# Safety cap: cancel queries that would scan more than this.
+_MAX_BYTES_BILLED = 200 * 1024**3  # 200 GiB
+
 class ReservationConfig(BaseModel):
     sku_rate: float
     total_admin_bill: float
@@ -99,7 +102,8 @@ async def calculate_cost_attribution(params: CostAttributionParams):
         """
         
         logger.info(f"Executing Cost Attribution Query:\n{query}")
-        job_results = scoped_client.query(query).result()
+        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_results = scoped_client.query(query, job_config=job_config).result()
         
         project_usage = []
         reservation_totals = defaultdict(float)
@@ -157,7 +161,8 @@ async def calculate_cost_attribution(params: CostAttributionParams):
                 "reservation_id": res_id,
                 "direct_usage_cost_usd": round(direct_cost, 2),
                 "allocated_waste_cost_usd": round(allocated_waste, 2),
-                "total_cost_attribution_usd": round(total_charge, 2)
+                "total_cost_attribution_usd": round(total_charge, 2),
+                "slot_hours": round(slot_hours, 2)
             })
             
         # Handle Rule B (Central Dump) properly if needed
@@ -187,3 +192,7 @@ async def calculate_cost_attribution(params: CostAttributionParams):
     except Exception as e:
         logger.error(f"Cost attribution calculation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/test-hbo")
+async def test_hbo():
+    return {"message": "HBO test works"}
