@@ -15,33 +15,34 @@
             }
         };
 
+        function injectAppScript() {
+            const script = document.createElement('script');
+            script.src = './static/app.js';
+            script.onload = () => {
+                document.addEventListener = originalAddEventListener;
+                domContentLoadedCallbacks.forEach(cb => cb());
+            };
+            document.head.appendChild(script);
+        }
+
+        function loadApp() {
+            if (document.readyState === 'loading') {
+                originalAddEventListener.call(document, 'DOMContentLoaded', injectAppScript);
+            } else {
+                injectAppScript();
+            }
+        }
+
         fetch('finops-snapshot_dummy.json')
             .then(res => res.json())
             .then(data => {
                 window.SIMULATOR_JSON_DATA = data.data || data;
-                
-                // Now load app.js so it reads the populated SIMULATOR_JSON_DATA at evaluation time
-                const script = document.createElement('script');
-                script.src = './static/app.js';
-                script.onload = () => {
-                    // app.js has evaluated and added its listeners.
-                    // Restore addEventListener and fire queued callbacks
-                    document.addEventListener = originalAddEventListener;
-                    domContentLoadedCallbacks.forEach(cb => cb());
-                };
-                document.head.appendChild(script);
+                loadApp();
             })
             .catch(err => {
                 console.error("Failed to load dummy data:", err);
                 window.SIMULATOR_JSON_DATA = {};
-                
-                const script = document.createElement('script');
-                script.src = './static/app.js';
-                script.onload = () => {
-                    document.addEventListener = originalAddEventListener;
-                    domContentLoadedCallbacks.forEach(cb => cb());
-                };
-                document.head.appendChild(script);
+                loadApp();
             });
 
         
