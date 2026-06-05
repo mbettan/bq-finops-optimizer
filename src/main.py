@@ -2722,7 +2722,7 @@ async def get_top_spenders(params: UserProfilerParams):
     GROUP BY
       user_email
     ORDER BY
-      total_bytes_billed DESC
+      total_slot_hours DESC
     LIMIT 50
     """
     
