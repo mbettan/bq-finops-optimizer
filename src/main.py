@@ -187,6 +187,8 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
        `{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
     WHERE TRUE
        AND total_physical_bytes > 0
+       AND deleted = false
+       AND table_type = 'BASE TABLE'
     GROUP BY 1,2
     """
     logger.info(f"SQL QUERY:\n{sql}")
@@ -212,26 +214,29 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
         # Rescale time travel
         time_travel_physical_gib_rescaled = time_travel_physical_gib * params.time_travel_rescale
 
-        # Derived metrics
-        active_no_tt_no_fs_physical_gib = active_physical_gib - time_travel_physical_gib
-
-        # Calculate Costs
-        forecast_active_logical_cost = active_logical_gib * params.active_logical_price
-        forecast_long_term_logical_cost = long_term_logical_gib * params.long_term_logical_price
+        # Derived metrics        # Formula: Physical Cost = (Active + Failsafe)*rate + (LongTerm)*rate
+        # Since active_physical ALREADY includes TT, we subtract it out first so we can 
+        # add back our RESCALED TT cost based on user parameters.
+        active_no_tt_physical_gib = active_physical_gib - time_travel_physical_gib
         
-        forecast_active_no_tt_no_fs_physical_cost = active_no_tt_no_fs_physical_gib * params.active_physical_price
+        forecast_logical_active_cost = active_logical_gib * params.active_logical_price
+        forecast_logical_long_term_cost = long_term_logical_gib * params.long_term_logical_price
+        forecast_logical = forecast_logical_active_cost + forecast_logical_long_term_cost
+        
+        forecast_active_no_tt_physical_cost = active_no_tt_physical_gib * params.active_physical_price
         forecast_travel_physical_cost = time_travel_physical_gib_rescaled * params.active_physical_price
         forecast_failsafe_physical_cost = fail_safe_physical_gib * params.active_physical_price
         forecast_long_term_physical_cost = long_term_physical_gib * params.long_term_physical_price
-
-        # Totals
-        forecast_logical = forecast_active_logical_cost + forecast_long_term_logical_cost
-        forecast_physical = (forecast_active_no_tt_no_fs_physical_cost + 
+        
+        forecast_physical = (forecast_active_no_tt_physical_cost + 
                              forecast_travel_physical_cost + 
                              forecast_failsafe_physical_cost + 
                              forecast_long_term_physical_cost)
 
-        total_physical_gib = (active_physical_bytes + time_travel_physical_bytes + fail_safe_physical_bytes + long_term_physical_bytes) / GIB_CONVERSION
+        # active_physical_bytes ALREADY includes time_travel_physical_bytes (per BQ docs),
+        # so do NOT add time travel again. total_physical_bytes (active + long_term + TT)
+        # also excludes fail-safe, which we add explicitly since it is billed at active rate.
+        total_physical_gib = (active_physical_bytes + fail_safe_physical_bytes + long_term_physical_bytes) / GIB_CONVERSION
         
         processed_metrics.append({
             "project_name": row['project_name'],
