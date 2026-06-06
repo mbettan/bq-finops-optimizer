@@ -53,11 +53,12 @@
         const origClear = Storage.prototype.clear;
         
         Storage.prototype.getItem = function(key) {
-            if (window.SIMULATOR_JSON_DATA && window.SIMULATOR_JSON_DATA[key]) {
-                return window.SIMULATOR_JSON_DATA[key];
-            }
             if (key in simStorage) {
                 return simStorage[key];
+            }
+            if (window.SIMULATOR_JSON_DATA && key in window.SIMULATOR_JSON_DATA) {
+                const val = window.SIMULATOR_JSON_DATA[key];
+                return typeof val === 'string' ? val : JSON.stringify(val);
             }
             return null;
         };
@@ -73,8 +74,38 @@
         
         const origFetch = window.fetch;
         window.fetch = async function(url, options) {
-            if (url.includes("/api/")) {
-                return new Response(JSON.stringify({ error: "API disabled in Simulator mode" }), { status: 400 });
+            const urlStr = typeof url === 'string' ? url : url.url;
+            if (urlStr.includes("/api/")) {
+                const apiMap = {
+                    '/api/jobs/results': 'bq_job_results',
+                    '/api/jobs/users': 'bq_top_spenders',
+                    '/api/jobs/antipatterns': 'bq_antipatterns_results',
+                    '/api/slots/analyze': 'bq_slots_results',
+                    '/api/slots/tiered_recommendations': 'bq_slots_tiered',
+                    '/api/slots/utilization': 'bq_slots_utilization',
+                    '/api/slots/actual_provisioning': 'bq_slots_actual_provisioning',
+                    '/api/slots/profiler': 'bq_profiler_summary',
+                    '/api/storage/results': 'bq_storage_results',
+                    '/api/storage/hygiene': 'bq_hygiene_results'
+                };
+
+                const matchingPath = Object.keys(apiMap).find(path => urlStr.includes(path));
+                const dataKey = matchingPath ? apiMap[matchingPath] : null;
+                const rawData = dataKey ? window.SIMULATOR_JSON_DATA[dataKey] : null;
+
+                if (rawData != null) {
+                    const body = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+                    return new Response(body, {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                console.error(`[SIMULATOR] MISSING dummy data for: ${urlStr} (key: ${dataKey || 'unmapped'})`);
+                return new Response(JSON.stringify({}), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                });
             }
             return origFetch(url, options);
         };
