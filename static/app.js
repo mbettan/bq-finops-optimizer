@@ -934,10 +934,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const [utilResult, actualResult] = await Promise.allSettled([utilReq, actualReq]);
 
         let utilData = null;
-        let provisioningTimeline = null;
+        let actualData = null;
 
         if (utilResult.status === 'fulfilled' && utilResult.value.ok) {
           utilData = await utilResult.value.json();
+          safeSetLocalStorage('bq_slots_utilization', JSON.stringify(utilData));
         } else {
           let detail = 'Failed to fetch slot utilization data';
           try {
@@ -950,15 +951,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (actualResult.status === 'fulfilled' && actualResult.value.ok) {
-          const actualData = await actualResult.value.json();
-          document.getElementById('act-autoscaled-hours').textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours));
-          document.getElementById('act-baseline-hours').textContent = formatNumber(Math.round(actualData.baseline_slot_hours));
-          document.getElementById('act-total-hours').textContent = formatNumber(Math.round(actualData.total_slot_hours));
-          provisioningTimeline = actualData.timeline;
-          renderActualProvisioningDonut(actualData.autoscaled_slot_hours, actualData.baseline_slot_hours);
-
-          // Persist the full provisioning result (KPI tiles + donut + timeline) for export.
+          actualData = await actualResult.value.json();
           safeSetLocalStorage('bq_slots_actual_provisioning', JSON.stringify(actualData));
+          if (actualData.timeline) {
+            safeSetLocalStorage('bq_slots_provisioning_timeline', JSON.stringify(actualData.timeline));
+          } else {
+            try { localStorage.removeItem('bq_slots_provisioning_timeline'); } catch (_) {}
+          }
         } else {
           let detail = 'Failed to fetch actual provisioning data';
           try {
@@ -970,27 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
           showNotification(detail, 'error');
         }
 
-        if (utilData) {
-          renderSlotsChart(utilData, provisioningTimeline);
-
-          // Persist the two chart inputs so they survive snapshot export/import.
-          safeSetLocalStorage('bq_slots_utilization', JSON.stringify(utilData));
-          if (provisioningTimeline) {
-            safeSetLocalStorage('bq_slots_provisioning_timeline', JSON.stringify(provisioningTimeline));
-          } else {
-            // No provisioning overlay this run — clear any stale cached overlay.
-            try { localStorage.removeItem('bq_slots_provisioning_timeline'); } catch (_) {}
-          }
-
-          // Auto-set simulator max baseline from peak usage
-          const simMaxBaselineInput = document.getElementById('sim-max-baseline');
-          if (simMaxBaselineInput && utilData.length > 0) {
-            const peakSlots = Math.max(...utilData.map(d => d.max_slots));
-            const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
-            simMaxBaselineInput.value = recommendedMax;
-            console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
-          }
-        }
+        renderSlotsUtilizationAndProvisioning(utilData, actualData);
       })();
 
       // --- Render the TABLES as their (slower) inputs resolve ---
@@ -1801,6 +1780,32 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
             }
         });
+    };
+
+    const renderSlotsUtilizationAndProvisioning = (utilData, actualData) => {
+        let provisioningTimeline = null;
+        if (actualData) {
+            const elAuto = document.getElementById('act-autoscaled-hours');
+            const elBase = document.getElementById('act-baseline-hours');
+            const elTotal = document.getElementById('act-total-hours');
+            if (elAuto) elAuto.textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours || 0));
+            if (elBase) elBase.textContent = formatNumber(Math.round(actualData.baseline_slot_hours || 0));
+            if (elTotal) elTotal.textContent = formatNumber(Math.round(actualData.total_slot_hours || 0));
+            provisioningTimeline = actualData.timeline || null;
+            renderActualProvisioningDonut(actualData.autoscaled_slot_hours || 0, actualData.baseline_slot_hours || 0);
+        }
+
+        if (Array.isArray(utilData) && utilData.length > 0) {
+            renderSlotsChart(utilData, provisioningTimeline);
+
+            const simMaxBaselineInput = document.getElementById('sim-max-baseline');
+            if (simMaxBaselineInput) {
+                const peakSlots = Math.max(...utilData.map(d => d.max_slots || 0));
+                const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
+                simMaxBaselineInput.value = recommendedMax;
+                console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
+            }
+        }
     };
 
     // Helpers
@@ -3393,7 +3398,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const cachedSlots = localStorage.getItem('bq_slots_results');
     if (cachedSlots) {
         try {
-            renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile.value) || 90);
+            renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
         } catch (e) { console.warn("Failed to parse cached slots results", e); }
     }
     
@@ -3402,36 +3407,44 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
     }
 
-    // Load cached "Actual Provisioning" KPI tiles + donut (if present)
-    const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
-    let cachedProvTimelineFromActual = null;
-    if (cachedActualProv) {
-        try {
-            const actualData = JSON.parse(cachedActualProv);
-            const elAuto = document.getElementById('act-autoscaled-hours');
-            const elBase = document.getElementById('act-baseline-hours');
-            const elTotal = document.getElementById('act-total-hours');
-            if (elAuto) elAuto.textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours || 0));
-            if (elBase) elBase.textContent = formatNumber(Math.round(actualData.baseline_slot_hours || 0));
-            if (elTotal) elTotal.textContent = formatNumber(Math.round(actualData.total_slot_hours || 0));
-            renderActualProvisioningDonut(actualData.autoscaled_slot_hours || 0, actualData.baseline_slot_hours || 0);
-            cachedProvTimelineFromActual = actualData.timeline || null;
-        } catch (e) { console.warn("Failed to parse cached actual provisioning", e); }
-    }
-
-    // Load cached "Slot usage by capacity" line chart (utilization + provisioning overlay)
+    // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
     const cachedUtil = localStorage.getItem('bq_slots_utilization');
+    const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
+
+    let utilData = null;
+    let actualData = null;
+
     if (cachedUtil) {
         try {
-            const utilData = JSON.parse(cachedUtil);
-            // Prefer the standalone timeline key; fall back to the one embedded in actual_provisioning.
-            let provTimeline = cachedProvTimelineFromActual;
-            const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
-            if (cachedProv) {
-                try { provTimeline = JSON.parse(cachedProv); } catch (_) {}
+            utilData = JSON.parse(cachedUtil);
+        } catch (e) {
+            console.warn("Failed to parse cached slots utilization chart", e);
+        }
+    }
+
+    if (cachedActualProv) {
+        try {
+            actualData = JSON.parse(cachedActualProv);
+            // Standalone timeline fallback if not embedded or to support legacy cache keys
+            if (actualData && !actualData.timeline) {
+                const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
+                if (cachedProv) {
+                    try {
+                        actualData.timeline = JSON.parse(cachedProv);
+                    } catch (_) {}
+                }
             }
-            renderSlotsChart(utilData, provTimeline);
-        } catch (e) { console.warn("Failed to parse cached slots utilization chart", e); }
+        } catch (e) {
+            console.warn("Failed to parse cached actual provisioning", e);
+        }
+    }
+
+    if (utilData || actualData) {
+        try {
+            renderSlotsUtilizationAndProvisioning(utilData, actualData);
+        } catch (e) {
+            console.error("Failed to render cached slots timeline / provisioning data", e);
+        }
     }
 
     // Load cached profiler data
