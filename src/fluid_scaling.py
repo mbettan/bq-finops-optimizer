@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,6 @@ router = APIRouter(prefix="/api/fluid-scaling", tags=["fluid-scaling"])
 # Constants
 # ---------------------------------------------------------------------------
 
-_IDENT_RE = re.compile(r"^[a-zA-Z0-9_\-\.\:]+\Z")
 
 DAYS_PER_MONTH = 30.44
 DAYS_PER_YEAR = 365.25
@@ -42,13 +42,13 @@ class FluidScalingStatus(BaseModel):
 
 
 class FluidScalingParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
 
 
 class FluidEstimateParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
@@ -88,17 +88,6 @@ class FluidScalingEstimateResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _safe_ident(value: str, name: str) -> str:
-    if not value or not _IDENT_RE.match(value):
-        raise HTTPException(status_code=400, detail=f"Invalid {name}: {value!r}")
-    return value
-
-
-def _normalize_region(region: str) -> str:
-    region = (region or "").strip()
-    if not region:
-        return "region-us"
-    return region if region.startswith("region-") else f"region-{region}"
 
 
 def _strip_qualifier(reservation_id: Optional[str]) -> str:
@@ -157,12 +146,12 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
 
 @router.post("/status", response_model=List[FluidScalingStatus])
 def check_fluid_scaling_status(params: FluidScalingParams):
-    project = _safe_ident(params.org_project_id, "org_project_id")
-    admin_project = _safe_ident(params.admin_project_id or params.org_project_id, "admin_project_id")
-    region = _safe_ident(_normalize_region(params.region), "region")
-
     try:
-        client = bigquery.Client(project=project)
+        client, project = init_bq_client_and_resolve_project(params)
+        admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else project
+        admin_project = _safe_ident(admin_project_raw, "admin_project_id")
+        reject_dummy_project(admin_project)
+        region = _safe_ident(_normalize_region(params.region), "region")
 
         sql_reservations = f"""
             SELECT reservation_name
@@ -472,12 +461,12 @@ def _build_config_status(
 
 @router.post("/estimate", response_model=FluidScalingEstimateResponse)
 def estimate_fluid_scaling(params: FluidEstimateParams):
-    org_project = _safe_ident(params.org_project_id, "org_project_id")
-    admin_project = _safe_ident(params.admin_project_id or org_project, "admin_project_id")
-    region = _safe_ident(_normalize_region(params.region), "region")
-
     try:
-        client = bigquery.Client(project=org_project)
+        client, org_project = init_bq_client_and_resolve_project(params)
+        admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else org_project
+        admin_project = _safe_ident(admin_project_raw, "admin_project_id")
+        reject_dummy_project(admin_project)
+        region = _safe_ident(_normalize_region(params.region), "region")
 
         capacity_sql = _render_sql(_SQL_PER_SECOND_CAPACITY, admin_project=admin_project, region=region)
         usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region)
@@ -542,6 +531,8 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
     except gax_exc.GoogleAPIError:
         logger.exception("BigQuery error")
         raise HTTPException(500, "Query failed; check server logs")
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Unexpected error in fluid scaling estimate")
         raise HTTPException(500, "Internal server error")

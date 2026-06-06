@@ -830,178 +830,214 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // Analyze Slots
-    if (elements.btnAnalyzeSlots) {
-        elements.btnAnalyzeSlots.addEventListener('click', async () => {
-            if (!state.orgProject) {
-                showNotification('Please configure settings first.', 'error');
-                Router.navigate('settings');
-                return;
-            }
+  // Analyze Slots (parallelized; chart no longer waits on analyze/tiered)
+  if (elements.btnAnalyzeSlots) {
+    elements.btnAnalyzeSlots.addEventListener('click', async () => {
+      if (!state.orgProject) {
+        showNotification('Please configure settings first.', 'error');
+        Router.navigate('settings');
+        return;
+      }
 
-            const tableEl = document.getElementById('slots-recommendations-table');
-            const container = tableEl ? tableEl.closest('.results-panel') : null;
-            const tierContainer = document.querySelector('.tier-cards-container');
+      const tableEl = document.getElementById('slots-recommendations-table');
+      const container = tableEl ? tableEl.closest('.results-panel') : null;
+      const tierContainer = document.querySelector('.tier-cards-container');
 
-            if (tableEl && $.fn.DataTable.isDataTable('#slots-recommendations-table')) {
-                $('#slots-recommendations-table').DataTable().destroy();
-            }
-            
-            if (tableEl) {
-                UIState.renderTableSkeleton(tableEl, 5);
-            }
-            if (tierContainer) {
-                UIState.renderTierCardsSkeleton(tierContainer);
-            }
+      if (tableEl && $.fn.DataTable.isDataTable('#slots-recommendations-table')) {
+        $('#slots-recommendations-table').DataTable().destroy();
+      }
 
-            const abortController = new AbortController();
-            let progress = null;
-            
-            if (container) {
-                progress = UIState.startQueryProgress(container, {
-                    message: 'Computing per-minute slot percentiles across organization...',
-                    onCancel: () => abortController.abort()
-                });
-            }
+      if (tableEl) {
+        UIState.renderTableSkeleton(tableEl, 5);
+      }
+      if (tierContainer) {
+        UIState.renderTierCardsSkeleton(tierContainer);
+      }
 
-            setLoading(elements.btnAnalyzeSlots, true);
+      const abortController = new AbortController();
+      let progress = null;
 
-            const params = {
-                org_project_id: state.orgProject,
-                region: state.region,
-                lookback_days: parseInt(elements.slLookback.value),
-                window_minutes: parseInt(elements.slWindow.value),
-                percentile: parseInt(elements.slPercentile.value),
-                admin_project_id: state.adminProject
-            };
-
-            try {
-                debug_log("Fetching slots analysis with params:", params);
-                const response = await fetch('/api/slots/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params),
-                    signal: abortController.signal
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail || 'Failed to analyze slots');
-                }
-
-                const responseData = await response.json();
-                
-                if (progress) progress.stop();
-
-                setTimeout(() => {
-                    renderSlotsResults(responseData, params.percentile);
-                }, 0);
-                safeSetLocalStorage('bq_slots_results', JSON.stringify(responseData));
-
-                // Fetch tiered recommendations
-                try {
-                    const tieredResponse = await fetch('/api/slots/tiered_recommendations', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            org_project_id: state.orgProject,
-                            region: state.region,
-                            lookback_days: params.lookback_days
-                        })
-                    });
-
-                    if (tieredResponse.ok) {
-                        const tieredData = await tieredResponse.json();
-                        renderTieredRecommendations(tieredData);
-                    }
-                } catch (err) {
-                    console.warn("Failed to fetch tiered recommendations:", err);
-                }
-
-                // Fetch utilization timeline
-                const utilParams = {
-                    org_project_id: state.orgProject,
-                    region: state.region,
-                    lookback_days: params.lookback_days,
-                    timezone: 'America/New_York',
-                    resolution: elements.slResolution.value
-                };
-
-                const utilResponse = await fetch('/api/slots/utilization', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(utilParams)
-                });
-
-                if (utilResponse.ok) {
-                    const utilData = await utilResponse.json();
-                    
-                    // Fetch actual provisioning
-                    const actualParams = {
-                        org_project_id: state.orgProject,
-                        region: state.region,
-                        lookback_days: params.lookback_days,
-                        timezone: 'America/New_York',
-                        edition: 'ENTERPRISE',
-                        admin_project_id: state.adminProject
-                    };
-
-                    let provisioningTimeline = null;
-                    try {
-                        const actualResponse = await fetch('/api/slots/actual_provisioning', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(actualParams)
-                        });
-
-                        if (actualResponse.ok) {
-                            const actualData = await actualResponse.json();
-                            document.getElementById('act-autoscaled-hours').textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours));
-                            document.getElementById('act-baseline-hours').textContent = formatNumber(Math.round(actualData.baseline_slot_hours));
-                            document.getElementById('act-total-hours').textContent = formatNumber(Math.round(actualData.total_slot_hours));
-                            provisioningTimeline = actualData.timeline;
-                            
-                            renderActualProvisioningDonut(actualData.autoscaled_slot_hours, actualData.baseline_slot_hours);
-                        }
-                    } catch (error) {
-                        console.warn("Failed to fetch actual provisioning:", error);
-                    }
-
-                    renderSlotsChart(utilData, provisioningTimeline);
-                    
-
-
-                    // Automatically set Max Baseline Slots for the simulator based on peak usage
-                    const simMaxBaselineInput = document.getElementById('sim-max-baseline');
-                    if (simMaxBaselineInput && utilData.length > 0) {
-                        const peakSlots = Math.max(...utilData.map(d => d.max_slots));
-                        // Round up to the next 500 for a clean limit, default to 1000 if 0
-                        const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
-                        simMaxBaselineInput.value = recommendedMax;
-                        console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
-                    }
-                } else {
-                    console.warn("Failed to fetch slot utilization timeline");
-                }
-
-                showNotification('Slots analysis completed.', 'success');
-
-
-            } catch (error) {
-                if (typeof progress !== 'undefined' && progress && progress.stop) {
-                    progress.stop();
-                }
-                console.error("Slots Analysis Error:", error);
-                showNotification(error.message, 'error');
-            } finally {
-                setLoading(elements.btnAnalyzeSlots, false);
-            }
+      if (container) {
+        progress = UIState.startQueryProgress(container, {
+          message: 'Running slot analysis across organization (running 4 queries in parallel)...',
+          onCancel: () => abortController.abort()
         });
-    }
+      }
 
+      setLoading(elements.btnAnalyzeSlots, true);
 
+      const lookbackDays = parseInt(elements.slLookback.value);
+      const percentile = parseInt(elements.slPercentile.value);
 
+      // --- Build the four request promises up front (no awaits between them) ---
 
+      const analyzeReq = fetch('/api/slots/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+          region: state.region,
+          lookback_days: lookbackDays,
+          window_minutes: parseInt(elements.slWindow.value),
+          percentile: percentile,
+          admin_project_id: state.adminProject
+        }),
+        signal: abortController.signal
+      });
 
+      const tieredReq = fetch('/api/slots/tiered_recommendations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+          region: state.region,
+          lookback_days: lookbackDays
+        }),
+        signal: abortController.signal
+      });
+
+      // Chart driver #1 — forced to HOUR resolution to keep the payload small
+      // (MINUTE over 7 days returned ~2.1 MB; HOUR is ~60x smaller and is
+      // plenty of detail for a 7-day overview chart).
+      const utilReq = fetch('/api/slots/utilization', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+          region: state.region,
+          lookback_days: lookbackDays,
+          timezone: 'America/New_York',
+          resolution: 'HOUR'
+        }),
+        signal: abortController.signal
+      });
+
+      // Chart driver #2 — provisioning timeline overlay
+      const actualReq = fetch('/api/slots/actual_provisioning', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+          region: state.region,
+          lookback_days: lookbackDays,
+          timezone: 'America/New_York',
+          edition: 'ENTERPRISE',
+          admin_project_id: state.adminProject
+        }),
+        signal: abortController.signal
+      });
+
+      // --- Render the CHART first, as soon as its two inputs resolve ---
+      // This is the whole point: the chart no longer waits on the slow
+      // analyze (~26s) or tiered (~6s) queries.
+      const chartReady = (async () => {
+        const [utilResult, actualResult] = await Promise.allSettled([utilReq, actualReq]);
+
+        let utilData = null;
+        let provisioningTimeline = null;
+
+        if (utilResult.status === 'fulfilled' && utilResult.value.ok) {
+          utilData = await utilResult.value.json();
+        } else {
+          let detail = 'Failed to fetch slot utilization data';
+          try {
+            if (utilResult.status === 'fulfilled') {
+              detail = (await utilResult.value.json()).detail || detail;
+            }
+          } catch (_) {}
+          console.error('Slot utilization fetch failed:', detail);
+          showNotification(detail, 'error');
+        }
+
+        if (actualResult.status === 'fulfilled' && actualResult.value.ok) {
+          const actualData = await actualResult.value.json();
+          document.getElementById('act-autoscaled-hours').textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours));
+          document.getElementById('act-baseline-hours').textContent = formatNumber(Math.round(actualData.baseline_slot_hours));
+          document.getElementById('act-total-hours').textContent = formatNumber(Math.round(actualData.total_slot_hours));
+          provisioningTimeline = actualData.timeline;
+          renderActualProvisioningDonut(actualData.autoscaled_slot_hours, actualData.baseline_slot_hours);
+
+          // Persist the full provisioning result (KPI tiles + donut + timeline) for export.
+          safeSetLocalStorage('bq_slots_actual_provisioning', JSON.stringify(actualData));
+        } else {
+          let detail = 'Failed to fetch actual provisioning data';
+          try {
+            if (actualResult.status === 'fulfilled') {
+              detail = (await actualResult.value.json()).detail || detail;
+            }
+          } catch (_) {}
+          console.error('Actual provisioning fetch failed:', detail);
+          showNotification(detail, 'error');
+        }
+
+        if (utilData) {
+          renderSlotsChart(utilData, provisioningTimeline);
+
+          // Persist the two chart inputs so they survive snapshot export/import.
+          safeSetLocalStorage('bq_slots_utilization', JSON.stringify(utilData));
+          if (provisioningTimeline) {
+            safeSetLocalStorage('bq_slots_provisioning_timeline', JSON.stringify(provisioningTimeline));
+          } else {
+            // No provisioning overlay this run — clear any stale cached overlay.
+            try { localStorage.removeItem('bq_slots_provisioning_timeline'); } catch (_) {}
+          }
+
+          // Auto-set simulator max baseline from peak usage
+          const simMaxBaselineInput = document.getElementById('sim-max-baseline');
+          if (simMaxBaselineInput && utilData.length > 0) {
+            const peakSlots = Math.max(...utilData.map(d => d.max_slots));
+            const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
+            simMaxBaselineInput.value = recommendedMax;
+            console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
+          }
+        }
+      })();
+
+      // --- Render the TABLES as their (slower) inputs resolve ---
+      const tablesReady = (async () => {
+        const [analyzeResult, tieredResult] = await Promise.allSettled([analyzeReq, tieredReq]);
+
+        if (analyzeResult.status === 'fulfilled' && analyzeResult.value.ok) {
+          const responseData = await analyzeResult.value.json();
+          renderSlotsResults(responseData, percentile);
+          safeSetLocalStorage('bq_slots_results', JSON.stringify(responseData));
+        } else {
+          let detail = 'Failed to analyze slots';
+          try {
+            if (analyzeResult.status === 'fulfilled') {
+              detail = (await analyzeResult.value.json()).detail || detail;
+            }
+          } catch (_) {}
+          console.error('Slots analyze fetch failed:', detail);
+          showNotification(detail, 'error');
+        }
+
+        if (tieredResult.status === 'fulfilled' && tieredResult.value.ok) {
+          const tieredData = await tieredResult.value.json();
+          renderTieredRecommendations(tieredData);
+          safeSetLocalStorage('bq_slots_tiered', JSON.stringify(tieredData));
+        } else {
+          console.warn('Failed to fetch tiered recommendations:', tieredResult.reason);
+        }
+      })();
+
+      // --- Wait for everything, then clean up the spinner/progress ---
+      try {
+        await Promise.allSettled([chartReady, tablesReady]);
+        showNotification('Slots analysis completed.', 'success');
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          showNotification('Slots analysis cancelled.', 'warning');
+        } else {
+          console.error('Slots Analysis Error:', error);
+          showNotification(error.message || 'Slots analysis failed.', 'error');
+        }
+      } finally {
+        if (progress) progress.stop();
+        setLoading(elements.btnAnalyzeSlots, false);
+      }
+    });
+  }
     // Slot Simulator
     const btnRunSimulation = document.getElementById('run-simulation-btn');
     if (btnRunSimulation) {
@@ -1129,9 +1165,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const container = document.querySelector('#current-reservations-container');
         const recommendationsTbody = document.querySelector('#slots-recommendations-table tbody');
+        const recommendationsTfoot = document.querySelector('#slots-recommendations-table tfoot');
         
         if (container) container.innerHTML = '';
         if (recommendationsTbody) recommendationsTbody.innerHTML = '';
+        if (recommendationsTfoot) recommendationsTfoot.innerHTML = '';
 
         // Update label
         const lblPercentile = document.getElementById('lbl-percentile');
@@ -1204,7 +1242,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${formatNumber(row.recommended_max_p99)}</td>
                     <td>${formatNumber(row.recommended_max_peak)}</td>
                 `;
-                recommendationsTbody.appendChild(tr);
+                
+                if (displayResId === 'MERGED (Simulated)') {
+                    // Make it stand out slightly if it's the sum row
+                    tr.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                    if (recommendationsTfoot) {
+                        recommendationsTfoot.appendChild(tr);
+                    } else {
+                        recommendationsTbody.appendChild(tr);
+                    }
+                } else {
+                    recommendationsTbody.appendChild(tr);
+                }
             });
         }
 
@@ -3340,12 +3389,49 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached job results", e); }
     }
 
-    // Load cached slots data
+    // Load cached slots data (recommendation + current reservations tables)
     const cachedSlots = localStorage.getItem('bq_slots_results');
     if (cachedSlots) {
         try {
             renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile.value) || 90);
         } catch (e) { console.warn("Failed to parse cached slots results", e); }
+    }
+    
+    const cachedTiered = localStorage.getItem('bq_slots_tiered');
+    if (cachedTiered) {
+        try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
+    }
+
+    // Load cached "Actual Provisioning" KPI tiles + donut (if present)
+    const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
+    let cachedProvTimelineFromActual = null;
+    if (cachedActualProv) {
+        try {
+            const actualData = JSON.parse(cachedActualProv);
+            const elAuto = document.getElementById('act-autoscaled-hours');
+            const elBase = document.getElementById('act-baseline-hours');
+            const elTotal = document.getElementById('act-total-hours');
+            if (elAuto) elAuto.textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours || 0));
+            if (elBase) elBase.textContent = formatNumber(Math.round(actualData.baseline_slot_hours || 0));
+            if (elTotal) elTotal.textContent = formatNumber(Math.round(actualData.total_slot_hours || 0));
+            renderActualProvisioningDonut(actualData.autoscaled_slot_hours || 0, actualData.baseline_slot_hours || 0);
+            cachedProvTimelineFromActual = actualData.timeline || null;
+        } catch (e) { console.warn("Failed to parse cached actual provisioning", e); }
+    }
+
+    // Load cached "Slot usage by capacity" line chart (utilization + provisioning overlay)
+    const cachedUtil = localStorage.getItem('bq_slots_utilization');
+    if (cachedUtil) {
+        try {
+            const utilData = JSON.parse(cachedUtil);
+            // Prefer the standalone timeline key; fall back to the one embedded in actual_provisioning.
+            let provTimeline = cachedProvTimelineFromActual;
+            const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
+            if (cachedProv) {
+                try { provTimeline = JSON.parse(cachedProv); } catch (_) {}
+            }
+            renderSlotsChart(utilData, provTimeline);
+        } catch (e) { console.warn("Failed to parse cached slots utilization chart", e); }
     }
 
     // Load cached profiler data
@@ -4261,7 +4347,7 @@ const FluidScaling = (() => {
     
     // Guard: refuse to parse absurd payloads (prevents tab freeze / OOM)
     const len = Number(res.headers.get('content-length') || 0);
-    const MAX_BYTES = 10 * 1024 * 1024; // 10 MB ceiling
+    const MAX_BYTES = 2 * 1024 * 1024; // 2 MB ceiling (GZipped)
     if (len > MAX_BYTES) {
       throw new Error(
         `Simulation response too large (${(len / 1024 / 1024).toFixed(0)} MB). ` +

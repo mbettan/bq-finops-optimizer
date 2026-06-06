@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from google.cloud import bigquery
@@ -20,12 +21,13 @@ from .cost_attribution import router as cost_attribution_router
 from .hbo import router as hbo_router
 from .fluid_scaling import (
     router as fluid_scaling_router,
-    _safe_ident,
-    _normalize_region,
     _strip_qualifier,
 )
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception
+
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(cost_attribution_router)
 app.include_router(hbo_router)
 app.include_router(fluid_scaling_router)
@@ -58,7 +60,7 @@ def asset_version(name: str) -> str:
 
 # Serve index.html at root
 @app.get("/", response_class=HTMLResponse)
-async def read_index():
+def read_index():
     try:
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         # Replace versions dynamically based on actual file hashes
@@ -82,41 +84,8 @@ async def read_index():
         logger.error(f"Error serving index: {e}")
         raise HTTPException(status_code=500, detail="Internal server error reading main page")
 
-@app.get("/simulator", response_class=HTMLResponse)
-async def read_simulator():
-    try:
-        html = (STATIC_DIR / "simulator.html").read_text(encoding="utf-8")
-        import json
-        from pathlib import Path
-        dummy_file = Path(BASE_DIR) / "docs" / "finops-snapshot_dummy.json"
-        if dummy_file.exists():
-            data = json.loads(dummy_file.read_text(encoding="utf-8"))
-            dummy_json_str = json.dumps(data.get("data", {}))
-            html = html.replace("__SIMULATOR_JSON_DATA_PLACEHOLDER__", dummy_json_str)
-        else:
-            html = html.replace("__SIMULATOR_JSON_DATA_PLACEHOLDER__", "{}")
-        html = re.sub(
-            r"static/app\.js(\?v=[^\"']*)?",
-            f"static/app.js?v={asset_version('app.js')}",
-            html
-        )
-        html = re.sub(
-            r"static/style\.css(\?v=[^\"']*)?",
-            f"static/style.css?v={asset_version('style.css')}",
-            html
-        )
-        headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-        return HTMLResponse(content=html, headers=headers)
-    except Exception as e:
-        logger.error(f"Error serving simulator: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error reading simulator page")
-
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
+def favicon():
     return Response(status_code=204)
 
 # Mount static files
@@ -148,12 +117,7 @@ class JobAnalysisParams(BaseModel):
 
 
 
-# Initialize BigQuery client
-try:
-    client = bigquery.Client()
-except Exception as e:
-    logger.error(f"Failed to initialize BigQuery client: {e}")
-    client = None
+
 
 def run_query_and_log(scoped_client: bigquery.Client, sql: str, description: str = "Query"):
     # Safety cap: cancel queries that would scan more than this.
@@ -233,10 +197,17 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
                              forecast_failsafe_physical_cost + 
                              forecast_long_term_physical_cost)
 
-        # active_physical_bytes ALREADY includes time_travel_physical_bytes (per BQ docs),
-        # so do NOT add time travel again. total_physical_bytes (active + long_term + TT)
-        # also excludes fail-safe, which we add explicitly since it is billed at active rate.
-        total_physical_gib = (active_physical_bytes + fail_safe_physical_bytes + long_term_physical_bytes) / GIB_CONVERSION
+        # Build total physical volume from the SAME components used in forecast_physical,
+        # so the blended pricing ratio (cost / volume) is internally consistent.
+        #
+        # active_physical_bytes INCLUDES raw time travel, so we strip it out and add back
+        # the RESCALED time travel — mirroring the forecast logic above exactly.
+        total_physical_gib = (
+            active_no_tt_physical_gib              # active minus raw TT
+            + time_travel_physical_gib_rescaled   # rescaled TT (matches forecast)
+            + fail_safe_physical_gib
+            + long_term_physical_gib
+        )
         
         processed_metrics.append({
             "project_name": row['project_name'],
@@ -294,12 +265,13 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str):
     return "LOGICAL"
 
 @app.post("/api/storage/analyze")
-async def analyze_storage(params: StorageParams):
+def analyze_storage(params: StorageParams):
     _validate_safe_params(params)
     logger.info(f"Storage Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
     
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
+
         
         org_billing_model = get_org_storage_billing_model(scoped_client, params.region)
         org_status = {
@@ -369,7 +341,7 @@ async def analyze_storage(params: StorageParams):
     except Exception as e:
         if "hasn't been enabled" in str(e):
             logger.warning(f"Storage view not enabled for {params.region}: {e}")
-            project_id = params.org_project_id if params.org_project_id else "your-project-id"
+            project_id = resolved_project
             enable_ddl = f"ALTER PROJECT `{project_id}` SET OPTIONS (`{params.region}.enable_info_schema_storage` = TRUE)"
             return {
                 "datasets": [],
@@ -380,18 +352,15 @@ async def analyze_storage(params: StorageParams):
                     "error_message": f"Storage tracking views are not enabled for region {params.region}."
                 }
             }
-        logger.error(f"Storage analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Storage analysis")
 
 @app.post("/api/jobs/analyze")
-async def analyze_jobs(params: JobAnalysisParams):
+def analyze_jobs(params: JobAnalysisParams):
     _validate_safe_params(params)
     logger.info(f"Job Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
     
+    scoped_client, org_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        org_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         duration_expression = "TIMESTAMP_DIFF(end_time, start_time, MILLISECOND)" if params.fluid_scaling else "GREATEST(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 60000)"
         
@@ -439,16 +408,21 @@ async def analyze_jobs(params: JobAnalysisParams):
             billed_duration_ms = row['billed_duration_ms'] if params.fluid_scaling else (row['billed_duration_ms'] or 60000)
             
             avg_slots = (slot_ms / actual_duration_ms) if (actual_duration_ms and slot_ms is not None) else 0
-            
-            # Heuristic 1: Spike Factor for short jobs (Peak Approximation)
-            spike_factor = 1.0
-            if not params.fluid_scaling and actual_duration_ms < 60000:
-                # Scales from 3.0 at 0ms to 1.0 at 60s
-                spike_factor = 1.0 + 2.0 * (1.0 - (actual_duration_ms / 60000.0))
-            
-            effective_slots = avg_slots * spike_factor
-            
-            # Heuristic 2: Slot Sharing Discount for small queries
+
+            # NOTE: No spike factor. The legacy short-query tax is modeled SOLELY by the
+            # 60s duration floor (applied to billed_duration_ms in legacy mode). Inflating
+            # avg_slots here would double-count the same 60s minimum penalty.
+            #
+            # Proof (DoiT Google Next FinOps reference): consumed + tax slot-hours =
+            #   (avg_slots * duration) + (avg_slots * (60 - duration)) = avg_slots * 60.
+            # i.e. the correct legacy bill is exactly avg_slots held for the 60s floor,
+            # with NO peak/slot multiplier. avg_slots already reflects bursts because a
+            # spiky job has higher total_slot_ms over its short window.
+            effective_slots = avg_slots
+
+            # Slot-packing heuristic (unrelated to the 60s tax): small queries are assumed
+            # to pack into existing baseline capacity without triggering an independent
+            # autoscaler event. Larger usage rounds up to the slot step increment.
             if effective_slots < 50:
                 billed_slots = effective_slots
             else:
@@ -517,8 +491,7 @@ async def analyze_jobs(params: JobAnalysisParams):
         }
         
     except Exception as e:
-        logger.error(f"Job analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Job analysis")
 
 
 class HygieneParams(BaseModel):
@@ -534,12 +507,10 @@ class HygieneResult(BaseModel):
     health_status: str
 
 @app.post("/api/storage/hygiene", response_model=List[HygieneResult])
-async def analyze_storage_hygiene(params: HygieneParams):
+def analyze_storage_hygiene(params: HygieneParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -555,7 +526,7 @@ async def analyze_storage_hygiene(params: HygieneParams):
         """
         
         logger.info(f"Executing Storage Hygiene Query:\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "Storage Hygiene")
         
         output = []
         for row in results:
@@ -569,8 +540,7 @@ async def analyze_storage_hygiene(params: HygieneParams):
         return output
         
     except Exception as e:
-        logger.error(f"Storage hygiene analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Storage hygiene analysis")
 
 class DMLAbuseParams(BaseModel):
     org_project_id: Optional[str] = None
@@ -585,12 +555,10 @@ class DMLAbuseResult(BaseModel):
     wasted_slot_hours: float
 
 @app.post("/api/antipatterns/dml", response_model=List[DMLAbuseResult])
-async def analyze_dml_abuse(params: DMLAbuseParams):
+def analyze_dml_abuse(params: DMLAbuseParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -612,7 +580,7 @@ async def analyze_dml_abuse(params: DMLAbuseParams):
         """
         
         logger.info(f"Executing DML Abuse Query:\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "DML Abuse")
         
         output = []
         for row in results:
@@ -625,8 +593,7 @@ async def analyze_dml_abuse(params: DMLAbuseParams):
         return output
         
     except Exception as e:
-        logger.error(f"DML abuse analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "DML abuse analysis")
 
 class MVCostResult(BaseModel):
     project_id: str
@@ -636,12 +603,10 @@ class MVCostResult(BaseModel):
     total_slot_hours: float
 
 @app.post("/api/antipatterns/mv", response_model=List[MVCostResult])
-async def analyze_mv_costs(params: DMLAbuseParams):
+def analyze_mv_costs(params: DMLAbuseParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         # 1. Get all Materialized Views
         mv_sql = f"""
@@ -650,7 +615,7 @@ async def analyze_mv_costs(params: DMLAbuseParams):
         WHERE table_type = 'MATERIALIZED VIEW'
         """
         logger.info(f"Fetching MVs:\n{mv_sql}")
-        mv_results = scoped_client.query(mv_sql).result()
+        mv_results = run_query_and_log(scoped_client, mv_sql, "MV List")
         mvs = {(row.table_schema, row.table_name) for row in mv_results}
         
         if not mvs:
@@ -669,7 +634,7 @@ async def analyze_mv_costs(params: DMLAbuseParams):
           AND destination_table.table_id IS NOT NULL
         """
         logger.info(f"Fetching jobs for MV check:\n{jobs_sql}")
-        jobs_results = scoped_client.query(jobs_sql).result()
+        jobs_results = run_query_and_log(scoped_client, jobs_sql, "MV Jobs")
         
         # 3. Process in Python
         from collections import defaultdict
@@ -696,8 +661,7 @@ async def analyze_mv_costs(params: DMLAbuseParams):
         return output
         
     except Exception as e:
-        logger.error(f"MV cost analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "MV cost analysis")
 
 class AntiPatternParams(BaseModel):
     org_project_id: Optional[str] = None
@@ -714,12 +678,10 @@ class LinterResult(BaseModel):
     billed_gb: float
 
 @app.post("/api/antipatterns/linter", response_model=List[LinterResult])
-async def analyze_query_linter(params: AntiPatternParams):
+def analyze_query_linter(params: AntiPatternParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         # 1. Find active projects
         projects_sql = f"""
@@ -731,7 +693,7 @@ async def analyze_query_linter(params: AntiPatternParams):
         """
         
         logger.info(f"Fetching active projects for linter scan:\n{projects_sql}")
-        projects_results = scoped_client.query(projects_sql).result()
+        projects_results = run_query_and_log(scoped_client, projects_sql, "Linter Projects")
         projects = [row.project_id for row in projects_results]
         
         if not projects:
@@ -761,7 +723,7 @@ async def analyze_query_linter(params: AntiPatternParams):
             
             logger.info(f"Scanning project {p} for SELECT * abuse...")
             try:
-                results = scoped_client.query(sql).result()
+                results = run_query_and_log(scoped_client, sql, f"Linter Scan {p}")
                 for row in results:
                     query_text = row.query or ''
                     if select_star_regex.search(query_text):
@@ -780,8 +742,7 @@ async def analyze_query_linter(params: AntiPatternParams):
         return output
         
     except Exception as e:
-        logger.error(f"Query linter failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Linter analysis")
 
 class SkewResult(BaseModel):
     project_id: str
@@ -793,12 +754,10 @@ class SkewResult(BaseModel):
     skew_ratio: float
 
 @app.post("/api/antipatterns/skew", response_model=List[SkewResult])
-async def analyze_data_skew(params: AntiPatternParams):
+def analyze_data_skew(params: AntiPatternParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         WITH unnested_stages AS (
@@ -838,7 +797,7 @@ async def analyze_data_skew(params: AntiPatternParams):
         """
         
         logger.info(f"Executing Data Skew Query:\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "Data Skew")
         
         output = []
         for row in results:
@@ -854,8 +813,7 @@ async def analyze_data_skew(params: AntiPatternParams):
         return output
         
     except Exception as e:
-        logger.error(f"Data skew analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Skew analysis")
 
 class BatchCandidateResult(BaseModel):
     project_id: str
@@ -866,12 +824,10 @@ class BatchCandidateResult(BaseModel):
     batch_candidate_reason: str
 
 @app.post("/api/antipatterns/batch_candidates", response_model=List[BatchCandidateResult])
-async def analyze_batch_candidates(params: AntiPatternParams):
+def analyze_batch_candidates(params: AntiPatternParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -904,7 +860,7 @@ async def analyze_batch_candidates(params: AntiPatternParams):
         """
         
         logger.info(f"Executing Batch Candidate Query:\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "Batch Candidates")
         
         output = []
         for row in results:
@@ -919,8 +875,7 @@ async def analyze_batch_candidates(params: AntiPatternParams):
         return output
         
     except Exception as e:
-        logger.error(f"Batch candidate analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Batch candidates analysis")
 
 class AIParams(BaseModel):
     org_project_id: Optional[str] = None
@@ -935,12 +890,10 @@ class AIResult(BaseModel):
     gemini_optimization_advice: str
 
 @app.post("/api/ai/analyze", response_model=List[AIResult])
-async def analyze_ai_query(params: AIParams):
+def analyze_ai_query(params: AIParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         WITH expensive_queries AS (
@@ -996,7 +949,7 @@ async def analyze_ai_query(params: AIParams):
         """
         
         logger.info(f"Executing AI Query Analysis using model {params.model_name}...")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "AI Query Analysis")
         
         output = []
         for row in results:
@@ -1011,8 +964,7 @@ async def analyze_ai_query(params: AIParams):
         return output
         
     except Exception as e:
-        logger.error(f"AI query analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "AI query analysis")
 
 
 class BIParams(BaseModel):
@@ -1031,12 +983,10 @@ class BIResult(BaseModel):
     failure_reasons: str
 
 @app.post("/api/bi/analyze", response_model=List[BIResult])
-async def analyze_bi_engine(params: BIParams):
+def analyze_bi_engine(params: BIParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -1058,7 +1008,7 @@ async def analyze_bi_engine(params: BIParams):
         """
         
         logger.info(f"Executing BI Engine Query:\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "BI Engine")
         
         output = []
         for row in results:
@@ -1074,8 +1024,7 @@ async def analyze_bi_engine(params: BIParams):
         return output
         
     except Exception as e:
-        logger.error(f"BI engine analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "BI engine analysis")
 
 class GovernanceParams(BaseModel):
     org_project_id: Optional[str] = None
@@ -1097,12 +1046,10 @@ class GovernanceResponse(BaseModel):
     filter_issues: List[PartitionFilterResult]
 
 @app.post("/api/governance/analyze", response_model=GovernanceResponse)
-async def analyze_governance(params: GovernanceParams):
+def analyze_governance(params: GovernanceParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         # 1. Audit Dataset Expiration
         exp_sql = f"""
@@ -1118,7 +1065,7 @@ async def analyze_governance(params: GovernanceParams):
         WHERE o.option_name IS NULL
         """
         logger.info(f"Executing Expiration Audit Query:\n{exp_sql}")
-        exp_results = scoped_client.query(exp_sql).result()
+        exp_results = run_query_and_log(scoped_client, exp_sql, "Expiration Audit")
         
         expiration_issues = []
         for row in exp_results:
@@ -1143,7 +1090,7 @@ async def analyze_governance(params: GovernanceParams):
         LIMIT 5
         """
         logger.info(f"Fetching top heavy datasets:\n{top_datasets_sql}")
-        top_datasets_results = scoped_client.query(top_datasets_sql).result()
+        top_datasets_results = run_query_and_log(scoped_client, top_datasets_sql, "Top Datasets")
         
         filter_issues = []
         
@@ -1182,8 +1129,7 @@ async def analyze_governance(params: GovernanceParams):
         )
         
     except Exception as e:
-        logger.error(f"Governance analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Governance analysis")
 
 
 class MVResult(BaseModel):
@@ -1194,11 +1140,10 @@ class MVResult(BaseModel):
     rejected_reason: str
 
 @app.post("/api/mv/analyze", response_model=List[MVResult])
-async def analyze_mv_rejections(params: GovernanceParams):
+def analyze_mv_rejections(params: GovernanceParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -1214,7 +1159,7 @@ async def analyze_mv_rejections(params: GovernanceParams):
         """
         
         logger.info(f"Executing MV Rejection Query:\\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "MV Rejections")
         
         output = []
         for row in results:
@@ -1228,8 +1173,7 @@ async def analyze_mv_rejections(params: GovernanceParams):
         return output
         
     except Exception as e:
-        logger.error(f"MV rejection analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "MV rejections")
 
 class WarningResult(BaseModel):
     job_id: str
@@ -1237,11 +1181,10 @@ class WarningResult(BaseModel):
     resource_warning: str
 
 @app.post("/api/resource_warnings/analyze", response_model=List[WarningResult])
-async def analyze_resource_warnings(params: GovernanceParams):
+def analyze_resource_warnings(params: GovernanceParams):
     _validate_safe_params(params)
+    scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
-        target_project = params.org_project_id if params.org_project_id else "your-project-id"
         
         sql = f"""
         SELECT
@@ -1255,7 +1198,7 @@ async def analyze_resource_warnings(params: GovernanceParams):
         """
         
         logger.info(f"Executing Resource Warning Query:\\n{sql}")
-        results = scoped_client.query(sql).result()
+        results = run_query_and_log(scoped_client, sql, "Resource Warnings")
         
         output = []
         for row in results:
@@ -1267,12 +1210,11 @@ async def analyze_resource_warnings(params: GovernanceParams):
         return output
         
     except Exception as e:
-        logger.error(f"Resource warning analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Resource warnings")
 
 
 class SlotsParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     window_minutes: int = 5
@@ -1280,84 +1222,61 @@ class SlotsParams(BaseModel):
     admin_project_id: Optional[str] = None
 
 @app.post("/api/slots/analyze")
-async def analyze_slots(params: SlotsParams):
+def analyze_slots(params: SlotsParams):
     _validate_safe_params(params)
     logger.info(f"Slots Analysis Request: org_project={params.org_project_id}, region={params.region}, window={params.window_minutes}m, P{params.percentile}")
     
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     window_seconds = params.window_minutes * 60
     
     recommendations_sql = f"""
-    WITH per_second_usage AS (
-        SELECT
-          period_start,
-          reservation_id,
-          SUM(period_slot_ms) / 1000 AS concurrent_slots
-        FROM
-          `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
-        WHERE 
-          period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-          AND reservation_id IS NOT NULL
-        GROUP BY
-          period_start, reservation_id
-    ),
-    windowed_stats AS (
-        SELECT
-          TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(period_start), {window_seconds}) * {window_seconds}) AS window_start,
-          reservation_id,
-          SUM(concurrent_slots) / {window_seconds} AS avg_slots,
-          MAX(concurrent_slots) AS max_slots
-        FROM per_second_usage
-        GROUP BY window_start, reservation_id
-    ),
-    per_res AS (
-        SELECT 
-            reservation_id,
-            CAST(IF(CONTAINS_SUBSTR(reservation_id, ":"), 
-               SPLIT(REPLACE(reservation_id, ".", ":"), ":")[OFFSET(0)], 
-               NULL) AS STRING) AS admin_project_id,
-            ARRAY_REVERSE(SPLIT(REPLACE(reservation_id, ".", ":"), ":"))[OFFSET(0)] AS clean_reservation_id,
-            APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
-            APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
-            APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
-            MAX(max_slots) AS recommended_max_peak
-        FROM 
-            windowed_stats
-        GROUP BY 
-            reservation_id
-    ),
-    merged_per_second AS (
-        SELECT
-          period_start,
-          SUM(concurrent_slots) AS concurrent_slots
-        FROM
-          per_second_usage
-        GROUP BY
-          period_start
-    ),
-    merged_windowed AS (
-        SELECT
-          TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(period_start), {window_seconds}) * {window_seconds}) AS window_start,
-          SUM(concurrent_slots) / {window_seconds} AS avg_slots,
-          MAX(concurrent_slots) AS max_slots
-        FROM merged_per_second
-        GROUP BY window_start
-    ),
-    merged_res AS (
-        SELECT 
-            'MERGED (Simulated)' AS reservation_id,
-            CAST(NULL AS STRING) AS admin_project_id,
-            'MERGED (Simulated)' AS clean_reservation_id,
-            APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
-            APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
-            APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
-            MAX(max_slots) AS recommended_max_peak
-        FROM 
-            merged_windowed
-    )
-    SELECT * FROM per_res
-    UNION ALL
-    SELECT * FROM merged_res
-    """
+  WITH per_second_usage AS (
+    SELECT
+     period_start,
+     reservation_id,
+     SUM(period_slot_ms) / 1000 AS concurrent_slots
+    FROM
+     `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+    WHERE
+     period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+     AND reservation_id IS NOT NULL
+    -- GROUPING SETS computes BOTH the per-reservation per-second total AND the
+    -- org-wide per-second total (reservation_id = NULL) in a single base-table scan.
+    -- The NULL-keyed rows ARE the merged series, summed within each second BEFORE
+    -- any windowing/percentile — which preserves the original merged semantics.
+    GROUP BY GROUPING SETS ((period_start, reservation_id), (period_start))
+  ),
+  windowed_stats AS (
+    SELECT
+     TIMESTAMP_SECONDS(DIV(UNIX_SECONDS(period_start), {window_seconds}) * {window_seconds}) AS window_start,
+     reservation_id AS base_res_id,
+     SUM(concurrent_slots) / {window_seconds} AS avg_slots,
+     MAX(concurrent_slots) AS max_slots
+    FROM per_second_usage
+    GROUP BY window_start, base_res_id
+  ),
+  per_res AS (
+    SELECT
+      -- Coalesce the GROUPING SETS NULL key into the merged label.
+      IFNULL(base_res_id, 'MERGED (Simulated)') AS reservation_id,
+      CAST(IF(base_res_id IS NOT NULL AND CONTAINS_SUBSTR(base_res_id, ":"),
+        SPLIT(REPLACE(base_res_id, ".", ":"), ":")[OFFSET(0)],
+        NULL) AS STRING) AS admin_project_id,
+      IFNULL(
+        ARRAY_REVERSE(SPLIT(REPLACE(base_res_id, ".", ":"), ":"))[OFFSET(0)],
+        'MERGED (Simulated)'
+      ) AS clean_reservation_id,
+      APPROX_QUANTILES(avg_slots, 100)[OFFSET({params.percentile})] AS recommended_baseline,
+      APPROX_QUANTILES(max_slots, 100)[OFFSET(90)] AS recommended_max_p90,
+      APPROX_QUANTILES(max_slots, 100)[OFFSET(99)] AS recommended_max_p99,
+      MAX(max_slots) AS recommended_max_peak
+    FROM
+      windowed_stats
+    GROUP BY
+      1, 2, 3
+  )
+  SELECT * FROM per_res
+  """
     
     reservations_sql = f"""
     SELECT
@@ -1369,14 +1288,13 @@ async def analyze_slots(params: SlotsParams):
       scaling_mode,
       target_job_concurrency
     FROM
-      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
+      `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
     """
     
     logger.info(f"Executing Slots Recommendations Query")
     logger.info(f"SQL QUERY (Recommendations):\n{recommendations_sql}")
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         
         recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations")
         recommendations_data = []
@@ -1397,7 +1315,7 @@ async def analyze_slots(params: SlotsParams):
             if params.admin_project_id:
                 admin_projects.add(params.admin_project_id)
             else:
-                admin_projects.add(params.org_project_id)
+                admin_projects.add(resolved_project)
             
         fairness_enabled = False
         for admin_proj in admin_projects:
@@ -1410,7 +1328,7 @@ async def analyze_slots(params: SlotsParams):
             """
             try:
                 logger.info(f"Checking Project Options for project {admin_proj}")
-                options_results = scoped_client.query(options_sql).result()
+                options_results = run_query_and_log(scoped_client, options_sql, f"Project Options {admin_proj}")
                 for row in options_results:
                     name = row['option_name']
                     val = row['option_value']
@@ -1464,12 +1382,11 @@ async def analyze_slots(params: SlotsParams):
         }
         
     except Exception as e:
-        logger.error(f"Slots analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Slots analysis")
 
 
 class TieredRecParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
 
@@ -1482,9 +1399,11 @@ class TieredRecResult(BaseModel):
     minutes_observed: Optional[int] = None
 
 @app.post("/api/slots/tiered_recommendations", response_model=List[TieredRecResult])
-async def get_tiered_recommendations(params: TieredRecParams):
+def get_tiered_recommendations(params: TieredRecParams):
     _validate_safe_params(params)
     logger.info(f"Tiered Recommendations Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     
     def get_sql(table_name: str) -> str:
         """
@@ -1506,7 +1425,7 @@ async def get_tiered_recommendations(params: TieredRecParams):
             reservation_id,
             SUM(period_slot_ms) / 1000 AS concurrent_slots
           FROM
-            `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.{table_name}
+            `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{table_name}
           WHERE
             period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           GROUP BY
@@ -1515,13 +1434,13 @@ async def get_tiered_recommendations(params: TieredRecParams):
         minute_usage AS (
           SELECT
             TIMESTAMP_TRUNC(period_start, MINUTE) AS usage_minute,
-            reservation_id,
+            reservation_id AS base_res_id,
             MAX(concurrent_slots) AS peak_slots_in_minute
           FROM per_second_usage
-          GROUP BY usage_minute, reservation_id
+          GROUP BY usage_minute, base_res_id
         )
         SELECT
-          IFNULL(reservation_id, 'default-or-on-demand') AS reservation_id,
+          IFNULL(base_res_id, 'default-or-on-demand') AS reservation_id,
           COUNT(*) AS minutes_observed,
           CAST(CEIL(APPROX_QUANTILES(peak_slots_in_minute, 100)[OFFSET(80)] / 50) * 50 AS INT64)
             AS aggressive_baseline_p80,
@@ -1538,7 +1457,6 @@ async def get_tiered_recommendations(params: TieredRecParams):
         """
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         sql = get_sql("JOBS_TIMELINE_BY_ORGANIZATION")
         logger.info(f"Executing Tiered Recommendations Query (Org Scope):\\n{sql}")
         try:
@@ -1565,22 +1483,22 @@ async def get_tiered_recommendations(params: TieredRecParams):
         return output
         
     except Exception as e:
-        logger.error(f"Tiered recommendations failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Tiered recommendations")
 
 
 class SlotUtilizationParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     timezone: str = "America/New_York"
     resolution: str = "MINUTE"
 
 @app.post("/api/slots/utilization")
-async def analyze_slot_utilization(params: SlotUtilizationParams):
+def analyze_slot_utilization(params: SlotUtilizationParams):
     _validate_safe_params(params)
     logger.info(f"Slot Utilization Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     resolution = params.resolution
     duration_ms = 60000
     if resolution == "HOUR":
@@ -1598,7 +1516,7 @@ async def analyze_slot_utilization(params: SlotUtilizationParams):
       SUM(total_bytes_billed) / 60 AS bytes_billed_avg,
       SUM(total_bytes_processed) / 60 AS bytes_processed_avg
     FROM
-      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+      `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
     WHERE
       period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
@@ -1618,7 +1536,6 @@ async def analyze_slot_utilization(params: SlotUtilizationParams):
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {params.timezone}")
 
-        scoped_client = bigquery.Client(project=params.org_project_id)
         results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data")
         
         processed_results = []
@@ -1644,11 +1561,10 @@ async def analyze_slot_utilization(params: SlotUtilizationParams):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Slot utilization analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Slot utilization analysis")
 
 class SlotSimulationParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     timezone: str = "America/New_York"
@@ -1659,15 +1575,17 @@ class SlotSimulationParams(BaseModel):
     commit_3yr_price: float = 0.036
 
 @app.post("/api/slots/simulate")
-async def simulate_slots(params: SlotSimulationParams):
+def simulate_slots(params: SlotSimulationParams):
     _validate_safe_params(params)
     logger.info(f"Slot Simulation Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     
     sql = f"""
     SELECT
       TIMESTAMP_TRUNC(period_start, MINUTE) AS usage_minute,
       SUM(period_slot_ms) / (1000 * 60) AS avg_slots
-    FROM `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+    FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
     WHERE 
       period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
@@ -1679,7 +1597,6 @@ async def simulate_slots(params: SlotSimulationParams):
     logger.info(f"Executing Slot Simulation Raw Data Query")
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data")
         
         avg_slots_list = [float(row['avg_slots'] or 0.0) for row in results]
@@ -1749,8 +1666,7 @@ async def simulate_slots(params: SlotSimulationParams):
         return processed_results
         
     except Exception as e:
-        logger.error(f"Slot simulation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Slot simulation")
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -1771,8 +1687,10 @@ def _validate_safe_params(params):
     """
     if hasattr(params, "org_project_id") and params.org_project_id:
         params.org_project_id = _safe_ident(params.org_project_id.strip(), "org_project_id")
+        reject_dummy_project(params.org_project_id)
     if hasattr(params, "admin_project_id") and params.admin_project_id:
         params.admin_project_id = _safe_ident(params.admin_project_id.strip(), "admin_project_id")
+        reject_dummy_project(params.admin_project_id)
     if hasattr(params, "region") and params.region:
         params.region = _safe_ident(_normalize_region(params.region), "region")
     if hasattr(params, "edition") and params.edition:
@@ -1802,7 +1720,7 @@ _PATTERN_DISCLAIMER = (
 
 
 class FluidSimParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
     edition_slot_hr_rate: float = Field(default=0.06, gt=0)
@@ -2016,14 +1934,12 @@ def _render_sql(template: str, **idents) -> str:
 
 
 @app.post("/api/slots/fluid_simulation", response_model=FluidSimResponse)
-async def simulate_fluid_scaling(params: FluidSimParams):
+def simulate_fluid_scaling(params: FluidSimParams):
     _validate_safe_params(params)
-    org_project = params.org_project_id
-    region = params.region
-    sql = _render_sql(_SQL_JOBS, org_project=org_project, region=region)
-
     try:
-        client = bigquery.Client(project=org_project)
+        client, org_project = init_bq_client_and_resolve_project(params)
+        region = params.region
+        sql = _render_sql(_SQL_JOBS, org_project=org_project, region=region)
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
@@ -2171,13 +2087,15 @@ async def simulate_fluid_scaling(params: FluidSimParams):
     except gax_exc.GoogleAPIError:
         logger.exception("BigQuery error running fluid simulation")
         raise HTTPException(500, "Query failed; check server logs")
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Unexpected error in fluid simulation")
         raise HTTPException(500, "Internal server error")
 
 
 class SlotActualParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     timezone: str = "America/New_York"
@@ -2185,10 +2103,11 @@ class SlotActualParams(BaseModel):
     admin_project_id: Optional[str] = None
 
 @app.post("/api/slots/actual_provisioning")
-async def get_actual_provisioning(params: SlotActualParams):
+def get_actual_provisioning(params: SlotActualParams):
     _validate_safe_params(params)
     logger.info(f"Slot Actual Provisioning Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     from zoneinfo import ZoneInfo
     try:
         tz = ZoneInfo(params.timezone)
@@ -2204,7 +2123,9 @@ async def get_actual_provisioning(params: SlotActualParams):
     start_str = start_time.strftime('%Y-%m-%d %H:%M:%S UTC')
     end_str = end_time.strftime('%Y-%m-%d %H:%M:%S UTC')
 
-    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+    target_project = _safe_ident(admin_project_raw, "admin_project_id")
+    reject_dummy_project(target_project)
 
     # Base CTEs for both queries
     base_ctes = f"""
@@ -2321,12 +2242,18 @@ WHERE
 """
 
     timeline_sql = base_ctes + f"""
-SELECT * FROM merged_slots WHERE change_timestamp >= TIMESTAMP('{start_str}')
+SELECT
+  TIMESTAMP_TRUNC(change_timestamp, MINUTE) AS change_timestamp,
+  MAX(current_slots) AS current_slots,
+  MAX(baseline_slots) AS baseline_slots,
+  MAX(capacity_slots) AS capacity_slots
+FROM merged_slots
+WHERE change_timestamp >= TIMESTAMP('{start_str}')
+GROUP BY 1
+ORDER BY 1 ASC
 """
 
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
-        
         logger.info("Executing Aggregated Actual Provisioning Query")
         agg_results = run_query_and_log(scoped_client, agg_sql, "Aggregated Actual Provisioning")
         
@@ -2359,22 +2286,22 @@ SELECT * FROM merged_slots WHERE change_timestamp >= TIMESTAMP('{start_str}')
         }
         
     except Exception as e:
-        logger.error(f"Actual provisioning analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Actual provisioning")
 
 
 class PeakSlotsParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 30
 
 @app.post("/api/slots/peak")
-async def get_peak_slots(params: PeakSlotsParams):
+def get_peak_slots(params: PeakSlotsParams):
     _validate_safe_params(params)
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     sql = f"""
     WITH concurrent_usage AS (
         SELECT period_start, SUM(period_slot_ms) / 1000 AS concurrent_slots
-        FROM `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+        FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
         WHERE 
           period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
@@ -2385,7 +2312,6 @@ async def get_peak_slots(params: PeakSlotsParams):
     """
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         results = run_query_and_log(scoped_client, sql, "Get Peak Slots")
         
         peak_slots = 0
@@ -2395,23 +2321,25 @@ async def get_peak_slots(params: PeakSlotsParams):
         return {"peak_slots": peak_slots}
         
     except Exception as e:
-        logger.error(f"Failed to get peak slots: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Peak slots")
 
 
 class SlotProfilerParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     admin_project_id: Optional[str] = None
     fluid_scaling: bool = False
 
 @app.post("/api/slots/profiler")
-async def analyze_workload_profile(params: SlotProfilerParams):
+def analyze_workload_profile(params: SlotProfilerParams):
     _validate_safe_params(params)
     logger.info(f"Slot Profiler Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
-    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+    target_project = _safe_ident(admin_project_raw, "admin_project_id")
+    reject_dummy_project(target_project)
     
     sql = f"""
     WITH hourly_profile AS (
@@ -2529,8 +2457,6 @@ async def analyze_workload_profile(params: SlotProfilerParams):
     """
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
-        
         logger.info("Executing Profiler Summary Query")
         results = run_query_and_log(scoped_client, sql, "Workload Profiler Summary")
         
@@ -2562,16 +2488,18 @@ async def analyze_workload_profile(params: SlotProfilerParams):
         }
         
     except Exception as e:
-        logger.error(f"Workload profiler failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Workload profiler")
 
 
 @app.post("/api/slots/profiler/queries")
-async def get_top_profiler_queries(params: SlotProfilerParams):
+def get_top_profiler_queries(params: SlotProfilerParams):
     _validate_safe_params(params)
     logger.info(f"Slot Profiler Queries Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
-    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+    target_project = _safe_ident(admin_project_raw, "admin_project_id")
+    reject_dummy_project(target_project)
     
     sql = f"""
     WITH hourly_profile AS (
@@ -2645,7 +2573,6 @@ async def get_top_profiler_queries(params: SlotProfilerParams):
     """
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         logger.info(f"Profiler Top Queries SQL:\n{sql}")
         results = run_query_and_log(scoped_client, sql, "Profiler Top Queries")
         
@@ -2656,21 +2583,27 @@ async def get_top_profiler_queries(params: SlotProfilerParams):
             example_project_id = row['example_project_id']
             
             if example_job_id and example_project_id:
-                # Query JOBS_BY_PROJECT to get the query text
-                text_sql = f"""
-                SELECT query
-                FROM `{example_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
-                WHERE job_id = '{example_job_id}'
-                LIMIT 1
-                """
                 try:
-                    logger.info(f"Fetching query text for job {example_job_id} in project {example_project_id}")
-                    text_results = scoped_client.query(text_sql).result()
+                    safe_proj = _safe_ident(example_project_id, "example_project_id")
+                    text_sql = f"""
+                    SELECT query
+                    FROM `{safe_proj}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+                    WHERE job_id = @job_id
+                    LIMIT 1
+                    """
+                    logger.info(f"Fetching query text for job {example_job_id} in project {safe_proj}")
+                    job_config = bigquery.QueryJobConfig(
+                        query_parameters=[
+                            bigquery.ScalarQueryParameter("job_id", "STRING", example_job_id)
+                        ],
+                        maximum_bytes_billed=200 * 1024**3
+                    )
+                    text_results = scoped_client.query(text_sql, job_config=job_config).result()
                     for text_row in text_results:
                         query_text = text_row['query']
                 except Exception as text_err:
                     logger.warning(f"Failed to fetch query text for job {example_job_id}: {text_err}")
-                    query_text = f"Error fetching query text: {text_err}"
+                    query_text = "Error fetching query text"
             
             avg_bytes = row['avg_bytes_processed'] or 0.0
             recommendation = "N/A"
@@ -2694,12 +2627,11 @@ async def get_top_profiler_queries(params: SlotProfilerParams):
         return query_records
         
     except Exception as e:
-        logger.error(f"Failed to get profiler queries: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Profiler queries")
 
 
 class UserProfilerParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
     admin_project_id: Optional[str] = None
@@ -2707,11 +2639,14 @@ class UserProfilerParams(BaseModel):
     ed_price: float = 0.06
 
 @app.post("/api/users/top_spenders")
-async def get_top_spenders(params: UserProfilerParams):
+def get_top_spenders(params: UserProfilerParams):
     _validate_safe_params(params)
     logger.info(f"Top Spenders Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
     
-    target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+    scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+    target_project = _safe_ident(admin_project_raw, "admin_project_id")
+    reject_dummy_project(target_project)
     
     sql = f"""
     SELECT
@@ -2732,7 +2667,6 @@ async def get_top_spenders(params: UserProfilerParams):
     """
     
     try:
-        scoped_client = bigquery.Client(project=params.org_project_id)
         logger.info(f"Top Spenders SQL:\n{sql}")
         results = run_query_and_log(scoped_client, sql, "Top Spenders")
         
@@ -2757,8 +2691,7 @@ async def get_top_spenders(params: UserProfilerParams):
         return user_records
         
     except Exception as e:
-        logger.error(f"Failed to get top spenders: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Top spenders")
 
 
 # -- Dashboard Response models ---------------------------------------------------------
@@ -2794,7 +2727,7 @@ class Anomaly(BaseModel):
 # -- Dashboard Endpoints ---------------------------------------------------------------
 
 @app.get("/api/dashboard/kpis", response_model=KpiResponse)
-async def get_kpis():
+def get_kpis():
     """
     TODO: Real implementation requires:
       1. GCP Billing Export table for mtdSpend / lastMonthSpend (PRD §7.2.6).
@@ -2822,7 +2755,7 @@ async def get_kpis():
 
 
 @app.get("/api/dashboard/opportunities", response_model=List[Opportunity])
-async def get_opportunities(limit: int = 5):
+def get_opportunities(limit: int = 5):
     """
     TODO: Aggregate top-N opportunities by monthlySavings across modules.
 
@@ -2854,7 +2787,7 @@ async def get_opportunities(limit: int = 5):
 
 
 @app.get("/api/dashboard/top-projects", response_model=List[ProjectCost])
-async def get_top_projects(limit: int = 5):
+def get_top_projects(limit: int = 5):
     """
     TODO: Use existing Cost Attribution Engine logic.
     Aggregate Direct Usage Cost + Allocated Waste per project for current month.
@@ -2870,7 +2803,7 @@ async def get_top_projects(limit: int = 5):
 
 
 @app.get("/api/dashboard/anomalies", response_model=List[Anomaly])
-async def get_anomalies():
+def get_anomalies():
     """
     TODO: Real anomaly detection requires historical baseline.
 

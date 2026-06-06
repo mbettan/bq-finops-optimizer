@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict
 from google.cloud import bigquery
+from .utils import init_bq_client_and_resolve_project
 from collections import defaultdict
 import json
 import os
@@ -66,11 +67,10 @@ async def calculate_cost_attribution(params: CostAttributionParams):
     config = load_config()
     
     try:
-        # Use org project if provided, else default client
-        scoped_client = bigquery.Client(project=params.org_project_id) if params.org_project_id else bigquery.Client()
+        scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
         # Determine table name based on admin_project_id
-        target_project = params.admin_project_id if params.admin_project_id else params.org_project_id
+        target_project = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
         
         if target_project:
             table_name = f"`{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"

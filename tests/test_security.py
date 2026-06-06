@@ -75,3 +75,28 @@ def test_endpoints_reject_invalid_model_name(endpoint, payload):
     response = client.post(endpoint, json=payload)
     assert response.status_code == 400
     assert "Invalid model_name" in response.json()["detail"]
+
+
+DUMMY_PROJECT_TEST_CASES = [
+    ("/api/storage/analyze", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/slots/analyze", {"org_project_id": "your-project-id", "region": "region-us"}),
+    ("/api/slots/tiered_recommendations", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/slots/utilization", {"org_project_id": "your-project-id", "region": "region-us"}),
+    ("/api/slots/simulate", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/slots/fluid_simulation", {"org_project_id": "your-project-id", "region": "region-us"}),
+    ("/api/slots/actual_provisioning", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/slots/peak", {"org_project_id": "your-project-id", "region": "region-us"}),
+    ("/api/slots/profiler", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/slots/profiler/queries", {"org_project_id": "your-project-id", "region": "region-us"}),
+    ("/api/users/top_spenders", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/fluid-scaling/status", {"org_project_id": "mbettan-sandbox", "region": "region-us"}),
+    ("/api/fluid-scaling/estimate", {"org_project_id": "your-project-id", "region": "region-us"}),
+]
+
+@pytest.mark.parametrize("endpoint, payload", DUMMY_PROJECT_TEST_CASES)
+def test_endpoints_reject_dummy_project_id(endpoint, payload):
+    """Every endpoint must reject dummy/placeholder project IDs and return 400."""
+    response = client.post(endpoint, json=payload)
+    assert response.status_code == 400
+    assert "dummy placeholder" in response.json()["detail"]
+

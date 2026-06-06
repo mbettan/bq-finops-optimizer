@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from google.cloud import bigquery
+from .utils import init_bq_client_and_resolve_project
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/api/hbo", tags=["hbo"])
 _MAX_BYTES_BILLED = 200 * 1024**3  # 200 GiB
 
 class HBOCommonParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
 
@@ -23,7 +24,7 @@ class HBOAnalyzeParams(HBOCommonParams):
     limit: int = 10
 
 class HBOStatusParams(BaseModel):
-    org_project_id: str
+    org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
 
@@ -49,8 +50,7 @@ class HBOStatus(BaseModel):
 @router.post("/analyze", response_model=List[HBOResult])
 def analyze_hbo(params: HBOAnalyzeParams):
     try:
-        bq_client = bigquery.Client(project=params.org_project_id)
-        target_project = params.org_project_id
+        bq_client, target_project = init_bq_client_and_resolve_project(params)
         
         sql = f"""
         SELECT
@@ -88,7 +88,8 @@ def analyze_hbo(params: HBOAnalyzeParams):
             prev_exec_ms = row.prev_exec_ms or 0
             
             if prev_exec_ms > 0:
-                # Use max to avoid division by zero as suggested by Claude
+                # Denominator guard kept consistent with get_hbo_summary's SAFE_DIVIDE
+                # so the top-10 table and the KPI tiles reconcile on the same policy.
                 percent_saved = 100 * (prev_exec_ms - row.duration_ms) / max(prev_exec_ms, 1)
                 
                 saved_slot_hours = (percent_saved / 100) * ((row.total_slot_ms or 0) / 3600000.0)
@@ -116,8 +117,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
 @router.post("/summary", response_model=HBOSummary)
 def get_hbo_summary(params: HBOCommonParams):
     try:
-        bq_client = bigquery.Client(project=params.org_project_id)
-        target_project = params.org_project_id
+        bq_client, target_project = init_bq_client_and_resolve_project(params)
         
         sql = f"""
         WITH raw_data AS (
@@ -139,8 +139,15 @@ def get_hbo_summary(params: HBOCommonParams):
         SELECT
           COUNT(job_id) AS total_optimized_jobs,
           SUM(prev_exec_ms - duration_ms) AS total_saved_time_ms,
-          SUM(((prev_exec_ms - duration_ms) / prev_exec_ms) * (total_slot_ms / 3600000.0)) AS total_saved_slot_hours,
-          AVG(100.0 * (prev_exec_ms - duration_ms) / prev_exec_ms) AS avg_percent_time_saved
+          -- SAFE_DIVIDE mirrors the Python `max(prev_exec_ms, 1)` guard in analyze_hbo,
+          -- so the table and these KPIs use a consistent denominator policy.
+          SUM(
+            SAFE_DIVIDE(prev_exec_ms - duration_ms, prev_exec_ms)
+            * (total_slot_ms / 3600000.0)
+          ) AS total_saved_slot_hours,
+          AVG(
+            100.0 * SAFE_DIVIDE(prev_exec_ms - duration_ms, prev_exec_ms)
+          ) AS avg_percent_time_saved
         FROM raw_data
         WHERE prev_exec_ms > duration_ms
           AND NOT has_data_increase
@@ -185,8 +192,7 @@ class PerformanceInsightsResult(BaseModel):
 @router.post("/performance_insights", response_model=PerformanceInsightsResult)
 def get_performance_insights(params: HBOCommonParams):
     try:
-        bq_client = bigquery.Client(project=params.org_project_id)
-        target_project = params.org_project_id
+        bq_client, target_project = init_bq_client_and_resolve_project(params)
         
         sql = f"""
         SELECT
@@ -276,8 +282,7 @@ def get_performance_insights(params: HBOCommonParams):
 @router.post("/status", response_model=List[HBOStatus])
 def check_hbo_status(params: HBOStatusParams):
     try:
-        bq_client = bigquery.Client(project=params.org_project_id)
-        target_project = params.org_project_id
+        bq_client, target_project = init_bq_client_and_resolve_project(params)
         
         # Step 1: Get distinct projects from jobs in the lookback period to find active projects
         # Added LIMIT 500 as per user request (item 4)
@@ -300,7 +305,7 @@ def check_hbo_status(params: HBOStatusParams):
         
         # Helper function to check a single project status (blocking I/O)
         def _check_project_status(prj):
-            local_client = bigquery.Client(project=params.org_project_id)
+            local_client = bigquery.Client(project=target_project)
             try:
                 sql_status = f"""
                 SELECT 
