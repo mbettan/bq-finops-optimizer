@@ -1,172 +1,170 @@
-# BigQuery FinOps Optimizer
+# ⚡ BigQuery FinOps Optimizer
 
-A tool for analyzing and optimizing BigQuery storage and compute costs by switching between logical and physical billing models.
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
+[![GitHub Pages](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-orange.svg)](https://mbettan.github.io/bq-finops-optimizer/simulator.html)
 
-## ✨ Key features
+An enterprise-grade BigQuery FinOps diagnostic suite and interactive simulation engine. It analyzes historical telemetry, query workloads, and storage configurations across Google Cloud Organizations to maximize cost efficiency, reduce compute waste, and implement automated governance.
 
-- **Storage Optimization**: Analyze potential savings by switching between Logical and Physical storage billing models.
-- **Compute Optimization**: Compare On-Demand vs. Editions pricing for your historical query workload.
-- **Edition Matrix Simulation**: Advanced statistical simulation (Geh Bucket Method) to find the optimal baseline for Autoscale scenarios. Projects costs to a standard 730-hour billing month and provides bucket frequency and utilization metrics.
-- **Profile Categorization**: Automatically categorizes queries into **Reservation Candidates**, **On-Demand Candidates**, and **Balanced / Uncertain** based on cost efficiency.
-- **Interactive UI Filtering**: Filter top inefficient queries by their billing profile directly in the dashboard.
-- **Scalable Analysis**: Displays the top **500** most inefficient queries to focus on high-impact optimization opportunities.
-- **Workload Profiler**: Identifies reservations experiencing a "continuous trickle" of small, frequent queries. Identifies candidates for **Short Query Optimizations** in the Advanced Runtime.
-- **Top Spenders**: Identifies the users consuming the most resources (data billed and slot hours) in your organization to help with cost attribution and optimization.
+🚀 **Try the Interactive Demo directly in your browser:** [BigQuery FinOps Simulator](https://mbettan.github.io/bq-finops-optimizer/simulator.html)
 
 ---
 
-## 🚀 Getting started
+## 📖 Table of Contents
+1. [Core Optimization Pillars](#-core-optimization-pillars)
+2. [FinOps Methodologies & Technical Innovations](#%EF%B8%8F-finops-methodologies--technical-innovations)
+3. [Modules & Capabilities](#-modules--capabilities)
+4. [Tech Stack](#-tech-stack)
+5. [Getting Started (Local Development)](#-getting-started-local-development)
+6. [Authentication & GCP Configuration](#-authentication--gcp-configuration)
+7. [IAM Roles & Permissions](#-iam-roles--permissions)
+8. [Security & Scale Considerations](#-security--scale-considerations)
+9. [Disclaimer](#-disclaimer)
 
-### 1. Installation
-1. Navigate to the project directory.
-2. Activate your virtual environment:
-   ```bash
-   source venv/bin/activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+---
 
-### 2. Launching the app
-Run the FastAPI server using `uvicorn`:
+## 🎯 Core Optimization Pillars
+
+*   **Storage Optimization**: Identifies and automates transitions between logical and physical billing models.
+*   **Compute Right-Sizing**: Evaluates On-Demand vs. Editions pricing, simulates optimal baseline capacities, and analyzes autoscaler performance.
+*   **Architectural Diagnostics**: Identifies anti-patterns such as DML abuse, redundant materialized views, and slot-inefficient query designs.
+*   **Cost Attribution**: Overcomes GCP billing limitations to proportionally distribute unallocated reservation waste back to business units.
+
+---
+
+## ⚙️ FinOps Methodologies & Technical Innovations
+
+### 1. The "Geh Bucket Method" (Compute Capacity Simulation)
+To avoid over-provisioning baseline capacity or over-paying for autoscaled slots, the system uses the **Geh Bucket Method**. It runs a vectorized simulation using NumPy to model slot consumption over a standard 730-hour billing month:
+*   Calculates baseline utilization and autoscale frequencies for every reservation.
+*   Generates a **Tiered Recommendation Matrix** (Aggressive, Balanced, and Performance baseline recommendations) based on historical percentiles.
+*   Evaluates simulated hourly costs to help you choose capacity structures that align with specific workload SLAs and risk profiles.
+
+### 2. Fluid Scaling & Cooldown Tax Mitigation
+Autoscaling workloads are often subject to a "cooldown tax" where a 60-second billing minimum is charged even for queries lasting a fraction of a second. This tool identifies reservations with high-frequency short queries and simulates potential savings from switching to **Fluid Scaling** (true per-second billing with zero minimum capacity).
+
+### 3. Hybrid Cost Attribution Model
+Standard GCP billing dumps idle capacity waste into a central administrative project. This application solves the cost attribution challenge by:
+*   Mapping organization-wide project usage back to specific reservations.
+*   Proportionally distributing unused baseline slots and idle reservation waste back to user projects.
+*   Enforcing customizable allocation rules (e.g., Lender Pays vs. Borrower Pays for idle slot borrowing).
+
+### 4. History-Based Optimization (HBO) Proof of Value
+BigQuery HBO automatically optimizes queries over time. Since it is enabled by default and cannot be turned off for A/B testing, this tool:
+*   Matches optimized execution plans with historical baseline runs using `normalized_literals` query hashes.
+*   Tracks execution savings and calculates performance ROI.
+*   Monitors plans nearing the 130-day expiration window to suggest automated "warm-up" runs.
+
+---
+
+## 🔍 Modules & Capabilities
+
+| Module | Purpose | Key Telemetry / Metrics | Actionable Output |
+| :--- | :--- | :--- | :--- |
+| **Storage Optimizer** | Logical vs. Physical Storage Auditing | Active/Long-term storage bytes, change rates | `ALTER SCHEMA` DDL generator |
+| **Compute Analyzer** | Compute billing model comparisons | Slot hours vs. Bytes billed | Project/workload billing model selector |
+| **Capacity Planner** | Real-time capacity sizing & baseline simulation | Simulated hourly slot-hour logs (NumPy) | Quantile-based reservation baseline matrix |
+| **Fluid Scaling Simulator** | Cooldown tax and Fluid Scaling evaluation | Billing time-blocks, execution frequencies | High-frequency workload isolation candidates |
+| **Cost Attribution Engine** | Custom cost splitting and billing attribution | `JOBS_BY_ORGANIZATION` telemetry | Split-cost CSV/JSON reports |
+| **Workload Profiler** | Continuous-trickle query detection | Short execution patterns, reservation usage | Isolated reservation strategies |
+| **Query Anti-Pattern Linter** | Static SQL auditing and performance advice | `SELECT *` patterns, unclustered limits | "SQL Wall of Shame" reporting |
+| **Storage Hygiene Auditor** | Table churn and time travel tracking | Time travel physical bytes, table updates | Time travel window reductions |
+| **BI Engine Optimizer** | BI Engine utilization analysis | BI Engine mode (FULL/PARTIAL/NONE), miss reasons | BI Engine cache diagnostics |
+| **Governance & Expiration** | Schema policies and safety check | Expiration settings, partition filters | Non-compliant resource inventory |
+| **DML & MV Auditor** | Materialized view and write operations audits | Refresh costs, single-row DML write loops | MV and ingestion refactoring alerts |
+| **Interactive vs. Batch** | Batch candidate identification | Priority flags, off-peak times, runtime | Batch priority suggestion dashboard |
+| **Data Skew Analyzer** | Join and partition bottlenecks | Max stage duration vs. Avg duration ratios | Code optimization tips for data skew |
+| **LLM Query Analyst (GenAI)** | Vertex AI integration for query reviews | SQL query texts, database schemas | AI-generated rewrite suggestions |
+
+---
+
+## 🛠️ Tech Stack
+
+*   **Backend**: Python 3.10+, FastAPI (Asynchronous framework)
+*   **Client Core**: Vanilla ES6 JavaScript, HTML5, Custom Glassmorphic CSS Engine
+*   **Data Libraries**: NumPy, Pandas, DB-Types
+*   **Data Visualization**: Chart.js, DataTables.net
+*   **Google Cloud Libraries**: `google-cloud-bigquery`, `google-cloud-bigquery-storage`
+*   **Containerization**: Docker (minimal slim-python environment)
+
+---
+
+## 🚀 Getting Started (Local Development)
+
+### 1. Clone & Set Up Environment
+```bash
+git clone https://github.com/mbettan/bq-finops-optimizer.git
+cd bq-finops-optimizer
+
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Run the Server
 ```bash
 uvicorn src.main:app --reload
 ```
-The application will be accessible at `http://127.0.0.1:8000`.
+Open your browser to [http://127.0.0.1:8000](http://127.0.0.1:8000) to view the interface.
 
 ---
 
-## 🔑 Authentication & configuration
+## 🔑 Authentication & GCP Configuration
 
-### 🔑 Complete authentication setup (local development)
+The tool utilizes **Application Default Credentials (ADC)** to establish client connections. Follow these steps to set up your environment:
 
-If you are running the tool locally, follow these steps to ensure your environment is correctly configured for BigQuery access and billing.
-
-#### Step 1: login to gcloud CLI
-This authenticates your primary user account for the gcloud CLI.
-
+### Step 1: Login via Google Cloud SDK
 ```bash
 gcloud auth login
 ```
 
-#### Step 2: set your active project
-Set the default project for the gcloud CLI context.
-
+### Step 2: Configure the Target Project
 ```bash
-gcloud config set project <YOUR_PROJECT_ID>
+gcloud config set project YOUR_PROJECT_ID
 ```
 
-#### Step 3: generate application default credentials (ADC)
-This is what the Python BigQuery Client uses to authenticate your API calls.
-
+### Step 3: Configure Application Default Credentials
 ```bash
 gcloud auth application-default login
 ```
 
-#### Step 4: set the quota project for ADC (crucial for API billing)
-If you encounter `Access Denied` or `jobs.create` errors (especially with `INFORMATION_SCHEMA` queries), it means the API needs a defined project for quota and billing. This command writes the quota project into your ADC file.
-
+### Step 4: Set API Quota Project (Crucial for organization-level INFORMATION_SCHEMA access)
 ```bash
-gcloud auth application-default set-quota-project <YOUR_PROJECT_ID>
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
 ```
 
-#### 🔍 Verification: check your setup
+---
 
-To verify your active configuration:
+## 🔒 IAM Roles & Permissions
 
-```bash
-gcloud config list
-```
+To query organization-wide metadata (`INFORMATION_SCHEMA` tables scoped with `*_BY_ORGANIZATION`), the service account or authenticated developer identity needs permissions across multiple scopes:
 
-To verify which account is used for ADC:
+### 1. Project-level Permissions
+*   **BigQuery Job User** (`roles/bigquery.jobUser`): Permissions to submit query jobs in the project.
+*   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Permissions to inspect table definitions and schemas.
 
-```bash
-gcloud auth application-default print-access-token
-```
+### 2. Organization-level Permissions (Required for Organisation-scoped Views)
+*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Required to retrieve slot metrics from `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, and `TABLE_STORAGE_BY_ORGANIZATION`. Also enables viewing reservation hierarchies.
 
-2. **Option B: Using a Service Account Key**:
-   Set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
-   ```
-
-### Changing the target project ID
-The application dynamically scopes BigQuery clients based on incoming API requests. You do not need to hardcode a project ID in the backend. 
-- In the **Frontend UI**, you can specify the `Org Project ID` in the respective input field.
-- In **API Calls**, include the `org_project_id` in the JSON payload (e.g., `{"org_project_id": "my-target-project"}`).
+### 3. Dataset-level Permissions (Optional - for inline execution)
+*   **BigQuery Data Owner** (`roles/bigquery.dataOwner`): Required if executing the DDL commands to change storage models directly from the dashboard.
 
 ---
 
-## 🔒 Permissions & roles
+## ⚠️ Security & Scale Considerations
 
-This document outlines the required Identity and Access Management (IAM) roles and permissions to run the BigQuery FinOps Optimizer application successfully, particularly when querying organization-wide `INFORMATION_SCHEMA` views.
-
-## Resolving 403 access denied for organization views
-
-If you encounter an error like:
-`Access Denied: Table ... INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION: User does not have permission to query table...`
-
-This issue occurs because querying organization-wide views requires permissions at the **Organization level**, not just the project level.
-
-### Recommended approach (least privilege)
-To follow the principle of least privilege, try granting roles that only allow reading metadata at the organization level:
-
-*   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Grant this at the **Organization level** to allow reading schema and storage metadata without administrative rights.
-*   **Custom Role**: Create a custom role at the organization level with only the required permissions (e.g., `bigquery.tables.get`, `bigquery.tables.list`).
-
-### Broad roles (use with caution)
-If the above more granular roles do not suffice (due to specific requirements of some organization views), you may need to consider broader roles, but apply caution:
-
-*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Grants full control over BigQuery resources (including reservations).
-*   **Organization Admin** (`roles/resourcemanager.organizationAdmin`): *Extremely broad*. Do not use unless strictly necessary.
-
----
-
-## Complete permission requirements
-
-For the application to function fully (Storage, Compute, and Editions features), the Service Account requires the following permissions across your environment:
-
-### 1. Project-level permissions (where the app runs/queries)
-*   **BigQuery Job User** (`roles/bigquery.jobUser`): Required to execute queries.
-*   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Required to read standard `INFORMATION_SCHEMA` views (like tables and schemas).
-
-### 2. Organization-level permissions (for `*_BY_ORGANIZATION` views)
-*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Required to read `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, and `TABLE_STORAGE_BY_ORGANIZATION`. It also allows viewing/modifying reservations.
-
-### 3. Dataset-level permissions (for storage actions)
-*   **BigQuery Data Owner** (`roles/bigquery.dataOwner`): Required if you want the tool to execute `ALTER SCHEMA` DDL statements to switch storage billing models for datasets.
-
-> [!IMPORTANT]
-> Ensure that any role required for `*_BY_ORGANIZATION` views is granted at the **Organization** resource level in the IAM console, not the project level.
-
----
-
-## ⚠️ Security & scale considerations
-
-When deploying and using this tool, please be mindful of the following security and scalability considerations:
-
-1. **SQL Injection Risks**: The application currently uses direct string interpolation for some parameters (like region and project IDs) in SQL queries. Ensure strict input validation is applied if exposing this tool, and only grant the minimum necessary permissions to the executing identity.
-2. **Scale Limits with Large Organizations**: In environments with thousands of projects, querying metadata across all projects simultaneously can exceed BigQuery's query size and complexity limits, or hit quota limits. Consider batching or scoped analysis for very large scales.
-3. **No Built-in Authentication**: This tool lacks built-in authentication or authorization mechanisms. **Do not expose this application to the public internet or internally without adding an authentication layer.** It is strongly recommended to run this tool locally or within a secure internal network.
-
----
-
-## 📊 Example output: top offending queries
-
-Here is an example of the output from the **Workload Profiler** showing the most frequent small queries that can cause autoscaler waste:
-
-| Query Text | Project | Example Job ID | Frequency | Avg Slot Hours | Avg Duration (s) | Avg Bytes | Recommendation |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `COMMIT TRANSACTION` | `identity-services-2` | `script_job_e38a440...` | 21,456 | 0.000138 | 0.01 | 0 MB | Candidate |
-| `BEGIN TRANSACTION` | `identity-services-2` | `script_job_41a26b5...` | 24,188 | 0.000000 | 0.00 | 0 MB | Candidate |
-| `SELECT * FROM \`analytics_project.ecommerce.products\`` | `ecommerce-web-5` | `job_xvB6HRmV8Tec6i...` | 5,259 | 0.000000 | 0.00 | 1.0 MB | Candidate |
-| `INSERT INTO \`marketing_project.campaigns.metrics\`` | `marketing-analytics-5` | `job_uNhCQFFnhCdGax...` | 7,642 | 0.000000 | 1.22 | 0 MB | Candidate |
+1. **Self-Hosted / Local Usage Focus**: The dashboard has no built-in auth system. **Do not expose this application directly to the public internet** without setting up an Identity-Aware Proxy (IAP) or an authentication gateway.
+2. **SQL Parameters & Sanitization**: The tool utilizes dynamic parameters for scoped dataset queries. Use minimal privilege access patterns for target Service Accounts.
+3. **Large-Scale Quotas**: Querying organization-wide metrics on high-volume environments (10,000+ datasets) can cause query timeout or quota limits. Scoped lookbacks are highly recommended for large environments.
 
 ---
 
 ## ⚠️ Disclaimer
 
-This tool is provided "as is" without warranty of any kind. It performs complex calculations and simulations based on BigQuery metadata. Calculations may contain mistakes or not reflect all aspects of your specific billing situation (such as custom discounts or blended rates). 
+This tool performs simulations based on historical BigQuery metadata. Simulated pricing estimates and recommended metrics may not fully capture enterprise-specific Google Cloud pricing structures, custom discounts, or blended flat-rate allocations. 
 
-**Always verify the results and generated DDL statements manually before making any changes to your production environment.**
+Always review proposed DDL and reservation alterations manually before applying updates to production environments.
