@@ -1053,6 +1053,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 const data = await response.json();
+                safeSetLocalStorage('bq_slots_simulation_results', JSON.stringify(data));
                 renderSimulationResults(data);
                 document.getElementById('simulation-results-panel').style.display = 'block';
                 showNotification('Simulation completed successfully.', 'success');
@@ -3405,6 +3406,19 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const cachedTiered = localStorage.getItem('bq_slots_tiered');
     if (cachedTiered) {
         try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
+    }
+
+    // Load cached simulation results (Edition Matrix Simulation)
+    const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
+    if (cachedSimulation) {
+        try {
+            const data = JSON.parse(cachedSimulation);
+            renderSimulationResults(data);
+            const panel = document.getElementById('simulation-results-panel');
+            if (panel) panel.style.display = 'block';
+        } catch (e) {
+            console.warn("Failed to parse cached simulation results", e);
+        }
     }
 
     // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)

@@ -86,7 +86,9 @@
                     '/api/slots/actual_provisioning': 'bq_slots_actual_provisioning',
                     '/api/slots/profiler': 'bq_profiler_summary',
                     '/api/storage/results': 'bq_storage_results',
-                    '/api/storage/hygiene': 'bq_hygiene_results'
+                    '/api/storage/hygiene': 'bq_hygiene_results',
+                    '/api/slots/simulate': 'bq_slots_simulation_results',
+                    '/api/governance/analyze': 'bq_gov_results'
                 };
 
                 const matchingPath = Object.keys(apiMap).find(path => urlStr.includes(path));
