@@ -5,6 +5,7 @@
 venv/
 venv-audit/
 .venv/
+myenv/
 .env
 *.sh
 scratch_*
@@ -13,6 +14,7 @@ scratch/
 # Python
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Documentation
 PRD.MD
@@ -23,4 +25,9 @@ PRD.MD
 # Cost Attribution Plan
 cost_attribution_plan.md
 
+# Context Handover
+context_handover_ai_generate.md
 
+# Internal Telemetry Snapshots
+heavy_job_ids_ref.md
+roadmap.md

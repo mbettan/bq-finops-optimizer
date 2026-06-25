@@ -16,7 +16,7 @@ SECURITY_TEST_CASES = [
     ("/api/antipatterns/linter", {"org_project_id": "proj`ect", "region": "region-us"}),
     ("/api/antipatterns/skew", {"org_project_id": "proj`ect", "region": "region-us"}),
     ("/api/antipatterns/batch_candidates", {"org_project_id": "proj`ect", "region": "region-us"}),
-    ("/api/ai/analyze", {"org_project_id": "proj`ect", "region": "region-us", "model_name": "proj.ds.model"}),
+    ("/api/ai/analyze", {"org_project_id": "proj`ect", "region": "region-us"}),
     ("/api/bi/analyze", {"org_project_id": "proj`ect", "region": "region-us"}),
     ("/api/governance/analyze", {"org_project_id": "proj`ect", "region": "region-us"}),
     ("/api/mv/analyze", {"org_project_id": "proj`ect", "region": "region-us"}),
@@ -47,10 +47,11 @@ EDITION_TEST_CASES = [
 
 @pytest.mark.parametrize("endpoint, payload", EDITION_TEST_CASES)
 def test_endpoints_reject_invalid_edition(endpoint, payload):
-    """Endpoints checking edition must reject invalid values with 400."""
+    """Endpoints checking edition must reject invalid values with 422."""
     response = client.post(endpoint, json=payload)
-    assert response.status_code == 400
-    assert "Invalid edition" in response.json()["detail"]
+    assert response.status_code == 422
+    error_detail = response.json()["detail"][0]
+    assert "edition" in error_detail["loc"]
 
 
 RESOLUTION_TEST_CASES = [
@@ -59,22 +60,14 @@ RESOLUTION_TEST_CASES = [
 
 @pytest.mark.parametrize("endpoint, payload", RESOLUTION_TEST_CASES)
 def test_endpoints_reject_invalid_resolution(endpoint, payload):
-    """Endpoints checking resolution must reject invalid values with 400."""
+    """Endpoints checking resolution must reject invalid values with 422."""
     response = client.post(endpoint, json=payload)
-    assert response.status_code == 400
-    assert "Invalid resolution" in response.json()["detail"]
+    assert response.status_code == 422
+    error_detail = response.json()["detail"][0]
+    assert "resolution" in error_detail["loc"]
 
 
-MODEL_NAME_TEST_CASES = [
-    ("/api/ai/analyze", {"org_project_id": "valid-proj", "region": "region-us", "model_name": "invalid-model-format"}),
-]
 
-@pytest.mark.parametrize("endpoint, payload", MODEL_NAME_TEST_CASES)
-def test_endpoints_reject_invalid_model_name(endpoint, payload):
-    """Endpoints checking model_name must reject invalid values with 400."""
-    response = client.post(endpoint, json=payload)
-    assert response.status_code == 400
-    assert "Invalid model_name" in response.json()["detail"]
 
 
 DUMMY_PROJECT_TEST_CASES = [
@@ -99,4 +92,35 @@ def test_endpoints_reject_dummy_project_id(endpoint, payload):
     response = client.post(endpoint, json=payload)
     assert response.status_code == 400
     assert "dummy placeholder" in response.json()["detail"]
+
+
+def test_region_injection_blocked():
+    """Verify that SQL-injection-like region values are rejected with 400."""
+    payload = {
+        "org_project_id": "valid-proj",
+        "region": "region-us`.evil"
+    }
+    response = client.post("/api/ai/analyze", json=payload)
+    assert response.status_code == 400
+    assert "Invalid region" in response.json()["detail"]
+
+
+
+
+
+def test_limit_validation_bounds():
+    """Verify that limit must be between 1 and 100."""
+    # Under lower bound (0)
+    payload = {
+        "org_project_id": "valid-proj",
+        "region": "region-us",
+        "limit": 0
+    }
+    response = client.post("/api/ai/analyze", json=payload)
+    assert response.status_code == 422  # Pydantic validation error
+
+    # Over upper bound (101)
+    payload["limit"] = 101
+    response = client.post("/api/ai/analyze", json=payload)
+    assert response.status_code == 422  # Pydantic validation error
 

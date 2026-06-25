@@ -1,11 +1,81 @@
 // BigQuery FinOps Optimizer - Frontend Logic
 
+// Global API response XSS sanitizer
+(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function (...args) {
+        const response = await nativeFetch(...args);
+        
+        let urlStr = '';
+        if (typeof args[0] === 'string') {
+            urlStr = args[0];
+        } else if (args[0] && typeof args[0] === 'object' && args[0].url) {
+            urlStr = args[0].url;
+        } else if (args[0] && typeof args[0].toString === 'function') {
+            urlStr = args[0].toString();
+        }
+
+        if (urlStr && (urlStr.includes('/api/') || urlStr.includes('api/'))) {
+            return new Proxy(response, {
+                get(target, prop, receiver) {
+                    if (prop === 'json') {
+                        return async function () {
+                            const data = await target.json();
+                            return sanitizeData(data);
+                        };
+                    }
+                    // Crucial: Do NOT pass the receiver to Reflect.get for native host getters
+                    // (like .ok, .status, .headers) to avoid "Illegal invocation" errors.
+                    const val = Reflect.get(target, prop);
+                    return typeof val === 'function' ? val.bind(target) : val;
+                }
+            });
+        }
+        return response;
+    };
+
+    function escapeHtml(str) {
+        if (str == null) return '';
+        return String(str)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    function sanitizeData(data) {
+        if (data === null || data === undefined) return data;
+        if (typeof data === 'string') {
+            return escapeHtml(data);
+        }
+        if (Array.isArray(data)) {
+            return data.map(item => sanitizeData(item));
+        }
+        if (typeof data === 'object') {
+            const sanitized = {};
+            for (const key in data) {
+                if (Object.prototype.hasOwnProperty.call(data, key)) {
+                    if (key === 'query' || key === 'sql' || key === 'gemini_optimization_advice' || key === 'ddl' || key === 'referenced_schemas') {
+                        sanitized[key] = data[key];
+                    } else {
+                        sanitized[key] = sanitizeData(data[key]);
+                    }
+                }
+            }
+            return sanitized;
+        }
+        return data;
+    }
+})();
+
 // State
 const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
-    remoteModel: localStorage.getItem('bq_remote_model') || '',
+    scanMode: localStorage.getItem('bq_scan_mode') || 'organization',
+    maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
     storageData: [],
     slotsData: [],
     slotsChart: null,
@@ -24,6 +94,20 @@ function safeSetLocalStorage(key, value) {
         try { localStorage.removeItem(key); } catch (_) {}
         return false;
     }
+}
+
+/**
+ * Clear stale module data instantly when a user clicks a fetch button.
+ * Removes the specified localStorage keys and empties the tbody of each table selector.
+ * @param {string[]} keys - localStorage keys to remove
+ * @param {string[]} tableSelectors - CSS selectors for table elements whose tbody should be cleared
+ */
+function clearModuleCache(keys = [], tableSelectors = []) {
+    keys.forEach(k => localStorage.removeItem(k));
+    tableSelectors.forEach(sel => {
+        const tbody = document.querySelector(`${sel} tbody`);
+        if (tbody) tbody.innerHTML = '';
+    });
 }
 
 /* ============================================================
@@ -229,6 +313,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Global copy button handler
+    document.addEventListener('click', (e) => {
+        const copyBtn = e.target.closest('.copy-job-id-btn');
+        if (copyBtn) {
+            const jobId = copyBtn.getAttribute('data-job-id');
+            if (jobId) {
+                navigator.clipboard.writeText(jobId).then(() => {
+                    showNotification('Job ID copied to clipboard', 'success');
+                }).catch(err => {
+                    console.error('Failed to copy Job ID', err);
+                    showNotification('Failed to copy Job ID', 'error');
+                });
+            }
+        }
+    });
+
     // DOM Elements
     const elements = {
 
@@ -242,8 +342,9 @@ document.addEventListener('DOMContentLoaded', () => {
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
-        cfgRemoteModel: document.getElementById('cfg-remote-model'),
+        cfgScanMode: document.getElementById('cfg-scan-mode'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
+        cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
         
         // Storage Form & Elements
         btnAnalyzeStorage: document.getElementById('analyze-storage-btn'),
@@ -316,7 +417,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // AI Reviewer
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
-        aiLimit: document.getElementById('ai-limit')
+        aiLimit: document.getElementById('ai-limit'),
+        aiLookback: document.getElementById('ai-lookback')
     };
 
     // Custom Filter for DataTables
@@ -338,7 +440,8 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgOrgProject.value = state.orgProject;
         if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
-        if (elements.cfgRemoteModel) elements.cfgRemoteModel.value = state.remoteModel;
+        if (elements.cfgScanMode) elements.cfgScanMode.value = state.scanMode;
+        if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
         
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -378,11 +481,19 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('bq_admin_project', state.adminProject);
         }
         state.region = elements.cfgRegion.value;
-        
-        if (elements.cfgRemoteModel) {
-            state.remoteModel = elements.cfgRemoteModel.value.trim();
-            elements.cfgRemoteModel.value = state.remoteModel;
-            localStorage.setItem('bq_remote_model', state.remoteModel);
+        if (elements.cfgScanMode) {
+            state.scanMode = elements.cfgScanMode.value;
+            localStorage.setItem('bq_scan_mode', state.scanMode);
+        }
+
+        if (elements.cfgMaxBytesBilled) {
+            const val = parseInt(elements.cfgMaxBytesBilled.value);
+            state.maxBytesBilledGb = (val && val > 0) ? val : null;
+            if (state.maxBytesBilledGb) {
+                localStorage.setItem('bq_max_bytes_billed_gb', state.maxBytesBilledGb);
+            } else {
+                localStorage.removeItem('bq_max_bytes_billed_gb');
+            }
         }
 
         localStorage.setItem('bq_org_project', state.orgProject);
@@ -442,6 +553,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         setLoading(elements.btnAnalyzeStorage, true);
+        clearModuleCache(['bq_storage_results', 'bq_active_assist_results', 'bq_static_audit_results'], ['#storage-results-table', '#active-assist-table', '#static-audit-table']);
 
         const ttDays = parseFloat(document.getElementById('st-tt-days').value) || 7;
         const params = {
@@ -454,7 +566,8 @@ document.addEventListener('DOMContentLoaded', () => {
             min_monthly_saving: parseFloat(elements.stMinSave.value),
             min_monthly_saving_pct: parseFloat(elements.stMinSavePct.value),
             region: state.region,
-            org_project_id: state.orgProject
+            org_project_id: state.orgProject,
+            max_bytes_billed_gb: state.maxBytesBilledGb
         };
 
         try {
@@ -475,6 +588,11 @@ document.addEventListener('DOMContentLoaded', () => {
             renderStorageResults(responseData);
             renderOrgStatus(responseData.org_status);
             safeSetLocalStorage('bq_storage_results', JSON.stringify(responseData));
+            
+            // Background sync Active Assist recommendations
+            fetchActiveAssistRecommendations(false);
+            fetchStaticAuditResults(false);
+            
             showNotification('Storage analysis completed.', 'success');
         } catch (error) {
             logger_error(error);
@@ -483,6 +601,32 @@ document.addEventListener('DOMContentLoaded', () => {
             setLoading(elements.btnAnalyzeStorage, false);
         }
     });
+
+    // Sync Active Assist Recommendations Button
+    const btnSyncActiveAssist = document.getElementById('run-active-assist-btn');
+    if (btnSyncActiveAssist) {
+        btnSyncActiveAssist.addEventListener('click', () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+            fetchActiveAssistRecommendations(true);
+        });
+    }
+
+    // Static Schema Auditor Button
+    const btnSyncStaticAudit = document.getElementById('run-static-audit-btn');
+    if (btnSyncStaticAudit) {
+        btnSyncStaticAudit.addEventListener('click', () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+            fetchStaticAuditResults(true);
+        });
+    }
 
     // Analyze Jobs
     const btnAnalyzeJobs = document.getElementById('analyze-jobs-btn');
@@ -495,6 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             setLoading(btnAnalyzeJobs, true);
+            clearModuleCache(['bq_job_results'], ['#job-summary-table', '#top-jobs-table']);
 
             const params = {
                 on_demand_rate_per_tb: parseFloat(document.getElementById('jb-od-rate').value),
@@ -503,6 +648,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 lookback_days: parseInt(document.getElementById('jb-lookback').value),
                 region: state.region,
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 min_bytes_billed: parseInt(document.getElementById('jb-min-size').value) * 1024 * 1024,
                 limit_jobs: parseInt(document.getElementById('jb-limit').value),
                 fluid_scaling: document.getElementById('jb-fluid-scaling').checked
@@ -530,6 +676,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(error.message, 'error');
             } finally {
                 setLoading(btnAnalyzeJobs, false);
+            }
+        });
+    }
+
+    const hideOptimizedToggle = document.getElementById('hide-optimized-jobs');
+    if (hideOptimizedToggle) {
+        hideOptimizedToggle.addEventListener('change', () => {
+            const cached = localStorage.getItem('bq_job_results');
+            if (cached) {
+                renderJobResults(JSON.parse(cached));
             }
         });
     }
@@ -654,9 +810,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Render Top Jobs
         if (data.top_jobs) {
+            const hideOptimized = document.getElementById('hide-optimized-jobs')?.checked;
             data.top_jobs.forEach(row => {
-                const tr = document.createElement('tr');
                 const betterOn = row.on_demand_cost <= row.editions_cost ? 'On-Demand' : 'Editions';
+                const currentModel = row.current_model || 'On-Demand';
+                
+                if (hideOptimized && currentModel === betterOn) {
+                    return; // Skip rendering already optimized jobs
+                }
+                
+                const tr = document.createElement('tr');
                 const betterColor = betterOn === 'On-Demand' ? '#38bdf8' : '#a855f7';
                 
                 const maxCost = Math.max(row.on_demand_cost, row.editions_cost) || 1;
@@ -674,12 +837,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     categoryBg = 'rgba(250, 204, 21, 0.15)';
                 }
                 
+                let warningHtml = '';
+                if (row.performance_warning) {
+                    warningHtml = `<span class="badge" style="background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.25); margin-top: 0.35rem; display: block; white-space: normal; text-align: left; font-size: 0.75rem; line-height: 1.2; padding: 0.35rem 0.5rem;"><i class="fa-solid fa-triangle-exclamation" style="margin-right: 5px; color: #fbbf24;"></i>${row.performance_warning}</span>`;
+                }
+
+                const currentColor = currentModel === 'On-Demand' ? '#38bdf8' : '#a855f7';
+                
                 tr.innerHTML = `
                     <td>${row.project_id}</td>
                     <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
-                    <td><span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">On-Demand</span></td>
+                    <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
-                    <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span></td>
+                    <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
                     <td><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">${formatCurrency(row.waste_savings)}</span></td>
                     <td>${savingsPct.toFixed(2)}%</td>
                     <td>
@@ -794,6 +964,233 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
+    // Render Active Assist Results
+    const renderActiveAssistResults = (data) => {
+        const tbody = document.querySelector('#active-assist-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const getRecBadge = (rec) => {
+            let bg, color, border;
+            if (rec.toLowerCase().includes('partition')) {
+                bg = 'rgba(56, 189, 248, 0.15)'; // Soft Blue
+                color = '#38bdf8';
+                border = 'rgba(56, 189, 248, 0.3)';
+            } else {
+                bg = 'rgba(16, 185, 129, 0.15)'; // Soft Green (Cluster)
+                color = '#10b981';
+                border = 'rgba(16, 185, 129, 0.3)';
+            }
+            return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${rec}</span>`;
+        };
+
+        const formatColumnsList = (cols) => {
+            if (!cols || cols.length === 0) return `<span style="color: #64748b;">None</span>`;
+            return cols.map(c => `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #cbd5e1; font-size: 0.8rem;">${c}</code>`).join(' ');
+        };
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
+                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td>${getRecBadge(row.recommendation)}</td>
+                <td>${formatColumnsList(row.cluster_columns)}</td>
+                <td>${row.partition_column ? `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #38bdf8; font-size: 0.8rem;">${row.partition_column}</code>` : '<span style="color: #64748b;">N/A</span>'}</td>
+                <td><strong style="color: #10b981; font-weight: 700;">${formatCurrency(row.on_demand_monthly_savings)}</strong></td>
+                <td><strong style="color: #38bdf8; font-weight: 700;">${formatCurrency(row.editions_monthly_savings)}</strong></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        if ($.fn.DataTable.isDataTable('#active-assist-table')) {
+            $('#active-assist-table').DataTable().destroy();
+        }
+        $('#active-assist-table').DataTable({
+            pageLength: 10,
+            order: [[6, 'desc']], // Sort by On-Demand Savings descending
+            responsive: true
+        });
+    };
+
+    // Fetch Active Assist Recommendations
+    const fetchActiveAssistRecommendations = async (force = false) => {
+        const btn = document.getElementById('run-active-assist-btn');
+        if (btn) setLoading(btn, true);
+        clearModuleCache(['bq_active_assist_results'], ['#active-assist-table']);
+
+        const params = {
+            region: state.region,
+            org_project_id: state.orgProject,
+            max_bytes_billed_gb: state.maxBytesBilledGb
+        };
+
+        try {
+            debug_log("Fetching Active Assist recommendations with params:", params);
+            const response = await fetch('/api/storage/active_assist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(params)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to fetch Active Assist recommendations');
+            }
+
+            const data = await response.json();
+            state.activeAssistData = data;
+            renderActiveAssistResults(data);
+            safeSetLocalStorage('bq_active_assist_results', JSON.stringify(data));
+            if (force) showNotification('Active Assist recommendations synced.', 'success');
+        } catch (error) {
+            console.warn('Failed to fetch Active Assist recommendations:', error);
+            if (force) showNotification('Failed to sync recommendations. Check organization permissions.', 'warning');
+        } finally {
+            if (btn) setLoading(btn, false);
+        }
+    };
+
+    // Render Static Audit Results
+    const renderStaticAuditResults = (data) => {
+        const tbody = document.querySelector('#static-audit-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const formatSize = (bytes) => {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+
+        const formatNumber = (num) => {
+            return num.toLocaleString();
+        };
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Risk Status logic
+            let riskBadge = '';
+            const sizeGB = row.size_bytes / (1024 * 1024 * 1024);
+            if (sizeGB > 1000 || row.row_count > 1000000000) {
+                // Critical
+                riskBadge = `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); white-space: nowrap;"><i class="fa-solid fa-triangle-exclamation" style="margin-right: 0.25rem;"></i>Critical Risk</span>`;
+            } else {
+                // High
+                riskBadge = `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); white-space: nowrap;"><i class="fa-solid fa-circle-exclamation" style="margin-right: 0.25rem;"></i>High Risk</span>`;
+            }
+
+            // Suggestions string
+            let suggestedAction = '';
+            let columnsToSuggest = [];
+            const tblLower = row.table_id.toLowerCase();
+            const dsLower = row.dataset_id.toLowerCase();
+            
+            if (tblLower.includes('phone')) {
+                columnsToSuggest = ['PHONE_TYPE', 'PHONE_VALUE'];
+            } else if (tblLower.includes('email')) {
+                columnsToSuggest = ['EMAIL_TYPE', 'EMAIL_VALUE'];
+            } else if (tblLower.includes('master')) {
+                columnsToSuggest = ['PERSON_SOURCE', 'PERSON_ORIGIN_AUTHORITY_ID'];
+            } else if (tblLower.includes('visitor') || tblLower.includes('event') || dsLower.includes('pendo')) {
+                columnsToSuggest = ['VISITOR_ID', 'ACCOUNT_ID'];
+            } else if (tblLower.includes('address')) {
+                columnsToSuggest = ['ADDRESS_TYPE', 'COUNTRY_NAME'];
+            } else if (tblLower.includes('history') || tblLower.includes('usage')) {
+                columnsToSuggest = ['MEMBER_ID', 'PRODUCT_ID'];
+            } else if (tblLower.includes('partner_extract') || tblLower.includes('extract')) {
+                columnsToSuggest = ['CUSTOMER_KEY', 'PERIOD_ID'];
+            } else if (tblLower.includes('counter') || tblLower.includes('agg')) {
+                columnsToSuggest = ['EVENT_TYPE_ID', 'PERIOD_ID'];
+            } else if (tblLower.includes('xml')) {
+                columnsToSuggest = ['XML_TYPE', 'ARTICLE_ID'];
+            } else if (tblLower.includes('opportunity') || dsLower.includes('sfdc') || tblLower.includes('crm')) {
+                columnsToSuggest = ['ACCOUNT_ID', 'OPPORTUNITY_ID'];
+            } else {
+                columnsToSuggest = ['ACTIVE_FLAG', 'CREATED_DATE'];
+            }
+
+            const getPartitionStatus = (isPart) => {
+                return isPart 
+                    ? `<span style="color: #10b981;"><i class="fa-solid fa-circle-check" style="margin-right: 5px;"></i>${row.partition_column || 'Yes'}</span>` 
+                    : `<span style="color: #f87171;"><i class="fa-solid fa-circle-xmark" style="margin-right: 5px;"></i>Missing</span>`;
+            };
+
+            const getClusterStatus = (isClust) => {
+                return isClust 
+                    ? `<span style="color: #10b981;"><i class="fa-solid fa-circle-check" style="margin-right: 5px;"></i>${row.clustering_fields || 'Yes'}</span>` 
+                    : `<span style="color: #f87171;"><i class="fa-solid fa-circle-xmark" style="margin-right: 5px;"></i>Missing</span>`;
+            };
+
+            tr.innerHTML = `
+                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
+                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
+                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
+                <td>${getPartitionStatus(row.is_partitioned)}</td>
+                <td>${getClusterStatus(row.is_clustered)}</td>
+                <td><span style="color: #38bdf8; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${columnsToSuggest.join(', ')}</span></td>
+                <td>${riskBadge}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        if ($.fn.DataTable.isDataTable('#static-audit-table')) {
+            $('#static-audit-table').DataTable().destroy();
+        }
+        $('#static-audit-table').DataTable({
+            pageLength: 10,
+            order: [[4, 'desc']], // Sort by Logical Size descending
+            responsive: true
+        });
+    };
+
+    // Fetch Static Audit Results
+    const fetchStaticAuditResults = async (force = false) => {
+        const btn = document.getElementById('run-static-audit-btn');
+        if (btn) setLoading(btn, true);
+        clearModuleCache(['bq_static_audit_results'], ['#static-audit-table']);
+
+        const params = {
+            region: state.region,
+            org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+            scan_mode: state.scanMode || 'single'
+        };
+
+        try {
+            debug_log("Fetching Static Table Audit results with params:", params);
+            const response = await fetch('/api/storage/static_audit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(params)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to execute Static Table Audit');
+            }
+
+            const data = await response.json();
+            state.staticAuditData = data;
+            renderStaticAuditResults(data);
+            safeSetLocalStorage('bq_static_audit_results', JSON.stringify(data));
+            if (force) showNotification('Static schema audit completed successfully.', 'success');
+        } catch (error) {
+            console.warn('Failed to execute Static Table Audit:', error);
+            if (force) showNotification('Failed to execute static schema audit.', 'warning');
+        } finally {
+            if (btn) setLoading(btn, false);
+        }
+    };
+
     const renderOrgStatus = (orgStatus) => {
         const panel = document.getElementById('org-rec-panel');
         const text = document.getElementById('org-rec-text');
@@ -876,6 +1273,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
           lookback_days: lookbackDays,
           window_minutes: parseInt(elements.slWindow.value),
@@ -890,6 +1288,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
           lookback_days: lookbackDays
         }),
@@ -904,6 +1303,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
@@ -918,6 +1318,7 @@ document.addEventListener('DOMContentLoaded', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
@@ -1036,6 +1437,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                         region: state.region,
                         lookback_days: parseInt(document.getElementById('sim-lookback-days').value),
                         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1592,21 +1994,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
 
         table.draw();
-
-        // Add event listeners for copy buttons
-        document.querySelectorAll('.copy-job-id-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const jobId = e.target.closest('button').getAttribute('data-job-id');
-                if (jobId) {
-                    navigator.clipboard.writeText(jobId).then(() => {
-                        showNotification('Job ID copied to clipboard', 'success');
-                    }).catch(err => {
-                        console.error('Failed to copy Job ID', err);
-                        showNotification('Failed to copy Job ID', 'error');
-                    });
-                }
-            });
-        });
     };
 
     const renderActualProvisioningDonut = (autoscaledHours, baselineHours) => {
@@ -1997,6 +2384,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     billing_month_start: monthStart,
                     billing_month_end: monthEnd,
                     org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                     region: state.region,
                     admin_project_id: state.adminProject
                 };
@@ -2110,9 +2498,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeProfiler, true);
+            clearModuleCache(['bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries'], ['#profiler-summary-table', '#profiler-timeline-table', '#profiler-queries-table']);
 
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject
@@ -2167,9 +2557,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeUsers, true);
+            clearModuleCache(['bq_top_spenders'], ['#top-spenders-table']);
 
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject,
@@ -2307,6 +2699,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHbo, true);
+            clearModuleCache(['bq_hbo_results', 'bq_hbo_status'], ['#hbo-results-table']);
 
             const projectOverride = document.getElementById('hbo-project-override')?.value;
             const lookbackOverride = document.getElementById('hbo-lookback-override')?.value;
@@ -2382,12 +2775,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(btnAnalyzePerformance, true);
+            clearModuleCache(['bq_performance_results'], ['#performance-results-table']);
 
             const projectOverride = document.getElementById('perf-project-override')?.value;
             const lookbackOverride = document.getElementById('perf-lookback-override')?.value;
 
             const params = {
                 org_project_id: projectOverride || state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: lookbackOverride ? parseInt(lookbackOverride) : 7
             };
@@ -2504,7 +2899,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const actPhyRate = parseFloat(document.getElementById('st-act-phy').value) || 0.04;
 
         data.forEach(row => {
-            totalSize += row.live_table_gb || 0;
+            totalSize += row.live_active_physical_gb || 0;
             totalTtSize += row.time_travel_gb || 0;
             if (row.health_status && row.health_status.toUpperCase() === 'HIGH CHURN/RECREATE DETECTED') {
                 highChurnCount++;
@@ -2515,12 +2910,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             const badgeBg = row.health_status === 'Healthy' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)';
             const badgeColor = row.health_status === 'Healthy' ? '#22c55e' : '#ef4444';
+            const churnPct = row.churn_ratio != null ? (row.churn_ratio * 100).toFixed(1) + '%' : 'N/A';
 
             tr.innerHTML = `
+                <td>${row.project_id || ''}</td>
                 <td>${row.dataset}</td>
                 <td>${row.table_name}</td>
-                <td>${row.live_table_gb.toFixed(2)}</td>
-                <td>${row.time_travel_gb.toFixed(2)}</td>
+                <td>${(row.live_active_physical_gb || 0).toFixed(2)}</td>
+                <td>${(row.time_travel_gb || 0).toFixed(2)}</td>
+                <td>${churnPct}</td>
                 <td><span class="badge" style="background: ${badgeBg}; color: ${badgeColor}; font-weight: 600;">${row.health_status}</span></td>
             `;
             tbody.appendChild(tr);
@@ -2549,7 +2947,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if ($.fn.DataTable.isDataTable('#hygiene-results-table')) {
             $('#hygiene-results-table').DataTable().destroy();
         }
-        $('#hygiene-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
+        $('#hygiene-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
     if (elements.btnAnalyzeHygiene) {
@@ -2561,9 +2959,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHygiene, true);
+            clearModuleCache(['bq_hygiene_results'], ['#hygiene-results-table']);
 
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 limit: 20
             };
@@ -2654,25 +3054,65 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        const formatDataSize = (gb) => {
+            if (gb >= 1000) {
+                return `${formatNumber(gb / 1024)} TB`;
+            }
+            return `${formatNumber(gb)} GB`;
+        };
+
+        const getAbuseBadge = (type) => {
+            let bg, color, border;
+            if (type.includes('LIMIT TRAP')) {
+                bg = 'rgba(139, 92, 246, 0.15)'; // Purple
+                color = '#c084fc';
+                border = 'rgba(139, 92, 246, 0.3)';
+            } else if (type.includes('DML SCAN')) {
+                bg = 'rgba(239, 68, 68, 0.15)'; // Red
+                color = '#f87171';
+                border = 'rgba(239, 68, 68, 0.3)';
+            } else {
+                bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
+                color = '#fbbf24';
+                border = 'rgba(245, 158, 11, 0.3)';
+            }
+            return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${type}</span>`;
+        };
+
+        const getWasteCell = (waste) => {
+            if (waste > 0) {
+                return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
+            }
+            return `<span style="color: #64748b;">$0.00</span>`;
+        };
+
+        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
         data.forEach(row => {
+            const estimated_waste_usd = row.billed_gb * odRate / 1024;
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
-                <td>${row.project_id}</td>
-                <td>${row.job_id}</td>
-                <td>${row.billed_gb.toFixed(2)}</td>
-                <td><span class="badge logical">${row.abuse_type}</span></td>
-                <td>${formatCurrency(row.estimated_waste_usd || 0)}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.query_snippet}</td>
-                <td>${row.suggested_fix || 'N/A'}</td>
+                <td><span style="color: #e2e8f0; font-weight: 500;">${row.user_email}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.project_id}</span></td>
+                <td><span style="color: #64748b; font-family: monospace; font-size: 0.85rem;">${row.job_id}</span></td>
+                <td><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
+                <td>${getAbuseBadge(row.abuse_type)}</td>
+                <td>${getWasteCell(estimated_waste_usd)}</td>
+                <td><div style="font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.8rem; background: rgba(0,0,0,0.4); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-width: 350px; overflow-x: auto; white-space: nowrap; color: #cbd5e1;">${row.query_snippet}</div></td>
+                <td>
+                    <div style="display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.85rem; color: #94a3b8; line-height: 1.3; min-width: 250px;">
+                        <i class="fa-regular fa-lightbulb" style="color: #38bdf8; margin-top: 0.15rem; font-size: 0.9rem; flex-shrink: 0;"></i>
+                        <span>${row.suggested_fix || 'N/A'}</span>
+                    </div>
+                </td>
             `;
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#linter-results-table')) {
-            $('#linter-results-table').DataTable().destroy();
-        }
-        $('#linter-results-table').DataTable({ pageLength: 10, order: [[3, 'desc']], responsive: true });
+        safeInitDataTable('#linter-results-table', {
+            pageLength: 10,
+            order: [[3, 'desc']],
+            autoWidth: false
+        });
     };
 
     const renderAntiPatternsResults = (data) => {
@@ -2680,13 +3120,16 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        const edRate = parseFloat(document.getElementById('jb-ed-rate')?.value) || 0.06;
         data.forEach(row => {
+            const wasteUsd = row.wasted_slot_hours * edRate;
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
                 <td>${row.project_id}</td>
                 <td>${row.insert_job_count.toLocaleString()}</td>
-                <td>${row.wasted_slot_hours.toFixed(2)}</td>
+                <td>${row.wasted_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
                 <td><span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">Migrate to Storage Write API</span></td>
             `;
             tbody.appendChild(tr);
@@ -2695,7 +3138,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if ($.fn.DataTable.isDataTable('#antipatterns-results-table')) {
             $('#antipatterns-results-table').DataTable().destroy();
         }
-        $('#antipatterns-results-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+        $('#antipatterns-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
     };
 
     const renderExpirationResults = (data) => {
@@ -2795,7 +3238,12 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</span>
+                        <button class="btn-action copy-job-id-btn" data-job-id="${row.job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>
+                    </div>
+                </td>
                 <td style="font-size: 0.85rem; color: #f59e0b;">${row.resource_warning}</td>
             `;
             tbody.appendChild(tr);
@@ -2821,11 +3269,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeLinter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeLinter, true);
+            clearModuleCache(['bq_linter_results'], ['#linter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 7,
-                limit_per_project: 100
+                limit_per_project: 100,
+                scan_mode: state.scanMode || 'organization'
             };
             try {
                 const response = await fetch('/api/antipatterns/linter', {
@@ -2854,8 +3305,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeDml.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeDml, true);
+            clearModuleCache(['bq_antipatterns_results'], ['#antipatterns-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 1,
                 threshold: 1000
@@ -2887,8 +3340,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeMv.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeMv, true);
+            clearModuleCache(['bq_mv_results'], ['#mv-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 7
             };
@@ -2919,8 +3374,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeSkew.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeSkew, true);
+            clearModuleCache(['bq_skew_results'], ['#skew-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 7,
                 limit_per_project: 50
@@ -2952,8 +3409,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeBatch.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeBatch, true);
+            clearModuleCache(['bq_batch_results'], ['#batch-candidates-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 7,
                 limit_per_project: 50
@@ -2985,8 +3444,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
+            clearModuleCache(['bq_gov_results'], ['#expiration-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region
             };
             try {
@@ -3023,8 +3484,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
+            clearModuleCache(['bq_gov_results'], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region
             };
             try {
@@ -3061,8 +3524,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeMvRejections.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeMvRejections, true);
+            clearModuleCache(['bq_mv_rejection_results'], ['#mv-rejections-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region
             };
             try {
@@ -3092,8 +3557,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeWarnings.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeWarnings, true);
+            clearModuleCache(['bq_resource_warning_results'], ['#resource-warnings-table']);
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region
             };
             try {
@@ -3228,9 +3695,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeBi, true);
+            clearModuleCache(['bq_bi_results'], ['#bi-results-table']);
 
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
                 lookback_days: 7,
                 limit: 50
@@ -3275,11 +3744,102 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         data.forEach(row => {
             const tr = document.createElement('tr');
+            
+            // Build Schema Coverage Badge
+            let coverageBadge = '<span style="color: var(--text-secondary); font-size: 0.85rem;">N/A</span>';
+            const referenced = row.tables_referenced_count || 0;
+            const found = row.tables_found_count || 0;
+            
+            if (referenced > 0) {
+                if (found === referenced) {
+                    coverageBadge = `
+                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="All ${found} referenced table DDL schemas were successfully retrieved and analyzed.">
+                            <i class="fa-solid fa-circle-check" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
+                        </span>`;
+                } else {
+                    const isInfoSchema = row.query && row.query.toUpperCase().includes('INFORMATION_SCHEMA');
+                    const badgeTitle = isInfoSchema
+                        ? "System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns."
+                        : `${referenced - found} out of ${referenced} referenced table DDLs could not be retrieved (likely due to cross-project boundaries or permission constraints).`;
+                    const badgeBg = isInfoSchema ? "rgba(148, 163, 184, 0.12)" : "rgba(245, 158, 11, 0.12)";
+                    const badgeBorder = isInfoSchema ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)";
+                    const badgeColor = isInfoSchema ? "#94a3b8" : "#f59e0b";
+                    const badgeIcon = isInfoSchema ? "fa-solid fa-circle-info" : "fa-solid fa-triangle-exclamation";
+                    
+                    coverageBadge = `
+                        <span style="background: ${badgeBg}; border: ${badgeBorder}; color: ${badgeColor}; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="${badgeTitle}">
+                            <i class="${badgeIcon}" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
+                        </span>`;
+                }
+            }
+            
+            // Add inline notes at the bottom of the advice
+            let inlineNote = '';
+            if (referenced > 0) {
+                const missing = referenced - found;
+                inlineNote = `
+                    <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; font-style: italic;">
+                        <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i>
+                        This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI. 
+                        ${missing > 0 ? `(${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}
+                    </div>`;
+            }
+
+            const renderMarkdown = (text) => {
+                if (!text) return '';
+                
+                // 1. HTML Escape the raw text first
+                let html = text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                
+                // 2. Extract and mask triple-backtick code blocks
+                const codeBlocks = [];
+                html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                    const placeholder = `__CODE_BLOCK_PLACEHOLDER_${codeBlocks.length}__`;
+                    codeBlocks.push(`<pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); padding: 1rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #e2e8f0; overflow-x: auto; margin: 0.75rem 0; line-height: 1.5; white-space: pre;"><code style="color: #38bdf8;">${code}</code></pre>`);
+                    return placeholder;
+                });
+                
+                // 3. Do all other markdown replacements
+                html = html.replace(/^### (.*?)$/gm, '<h3 style="margin: 1rem 0 0.5rem 0; color: white; font-size: 1.05rem; font-weight: 600;">$1</h3>');
+                html = html.replace(/^#### (.*?)$/gm, '<h4 style="margin: 0.75rem 0 0.25rem 0; color: #94a3b8; font-size: 0.95rem; font-weight: 600;">$1</h4>');
+                html = html.replace(/`(.*?)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.15rem 0.35rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #38bdf8;">$1</code>');
+                html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color: white; font-weight: 600;">$1</strong>');
+                html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
+                html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
+                html = html.replace(/\n/g, '<br>');
+                
+                // 4. Restore the masked code blocks
+                codeBlocks.forEach((blockHtml, index) => {
+                    html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
+                });
+                
+                return html;
+            };
+
+            const escapeHtml = (str) => {
+                if (!str) return '';
+                return str
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            };
+
+            const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
+            const escapedQuery = row.query ? escapeHtml(row.query) : '';
+            const escapedPreview = sqlPreview !== 'N/A' ? escapeHtml(sqlPreview) : 'N/A';
+
             tr.innerHTML = `
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.user_email}</td>
                 <td>${row.total_slot_ms.toLocaleString()}</td>
-                <td style="font-size: 0.85rem; color: var(--text-secondary); white-space: pre-wrap;">${row.gemini_optimization_advice}</td>
+                <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help;" title="${escapedQuery}">${escapedPreview}</td>
+                <td>${coverageBadge}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">${renderMarkdown(row.gemini_optimization_advice)}${inlineNote}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -3290,15 +3850,42 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         $('#ai-results-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
     };
 
-    if (elements.btnRunAiAnalysis) {
-        elements.btnRunAiAnalysis.addEventListener('click', async () => {
-            const modelName = state.remoteModel;
-            if (!modelName) {
-                showNotification('Please configure the Remote Model Name in Global Settings.', 'error');
-                Router.navigate('settings');
-                return;
-            }
+    // DDL Learn More Drawer Toggle
+    const learnMoreToggle = document.getElementById('ddl-learn-more-toggle');
+    const learnMoreDrawer = document.getElementById('ddl-learn-more-drawer');
+    const learnMoreClose = document.getElementById('ddl-learn-more-close');
 
+    if (learnMoreToggle && learnMoreDrawer) {
+        learnMoreToggle.addEventListener('click', () => {
+            const isHidden = learnMoreDrawer.style.display === 'none';
+            learnMoreDrawer.style.display = isHidden ? 'block' : 'none';
+            learnMoreToggle.textContent = isHidden ? 'Hide details ↑' : 'Learn more →';
+        });
+    }
+    if (learnMoreClose && learnMoreDrawer) {
+        learnMoreClose.addEventListener('click', () => {
+            learnMoreDrawer.style.display = 'none';
+            if (learnMoreToggle) learnMoreToggle.textContent = 'Learn more →';
+        });
+    }
+
+    // Consent Modal Logic
+    const consentModal = document.getElementById('ddl-consent-modal');
+    const consentCheckbox = document.getElementById('ddl-consent-checkbox');
+    const consentProceedBtn = document.getElementById('ddl-consent-proceed');
+    const consentCancelBtn = document.getElementById('ddl-consent-cancel');
+
+    if (consentCheckbox && consentProceedBtn) {
+        consentCheckbox.addEventListener('change', () => {
+            consentProceedBtn.disabled = !consentCheckbox.checked;
+            consentProceedBtn.style.opacity = consentCheckbox.checked ? '1' : '0.5';
+            consentProceedBtn.style.cursor = consentCheckbox.checked ? 'pointer' : 'not-allowed';
+        });
+    }
+
+    if (elements.btnRunAiAnalysis) {
+        // Refactored helper function for actual AI execution
+        const runActualAiAnalysis = async () => {
             const tableEl = document.getElementById('ai-results-table');
             const container = tableEl ? tableEl.closest('.results-panel') : null;
 
@@ -3321,12 +3908,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnRunAiAnalysis, true);
+            clearModuleCache(['bq_ai_results'], ['#ai-results-table']);
 
             const params = {
                 org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                model_name: modelName,
-                limit: parseInt(elements.aiLimit.value)
+                limit: parseInt(elements.aiLimit.value),
+                lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7')
             };
 
             try {
@@ -3350,14 +3939,53 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 safeSetLocalStorage('bq_ai_results', JSON.stringify(data));
                 showNotification('AI analysis completed.', 'success');
             } catch (error) {
-                if (typeof progress !== 'undefined' && progress && progress.stop) {
-                    progress.stop();
-                }
+                if (progress && progress.stop) progress.stop();
                 console.error("AI Error:", error);
                 showNotification(error.message, 'error');
             } finally {
                 setLoading(elements.btnRunAiAnalysis, false);
             }
+        };
+
+        elements.btnRunAiAnalysis.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure the GCP Project in Global Settings.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            // Blocking security check for DDL schema egress consent
+            const hasConsent = localStorage.getItem('ddl_consent_accepted') === 'true';
+            if (!hasConsent) {
+                if (consentModal) {
+                    consentModal.style.display = 'flex';
+                    
+                    const handleProceed = () => {
+                        localStorage.setItem('ddl_consent_accepted', 'true');
+                        consentModal.style.display = 'none';
+                        runActualAiAnalysis();
+                        cleanup();
+                    };
+                    
+                    const handleCancel = () => {
+                        consentModal.style.display = 'none';
+                        showNotification('Analysis cancelled. Schema consent is required to run the Doctor.', 'warning');
+                        cleanup();
+                    };
+                    
+                    const cleanup = () => {
+                        consentProceedBtn.removeEventListener('click', handleProceed);
+                        consentCancelBtn.removeEventListener('click', handleCancel);
+                    };
+                    
+                    consentProceedBtn.addEventListener('click', handleProceed);
+                    consentCancelBtn.addEventListener('click', handleCancel);
+                }
+                return;
+            }
+
+            // Execute directly if consent has been accepted previously
+            runActualAiAnalysis();
         });
     }
 
@@ -3385,6 +4013,26 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             renderStorageResults(storageData);
             renderOrgStatus(storageData.org_status);
         } catch (e) { console.warn("Failed to parse cached storage results", e); }
+    }
+
+    // Load cached Active Assist recommendations
+    const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
+    if (cachedActiveAssist) {
+        try {
+            const activeAssistData = JSON.parse(cachedActiveAssist);
+            state.activeAssistData = activeAssistData;
+            renderActiveAssistResults(activeAssistData);
+        } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
+    }
+
+    // Load cached Static Schema Audit results
+    const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
+    if (cachedStaticAudit) {
+        try {
+            const staticAuditData = JSON.parse(cachedStaticAudit);
+            state.staticAuditData = staticAuditData;
+            renderStaticAuditResults(staticAuditData);
+        } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
     }
 
     // Load cached job data

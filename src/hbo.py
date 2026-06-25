@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/hbo", tags=["hbo"])
 
-# Safety cap: cancel queries that would scan more than this.
-_MAX_BYTES_BILLED = 200 * 1024**3  # 200 GiB
+# _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 
 class HBOCommonParams(BaseModel):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
+    max_bytes_billed_gb: Optional[int] = None
 
 class HBOAnalyzeParams(HBOCommonParams):
     limit: int = 10
@@ -27,6 +27,7 @@ class HBOStatusParams(BaseModel):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
+    max_bytes_billed_gb: Optional[int] = None
 
 class HBOResult(BaseModel):
     job_id: str
@@ -79,7 +80,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
         """
         
         logger.info(f"Executing HBO Raw Data Query (Org Scope):\n{sql}")
-        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
         results = bq_client.query(sql, job_config=job_config).result()
         
         output = []
@@ -111,8 +112,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
         return output[:params.limit]
         
     except Exception as e:
-        logger.error(f"HBO analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "HBO analysis")
 
 @router.post("/summary", response_model=HBOSummary)
 def get_hbo_summary(params: HBOCommonParams):
@@ -154,7 +154,7 @@ def get_hbo_summary(params: HBOCommonParams):
         """
         
         logger.info(f"Executing HBO Summary Query:\n{sql}")
-        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
         results = bq_client.query(sql, job_config=job_config).result()
         
         for row in results:
@@ -181,8 +181,7 @@ def get_hbo_summary(params: HBOCommonParams):
         return HBOSummary(total_optimized_jobs=0, total_saved_slot_hours=0.0, total_estimated_savings_usd=0.0, avg_percent_time_saved=0.0)
         
     except Exception as e:
-        logger.error(f"HBO summary failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "HBO summary")
 
 class PerformanceInsightsResult(BaseModel):
     slot_contention_jobs: List[Dict]
@@ -220,7 +219,7 @@ def get_performance_insights(params: HBOCommonParams):
         """
         
         logger.info(f"Executing Performance Insights Query:\n{sql}")
-        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
         results = bq_client.query(sql, job_config=job_config).result()
         
         slot_contention_jobs = []
@@ -276,8 +275,7 @@ def get_performance_insights(params: HBOCommonParams):
         )
         
     except Exception as e:
-        logger.error(f"Performance insights failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Performance insights")
 
 @router.post("/status", response_model=List[HBOStatus])
 def check_hbo_status(params: HBOStatusParams):
@@ -294,7 +292,7 @@ def check_hbo_status(params: HBOStatusParams):
         """
         
         logger.info(f"Getting active projects from org jobs:\n{sql_projects}")
-        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
         projects_results = bq_client.query(sql_projects, job_config=job_config).result()
         
         projects = [row.project_id for row in projects_results]
@@ -305,7 +303,7 @@ def check_hbo_status(params: HBOStatusParams):
         
         # Helper function to check a single project status (blocking I/O)
         def _check_project_status(prj):
-            local_client = bigquery.Client(project=target_project)
+            local_client = bigquery.Client(project=prj)
             try:
                 sql_status = f"""
                 SELECT 
@@ -318,7 +316,7 @@ def check_hbo_status(params: HBOStatusParams):
                 
                 logger.info(f"Checking HBO Status for project {prj}:\n{sql_status}")
                 # Create client per thread to avoid connection pool exhaustion (Claude Option 1)
-                job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+                job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
                 results = local_client.query(sql_status, job_config=job_config).result()
                 
                 enabled = True # Default is enabled
@@ -354,7 +352,7 @@ def check_hbo_status(params: HBOStatusParams):
              SELECT option_value FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS 
              WHERE option_name = 'default_query_optimizer_options'
              """
-             job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+             job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
              results = bq_client.query(sql_status, job_config=job_config).result()
              enabled = True
              for row in results:
@@ -371,5 +369,4 @@ def check_hbo_status(params: HBOStatusParams):
         return output
         
     except Exception as e:
-        logger.error(f"HBO status check failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "HBO status check")

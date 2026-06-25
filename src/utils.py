@@ -108,10 +108,8 @@ def handle_endpoint_exception(e: Exception, service_name: str):
         )
     elif isinstance(e, gax_exc.BadRequest):
         logger.error(f"{service_name} bad request: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="BigQuery Query Failed: Query rejected. Check region/parameters."
-        )
+        # Surface the real BigQuery error (truncated) to the client
+        raise HTTPException(400, f"BigQuery Query Failed: {str(e)[:500]}")
     elif isinstance(e, gax_exc.GoogleAPIError):
         logger.error(f"{service_name} BigQuery error: {e}")
         raise HTTPException(
@@ -124,3 +122,25 @@ def handle_endpoint_exception(e: Exception, service_name: str):
             status_code=500,
             detail=f"{service_name} failed; check server logs."
         )
+
+# Default safety cap for maximum_bytes_billed (200 GiB).
+DEFAULT_MAX_BYTES_BILLED = 200 * 1024**3
+
+def get_max_bytes_billed(params=None) -> int:
+    """
+    Resolve the maximum_bytes_billed value from an API params object.
+
+    Reads the optional ``max_bytes_billed_gb`` attribute (in GiB) and converts
+    it to bytes.  Falls back to :data:`DEFAULT_MAX_BYTES_BILLED` (200 GiB) when
+    the attribute is missing, ``None``, or ``0``.
+
+    The value is clamped to the range [1 GiB, 10 TiB] to prevent accidental
+    misconfiguration.
+    """
+    gb = getattr(params, "max_bytes_billed_gb", None) if params else None
+    if not gb:
+        return DEFAULT_MAX_BYTES_BILLED
+    gb = int(gb)
+    # Clamp: minimum 1 GiB, maximum 10 TiB (10240 GiB)
+    gb = max(1, min(gb, 10240))
+    return gb * 1024**3

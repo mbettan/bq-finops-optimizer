@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Dict
+from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project
+from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed
 from collections import defaultdict
 import json
 import os
@@ -14,8 +15,7 @@ router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
 
 CONFIG_FILE = "cost_attribution_config.json"
 
-# Safety cap: cancel queries that would scan more than this.
-_MAX_BYTES_BILLED = 200 * 1024**3  # 200 GiB
+# _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 
 class ReservationConfig(BaseModel):
     sku_rate: float
@@ -33,6 +33,16 @@ class CostAttributionParams(BaseModel):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     admin_project_id: Optional[str] = None
+    max_bytes_billed_gb: Optional[int] = None
+
+    @field_validator('billing_month_start', 'billing_month_end')
+    @classmethod
+    def validate_date_format(cls, v: str) -> str:
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+            return v
+        except ValueError:
+            raise ValueError("Date parameters must be in YYYY-MM-DD format")
 
 def load_config() -> CostAttributionConfig:
     if not os.path.exists(CONFIG_FILE):
@@ -54,23 +64,25 @@ def save_config(config: CostAttributionConfig):
         raise HTTPException(status_code=500, detail="Failed to save configuration")
 
 @router.get("/config", response_model=CostAttributionConfig)
-async def get_config():
+def get_config():
     return load_config()
 
 @router.post("/config")
-async def update_config(config: CostAttributionConfig):
+def update_config(config: CostAttributionConfig):
     save_config(config)
     return {"message": "Configuration updated successfully"}
 
 @router.post("/calculate")
-async def calculate_cost_attribution(params: CostAttributionParams):
+def calculate_cost_attribution(params: CostAttributionParams):
     config = load_config()
     
     try:
         scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
         # Determine table name based on admin_project_id
-        target_project = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+        target_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+        target_project = _safe_ident(target_project_raw, "admin_project_id")
+        reject_dummy_project(target_project)
         
         if target_project:
             table_name = f"`{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
@@ -78,7 +90,6 @@ async def calculate_cost_attribution(params: CostAttributionParams):
             # Fallback to region-scoped view as in example
             table_name = f"`{params.region}`.INFORMATION_SCHEMA.JOBS"
             
-        from datetime import datetime, timedelta
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)
         exclusive_end_str = exclusive_end_date.strftime('%Y-%m-%d')
@@ -91,8 +102,8 @@ async def calculate_cost_attribution(params: CostAttributionParams):
             FROM
               {table_name}
             WHERE
-              creation_time >= TIMESTAMP('{params.billing_month_start}')
-              AND creation_time < TIMESTAMP('{exclusive_end_str}')
+              creation_time >= TIMESTAMP(@start_date)
+              AND creation_time < TIMESTAMP(@end_date)
               AND job_type = 'QUERY'
               AND statement_type != 'SCRIPT'
               AND reservation_id IS NOT NULL
@@ -102,7 +113,13 @@ async def calculate_cost_attribution(params: CostAttributionParams):
         """
         
         logger.info(f"Executing Cost Attribution Query:\n{query}")
-        job_config = bigquery.QueryJobConfig(maximum_bytes_billed=_MAX_BYTES_BILLED)
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
+                bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
+            ],
+            maximum_bytes_billed=get_max_bytes_billed(params),
+        )
         job_results = scoped_client.query(query, job_config=job_config).result()
         
         project_usage = []
@@ -190,9 +207,8 @@ async def calculate_cost_attribution(params: CostAttributionParams):
         return final_attributions
         
     except Exception as e:
-        logger.error(f"Cost attribution calculation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e, "Cost attribution")
 
 @router.post("/test-hbo")
-async def test_hbo():
+def test_hbo():
     return {"message": "HBO test works"}

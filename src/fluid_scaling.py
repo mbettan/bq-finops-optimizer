@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ DAYS_PER_YEAR = 365.25
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
 
-MAX_BYTES_BILLED = 200 * 1024**3  # 200 GiB
+# MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 MAX_LOOKBACK_DAYS = 90
 
 
@@ -45,6 +45,7 @@ class FluidScalingParams(BaseModel):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
+    max_bytes_billed_gb: Optional[int] = None
 
 
 class FluidEstimateParams(BaseModel):
@@ -53,6 +54,7 @@ class FluidEstimateParams(BaseModel):
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
     price_per_slot_hr: float = Field(default=0.06, gt=0)
+    max_bytes_billed_gb: Optional[int] = None
 
 
 class FluidEstimateMetric(BaseModel):
@@ -396,12 +398,13 @@ def _run_query_to_df(
     sql: str,
     lookback_days: int,
     label: str,
+    params=None,
 ) -> pd.DataFrame:
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
         ],
-        maximum_bytes_billed=MAX_BYTES_BILLED,
+        maximum_bytes_billed=get_max_bytes_billed(params),
     )
     logger.info("Running %s query (lookback=%d days)", label, lookback_days)
     logger.debug("%s SQL:\n%s", label.upper(), sql)
@@ -471,8 +474,8 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         capacity_sql = _render_sql(_SQL_PER_SECOND_CAPACITY, admin_project=admin_project, region=region)
         usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region)
 
-        capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity")
-        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage")
+        capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
+        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params)
 
         logger.info(
             "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)
