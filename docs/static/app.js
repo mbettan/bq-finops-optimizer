@@ -3090,10 +3090,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#antipatterns-results-table')) {
-            $('#antipatterns-results-table').DataTable().destroy();
-        }
-        $('#antipatterns-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
+        safeInitDataTable('#antipatterns-results-table', { pageLength: 10, order: [[4, 'desc']], responsive: true });
     };
 
     const renderExpirationResults = (data) => {

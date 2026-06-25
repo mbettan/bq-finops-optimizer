@@ -85,7 +85,12 @@
                     // Jobs / Compute
                     '/api/jobs/analyze':            'bq_job_results',
                     '/api/users/top_spenders':      'bq_top_spenders',
-                    '/api/antipatterns/linter':     'bq_antipatterns_results',
+                    // Anti-patterns (each sub-scan has its own endpoint + cache key)
+                    '/api/antipatterns/linter':          'bq_linter_results',
+                    '/api/antipatterns/dml':             'bq_antipatterns_results',
+                    '/api/antipatterns/mv':              'bq_mv_results',
+                    '/api/antipatterns/skew':            'bq_skew_results',
+                    '/api/antipatterns/batch_candidates':'bq_batch_results',
                     // Slots
                     '/api/slots/analyze':               'bq_slots_results',
                     '/api/slots/tiered_recommendations':'bq_slots_tiered',
