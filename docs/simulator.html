@@ -78,27 +78,27 @@
             if (urlStr.includes("/api/")) {
                 const apiMap = {
                     // Storage
-                    '/api/storage/results':        'bq_storage_results',
-                    '/api/storage/hygiene':        'bq_hygiene_results',
-                    '/api/storage/active_assist':  'bq_active_assist_results',
-                    '/api/storage/static_audit':   'bq_static_audit_results',
+                    '/api/storage/analyze':        'bq_storage_results',
+                    '/api/storage/hygiene':         'bq_hygiene_results',
+                    '/api/storage/active_assist':   'bq_active_assist_results',
+                    '/api/storage/static_audit':    'bq_static_audit_results',
                     // Jobs / Compute
-                    '/api/jobs/results':           'bq_job_results',
-                    '/api/jobs/users':             'bq_top_spenders',
-                    '/api/jobs/antipatterns':      'bq_antipatterns_results',
+                    '/api/jobs/analyze':            'bq_job_results',
+                    '/api/users/top_spenders':      'bq_top_spenders',
+                    '/api/antipatterns/linter':     'bq_antipatterns_results',
                     // Slots
-                    '/api/slots/analyze':              'bq_slots_results',
+                    '/api/slots/analyze':               'bq_slots_results',
                     '/api/slots/tiered_recommendations':'bq_slots_tiered',
-                    '/api/slots/utilization':          'bq_slots_utilization',
-                    '/api/slots/actual_provisioning':  'bq_slots_actual_provisioning',
-                    '/api/slots/profiler':             'bq_profiler_summary',
-                    '/api/slots/simulate':             'bq_slots_simulation_results',
+                    '/api/slots/utilization':           'bq_slots_utilization',
+                    '/api/slots/actual_provisioning':   'bq_slots_actual_provisioning',
+                    '/api/slots/profiler':              'bq_profiler_summary',
+                    '/api/slots/simulate':              'bq_slots_simulation_results',
                     // Governance / Intelligence
-                    '/api/governance/analyze':     'bq_gov_results',
-                    '/api/ai/analyze':             'bq_ai_results',
-                    '/api/bi/analyze':             'bq_bi_results',
-                    '/api/mv/analyze':             'bq_mv_results',
-                    '/api/hbo/analyze':            'bq_hbo_results',
+                    '/api/governance/analyze':      'bq_gov_results',
+                    '/api/ai/analyze':              'bq_ai_results',
+                    '/api/bi/analyze':              'bq_bi_results',
+                    '/api/mv/analyze':              'bq_mv_results',
+                    '/api/hbo/analyze':             'bq_hbo_results',
                     '/api/hbo/performance_insights':'bq_performance_results'
                 };
 
@@ -2008,6 +2008,7 @@
                                         <th>Project ID</th>
                                         <th>Insert Count (Last 1D)</th>
                                         <th>Wasted Slot Hours</th>
+                                        <th>Estimated Waste ($)</th>
                                         <th>Recommendation</th>
                                     </tr>
                                 </thead>
