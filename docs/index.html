@@ -4,22 +4,51 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps Optimizer — Maximize BigQuery Efficiency</title>
+    <title>BQ FinOps Optimizer — BigQuery Cost Optimization & Slot Simulation</title>
     <meta name="description"
-        content="Maximize BigQuery efficiency. Analyze your storage profile and find the optimal billing model for your workloads effortlessly.">
-    <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer">
-    
+        content="Open-source BigQuery cost optimization suite. Automated query review, slot capacity simulation, dynamic billing guardrails, hybrid cost attribution, and migration risk detection — the complete FinOps toolkit for Google Cloud.">
+    <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer, Query Doctor, Gemini, BigQuery Editions, Reservation Sizing, Capacity Planning, Cooldown Tax, Fluid Scaling, Migration Guardrails, Cost Attribution, Autoscaler">
+    <link rel="canonical" href="https://mbettan.github.io/bq-finops-optimizer/">
+
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="og:title" content="BQ FinOps Optimizer — Maximize BigQuery Efficiency">
-    <meta property="og:description" content="Analyze your BigQuery storage profile and find the optimal billing model for your workloads effortlessly.">
+    <meta property="og:title" content="BQ FinOps Optimizer — BigQuery Cost Optimization">
+    <meta property="og:description" content="Open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+    <meta property="og:site_name" content="BQ FinOps Optimizer">
+    <meta property="og:locale" content="en_US">
 
     <!-- Twitter -->
-    <meta property="twitter:card" content="summary">
+    <meta property="twitter:card" content="summary_large_image">
     <meta property="twitter:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="twitter:title" content="BQ FinOps Optimizer — Maximize BigQuery Efficiency">
-    <meta property="twitter:description" content="Analyze your BigQuery storage profile and find the optimal billing model for your workloads effortlessly.">
+    <meta property="twitter:title" content="BQ FinOps Optimizer — BigQuery Cost Optimization">
+    <meta property="twitter:description" content="Open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+
+    <!-- Structured Data: SoftwareApplication -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "BQ FinOps Optimizer",
+        "description": "An enterprise-grade, open-source diagnostic, simulation, and governance suite designed to maximize cost efficiency and eliminate compute waste across Google Cloud BigQuery environments.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Cross-platform",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        },
+        "softwareVersion": "1.1.0",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "url": "https://mbettan.github.io/bq-finops-optimizer/",
+        "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
+        "programmingLanguage": ["Python", "JavaScript", "SQL"],
+        "author": {
+            "@type": "Person",
+            "name": "mbettan"
+        }
+    }
+    </script>
 
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -27,6 +56,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
         rel="stylesheet">
+    <link rel="icon" type="image/png" href="static/favicon.png">
 </head>
 
 <body>
@@ -46,15 +76,21 @@
                 </span>
                 BQ FinOps <span class="gradient-text">Optimizer</span>
             </a>
-            <div class="nav-links">
+            <div class="nav-links" id="nav-links">
                 <a href="#features">Features</a>
                 <a href="#demo">Example</a>
                 <a href="#workflow">Workflow</a>
+                <a href="simulator.html">Simulator</a>
             </div>
-            <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-nav" target="_blank" rel="noopener">
-                <i class="fab fa-github"></i>
-                <span>GitHub</span>
-            </a>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-nav" target="_blank" rel="noopener">
+                    <i class="fab fa-github"></i>
+                    <span>GitHub</span>
+                </a>
+                <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu">
+                    <i class="fas fa-bars" id="hamburger-icon"></i>
+                </button>
+            </div>
         </div>
     </nav>
 
@@ -62,24 +98,34 @@
     <header class="hero" id="top">
         <div class="hero-inner container">
             <div class="hero-content">
-                <div class="hero-badge">
-                    <span class="badge-dot" aria-hidden="true"></span>
-                    Open Source
+                <div class="hero-badges">
+                    <div class="hero-badge">
+                        <span class="badge-dot" aria-hidden="true"></span>
+                        Open Source
+                    </div>
+                    <div class="hero-badge version-badge">
+                        <i class="fas fa-rocket" aria-hidden="true" style="font-size: 0.65rem;"></i>
+                        v1.1.0
+                    </div>
                 </div>
 
                 <h1>
-                    Maximize Your<br>
-                    <span class="gradient-text">BigQuery Efficiency.</span>
+                    Advanced FinOps<br>
+                    <span class="gradient-text">Intelligence for BigQuery.</span>
                 </h1>
 
                 <p class="hero-sub">
-                    BigQuery offers immense flexibility in storage billing. <strong>BQ FinOps Optimizer</strong> is your FinOps companion to find the ideal model (Logical or Physical) for every workload, effortlessly.
+                    From storage billing to slot capacity planning, cost attribution to automated query review — the complete open-source FinOps toolkit for Google Cloud.
                 </p>
 
                 <div class="cta-group">
                     <a href="#features" class="btn btn-primary">
                         <i class="fas fa-bolt"></i>
                         Explore Features
+                    </a>
+                    <a href="simulator.html" class="btn btn-secondary">
+                        <i class="fas fa-play"></i>
+                        Try the Simulator
                     </a>
                     <a href="#workflow" class="btn btn-ghost">
                         See the Workflow
@@ -88,21 +134,24 @@
                 </div>
             </div>
 
-            <!-- Previews / Mockups (Pure CSS/Icons) -->
-            <div class="hero-visual" aria-hidden="true">
-                <div class="bento-card" style="width: 100%; height: 400px; display: flex; flex-direction: column; justify-content: space-between;">
-                    <div class="bento-icon"><i class="fas fa-chart-line"></i></div>
-                    <div>
-                        <h3>Organization Spend Dashboard</h3>
-                        <p>Real-time visibility into `INFORMATION_SCHEMA` across all projects.</p>
+            <!-- Animated Stats -->
+            <div class="hero-visual" aria-label="Product statistics">
+                <div class="hero-stats">
+                    <div class="stat-card fade-in-up">
+                        <div class="stat-value" data-count="272" data-suffix="+">0</div>
+                        <div class="stat-label">Tests Passing</div>
                     </div>
-                    <div style="height: 150px; background: rgba(255,255,255,0.02); border-radius: var(--r-md); border: 1px solid var(--glass-border); display: flex; align-items: flex-end; padding: 1rem; gap: 0.5rem;">
-                        <div style="height: 30%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
-                        <div style="height: 50%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
-                        <div style="height: 45%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
-                        <div style="height: 80%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
-                        <div style="height: 60%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
-                        <div style="height: 90%; width: 10%; background: var(--grad-brand); border-radius: 4px;"></div>
+                    <div class="stat-card fade-in-up">
+                        <div class="stat-value" data-count="7" data-suffix="">0</div>
+                        <div class="stat-label">Analysis Modules</div>
+                    </div>
+                    <div class="stat-card fade-in-up">
+                        <div class="stat-value" data-prefix="$" data-count="0" data-suffix="">$0</div>
+                        <div class="stat-label">SaaS Cost</div>
+                    </div>
+                    <div class="stat-card fade-in-up">
+                        <div class="stat-value" data-count="100" data-suffix="%">0</div>
+                        <div class="stat-label">Open Source</div>
                     </div>
                 </div>
             </div>
@@ -113,18 +162,31 @@
     <div class="tech-bar">
         <div class="container tech-bar-inner">
             <span class="tech-bar-label">Powered by</span>
-            <div class="nav-links">
+            <div class="nav-links" style="display: flex;">
                 <span class="btn btn-nav"><i class="fas fa-database"></i> BigQuery</span>
                 <span class="btn btn-nav"><i class="fas fa-server"></i> FastAPI</span>
                 <span class="btn btn-nav"><i class="fab fa-python"></i> Python</span>
+                <span class="btn btn-nav"><i class="fas fa-brain"></i> Gemini</span>
+                <span class="btn btn-nav"><i class="fas fa-square-root-variable"></i> NumPy</span>
             </div>
         </div>
     </div>
 
+    <!-- ░░ RELEASE ANNOUNCEMENT BANNER ░░ -->
+    <a href="#features" class="release-banner" aria-label="View new features in v1.1.0">
+        <div class="container release-banner-inner">
+            <span class="release-banner-tag">New in v1.1.0</span>
+            <span class="release-banner-text">
+                🚀 <span>Query Doctor</span> · Dynamic Billing Caps · Fluid Scaling · Migration Guardrails · Cost Attribution
+            </span>
+            <i class="fas fa-arrow-right release-banner-arrow" aria-hidden="true"></i>
+        </div>
+    </a>
+
     <!-- ░░ INTERACTIVE DEMO ░░ -->
     <section id="demo" aria-label="Interactive Demo">
         <div class="container">
-            <div class="section-header">
+            <div class="section-header fade-in-up">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">
                     <span class="badge-dot" aria-hidden="true"></span>
                     Example
@@ -133,7 +195,7 @@
                 <p>Simulating an audit of <strong>957 Datasets</strong> across an enterprise organization.</p>
             </div>
 
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem;">
 
 
                 <!-- Table Container -->
@@ -158,12 +220,12 @@
                 </div>
             </div>
 
-            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Simulating an analysis of the <strong>Top 500 Queries</strong> to identify candidates for slot reservations (autoscaler) or on-demand.</p>
             </div>
 
             <!-- Compute Demo Card -->
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
 
 
                 <!-- Table Container -->
@@ -189,11 +251,11 @@
             </div>
 
             <!-- Slot Optimizer Chart Demo Card -->
-            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Visualizing <strong>Slot Utilization</strong> at high-resolution to find the perfect baseline.</p>
             </div>
 
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
                 <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); padding: 2rem;">
                     <h3 style="color: var(--light); margin-bottom: 1rem;">Slot Utilization Timeline</h3>
                     
@@ -239,12 +301,12 @@
                 </div>
             </div>
 
-            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Identifying <strong>Top Offending Queries</strong> causing inefficient autoscaler activations.</p>
             </div>
 
             <!-- Workload Profiler Demo Card -->
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
                 <!-- Table Container -->
                 <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
                     <div style="max-height: 400px; overflow-y: auto;">
@@ -269,12 +331,12 @@
                 </div>
             </div>
 
-            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Identifying <strong>Top Spenders</strong> to allocate costs and optimize usage.</p>
             </div>
 
             <!-- Top Spenders Demo Card -->
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
                 <!-- Table Container -->
                 <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
                     <div style="max-height: 400px; overflow-y: auto;">
@@ -296,12 +358,12 @@
                 </div>
             </div>
 
-            <div style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
+            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
                 <p>Simulating an <strong>Edition Matrix Simulation</strong> to find the optimal baseline for Autoscale scenarios.</p>
             </div>
 
             <!-- Simulation Demo Card -->
-            <div class="bento-card" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
+            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
                 <!-- Table Container -->
                 <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
                     <div style="max-height: 400px; overflow-y: auto;">
@@ -344,15 +406,103 @@
     <!-- ░░ FEATURES ░░ -->
     <section id="features" aria-label="Features">
         <div class="container">
-            <div class="section-header">
+            <div class="section-header fade-in-up">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Capabilities</span>
                 <h2>Zero Friction <span class="gradient-text">Cost Optimization</span></h2>
-                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration.</p>
+                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. 7 modules, one mission.</p>
             </div>
 
-            <div class="features-bento">
-                <!-- Large: Storage -->
-                <div class="bento-card bento-large">
+            <div class="features-bento stagger-children">
+
+                <!-- ★ Query Doctor — PREMIUM FULL-WIDTH CARD -->
+                <div class="bento-card bento-full bento-premium fade-in-up">
+                    <span class="feature-pill pill-new">✦ New</span>
+                    <div class="premium-inner">
+                        <div>
+                            <div class="bento-icon icon-ai"><i class="fas fa-robot"></i></div>
+                            <h3>Automated Semantic Query Review</h3>
+                            <p>Leverages BigQuery's native <code>AI.GENERATE</code> scalar function to run high-speed, cost-efficient SQL reviews directly inside the data warehouse. Scans your most expensive queries for 7 critical anti-patterns and generates actionable routing snippets.</p>
+                            <div class="gemini-tag">
+                                <i class="fas fa-sparkles"></i>
+                                Powered by Gemini 3.1 Flash Lite
+                            </div>
+                        </div>
+                        <div>
+                            <p style="font-size: 0.8rem; color: var(--muted-mid); margin-bottom: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Detected Anti-Patterns</p>
+                            <div class="antipattern-pills">
+                                <span class="antipattern-pill">SELECT * Abuse</span>
+                                <span class="antipattern-pill">Unclustered Limits</span>
+                                <span class="antipattern-pill">Function-Wrapped Partition Keys</span>
+                                <span class="antipattern-pill">Missing Partition Filter</span>
+                                <span class="antipattern-pill">Cross-Join Patterns</span>
+                                <span class="antipattern-pill">Redundant Subqueries</span>
+                                <span class="antipattern-pill">Unqualified Columns</span>
+                            </div>
+                            <p style="margin-top: 1rem; font-size: 0.82rem; color: var(--muted);">Generates copy-pasteable <code style="color: var(--primary-light);">SET @@reservation</code> DDL statements for optimized routing.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dynamic Billing Limits -->
+                <div class="bento-card bento-large fade-in-up">
+                    <span class="feature-pill pill-new">New</span>
+                    <div class="bento-icon icon-shield"><i class="fas fa-shield-halved"></i></div>
+                    <div>
+                        <h3>Dynamic Billing Limits & Cost Safety Caps</h3>
+                        <p>Project-wide <code>max_bytes_billed_gb</code> safety cap dynamically passed to every BigQuery query. Smart clamping with min 1 GiB, max 10 TiB, and a safe 200 GiB fallback.</p>
+                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Budget Protection</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Smart Clamping</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> State Persistence</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Slot Capacity Bucket Method -->
+                <div class="bento-card fade-in-up">
+                    <span class="feature-pill pill-enhanced">Enhanced</span>
+                    <div class="bento-icon"><i class="fas fa-chart-bar"></i></div>
+                    <h3>Slot Capacity Bucket Method</h3>
+                    <p>Vectorized simulation engine using NumPy to model slot consumption over a 730-hour billing month.</p>
+                    <div class="tier-badges">
+                        <span class="tier-badge tier-aggressive">🔴 p80 Aggressive</span>
+                        <span class="tier-badge tier-balanced">🟡 p95 Balanced</span>
+                        <span class="tier-badge tier-performance">🟢 Max Performance</span>
+                    </div>
+                </div>
+
+                <!-- Fluid Scaling -->
+                <div class="bento-card fade-in-up">
+                    <span class="feature-pill pill-new">New</span>
+                    <div class="bento-icon icon-clock"><i class="fas fa-stopwatch"></i></div>
+                    <h3>Fluid Scaling & Cooldown Tax</h3>
+                    <p>Models the financial impact of transitioning to true per-second billing with zero minimum capacity. Identifies workloads suffering from the 60-second minimum charge.</p>
+                </div>
+
+                <!-- Hybrid Cost Attribution -->
+                <div class="bento-card bento-large fade-in-up">
+                    <span class="feature-pill pill-enhanced">Enhanced</span>
+                    <div class="bento-icon"><i class="fas fa-calculator"></i></div>
+                    <div>
+                        <h3>Hybrid Cost Attribution Engine</h3>
+                        <p>Accurately attribute BigQuery Editions costs to individual projects. Proportionally redistribute reservation waste and eliminate the "admin dump" mystery. Supports <strong>Lender Pays</strong> vs. <strong>Borrower Pays</strong> models for cross-reservation idle slot borrowing.</p>
+                    </div>
+                </div>
+
+                <!-- Migration Guardrails -->
+                <div class="bento-card fade-in-up">
+                    <span class="feature-pill pill-new">New</span>
+                    <div class="bento-icon icon-warning"><i class="fas fa-triangle-exclamation"></i></div>
+                    <h3>Migration Guardrails</h3>
+                    <p>Static schema auditor detects high-risk tables before they are queried. Generates clustering DDL stubs.</p>
+                    <div class="risk-badges">
+                        <div class="risk-badge"><span class="risk-dot critical"></span> Critical: >1 TB or >1B rows</div>
+                        <div class="risk-badge"><span class="risk-dot high"></span> High: >10 GB or >50M rows</div>
+                    </div>
+                </div>
+
+                <!-- Physical vs Logical Storage -->
+                <div class="bento-card bento-large fade-in-up">
                     <div class="bento-icon"><i class="fas fa-archive"></i></div>
                     <div>
                         <h3>Physical vs Logical Storage Billing</h3>
@@ -364,43 +514,56 @@
                     </div>
                 </div>
 
-                <!-- Org Views -->
-                <div class="bento-card">
-                    <div class="bento-icon"><i class="fas fa-sitemap"></i></div>
+                <!-- Organization-Wide Scoping -->
+                <div class="bento-card fade-in-up">
+                    <div class="bento-icon icon-green"><i class="fas fa-sitemap"></i></div>
                     <h3>Organization-Wide Scoping</h3>
-                    <p>Query `Table_Storage_By_Organization` to see the big picture across all billing accounts.</p>
+                    <p>Query <code>Table_Storage_By_Organization</code> to see the big picture across all billing accounts and projects.</p>
                 </div>
 
-                <!-- DDL -->
-                <div class="bento-card bento-large">
+                <!-- Actionable DDL -->
+                <div class="bento-card fade-in-up">
                     <div class="bento-icon"><i class="fas fa-code"></i></div>
-                    <div>
-                        <h3>Actionable DDL Statements</h3>
-                        <p>The tool doesn't just complain; it generates the exact `ALTER SCHEMA` code you need to fix the issue. Run it directly or copy to your IAC pipeline.</p>
-                    </div>
+                    <h3>Actionable DDL Statements</h3>
+                    <p>Generates the exact <code>ALTER SCHEMA</code> code you need. Run it directly or copy to your IAC pipeline.</p>
                 </div>
 
-                <!-- Simulation -->
-                <div class="bento-card">
-                    <div class="bento-icon"><i class="fas fa-chart-pie"></i></div>
-                    <h3>Edition Matrix Simulation</h3>
-                    <p>Advanced statistical simulation to find the optimal baseline for Autoscale scenarios, projecting costs to a standard 730-hour billing month.</p>
-                </div>
+            </div>
+        </div>
+    </section>
 
-                <!-- Cost Attribution -->
-                <div class="bento-card bento-large">
-                    <div class="bento-icon"><i class="fas fa-calculator"></i></div>
-                    <div>
-                        <h3>Hybrid Cost Attribution</h3>
-                        <p>Accurately attribute BigQuery Editions costs to individual projects. Proportionally distribute reservation waste and eliminate the "admin dump" mystery.</p>
-                    </div>
-                </div>
+    <!-- ░░ TRUST & SECURITY ░░ -->
+    <section class="trust-section" aria-label="Trust and Security">
+        <div class="container">
+            <div class="section-header fade-in-up">
+                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">
+                    <i class="fas fa-lock" style="font-size: 0.65rem;" aria-hidden="true"></i>
+                    Enterprise Ready
+                </span>
+                <h2>Built for <span class="gradient-text">Trust & Security</span></h2>
+                <p>Rigorously tested, sanitized, and hardened for production environments.</p>
+            </div>
 
-                <!-- Capacity Planning -->
-                <div class="bento-card">
-                    <div class="bento-icon"><i class="fas fa-clock"></i></div>
-                    <h3>Capacity Planning</h3>
-                    <p>Calculate exact slot-hours spent on unpredictable autoscaling vs uncommitted baseline capacity down to the second.</p>
+            <div class="trust-grid stagger-children">
+                <div class="trust-card fade-in-up">
+                    <div class="trust-icon"><i class="fas fa-vial"></i></div>
+                    <div class="trust-value">272+ Tests</div>
+                    <div class="trust-label">Unit & integration tests with mocked BigQuery endpoints</div>
+                </div>
+                <div class="trust-card fade-in-up">
+                    <div class="trust-icon"><i class="fas fa-key"></i></div>
+                    <div class="trust-value">Zero Leaks</div>
+                    <div class="trust-label">No credentials, keys, or tokens hardcoded anywhere</div>
+                </div>
+                <div class="trust-card fade-in-up">
+                    <div class="trust-icon"><i class="fas fa-scale-balanced"></i></div>
+                    <div class="trust-value">Apache 2.0</div>
+                    <div class="trust-label">Fully open-source, commercially friendly license</div>
+                </div>
+                <div class="trust-card fade-in-up">
+                    <div class="trust-icon"><i class="fas fa-server"></i></div>
+                    <div class="trust-value">Zero SaaS Hoarding</div>
+                    <div class="trust-label">Runs locally in your architecture — data is never sent to third-party servers</div>
                 </div>
             </div>
         </div>
@@ -409,14 +572,14 @@
     <!-- ░░ WORKFLOW ░░ -->
     <section id="workflow" aria-label="Workflow">
         <div class="container">
-            <div class="section-header">
+            <div class="section-header fade-in-up">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">The Process</span>
                 <h2>From Audit to <span class="gradient-text">Execution</span></h2>
                 <p>A streamlined workflow designed for Cloud Administrators.</p>
             </div>
 
             <div class="pipeline-track">
-                <div class="pipeline-step">
+                <div class="pipeline-step fade-in-up">
                     <div class="step-index">01</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-link"></i></div>
@@ -425,7 +588,7 @@
                     </div>
                 </div>
 
-                <div class="pipeline-step">
+                <div class="pipeline-step fade-in-up">
                     <div class="step-index">02</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-search-dollar"></i></div>
@@ -434,7 +597,7 @@
                     </div>
                 </div>
 
-                <div class="pipeline-step">
+                <div class="pipeline-step fade-in-up">
                     <div class="step-index">03</div>
                     <div class="step-card">
                         <div class="bento-icon"><i class="fas fa-play"></i></div>
@@ -442,22 +605,33 @@
                         <p>Review recommendations and generated DDL. Apply changes directly from the UI to start saving immediately.</p>
                     </div>
                 </div>
+
+                <div class="pipeline-step fade-in-up">
+                    <div class="step-index">04</div>
+                    <div class="step-card">
+                        <div class="bento-icon icon-shield"><i class="fas fa-shield-halved"></i></div>
+                        <h3>Govern & Guard</h3>
+                        <p>Set dynamic billing limits to prevent runaway charges. Run migration guardrails to detect high-risk schemas before they cost you. Continuously monitor with the Query Doctor.</p>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
 
-
-
     <!-- ░░ CTA ░░ -->
     <section class="cta-section" style="padding: 4rem 0;">
         <div class="container" style="text-align: center;">
-            <div class="bento-card" style="max-width: 800px; margin: 0 auto; padding: 4rem; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
+            <div class="bento-card fade-in-up" style="max-width: 800px; margin: 0 auto; padding: 4rem; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
                 <h2>Ready to Optimize your <br><span class="gradient-text">BigQuery Spend?</span></h2>
                 <p>Deploy the open-source optimizer today and audit your organization in minutes.</p>
-                <div class="cta-group">
+                <div class="cta-group" style="justify-content: center;">
                     <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener">
                         <i class="fab fa-github"></i>
                         Get Started on GitHub
+                    </a>
+                    <a href="simulator.html" class="btn btn-secondary">
+                        <i class="fas fa-play"></i>
+                        Try the Simulator
                     </a>
                 </div>
             </div>
@@ -465,17 +639,113 @@
     </section>
 
     <!-- ░░ FOOTER ░░ -->
-    <footer style="padding: 4rem 0; border-top: 1px solid var(--glass-border); text-align: center;">
+    <footer class="site-footer">
         <div class="container">
-            <p style="color: var(--muted); font-size: 0.9rem;">&copy; 2026 BigQuery FinOps Optimizer. Open Source under Apache 2.0 License.</p>
+            <div class="footer-inner">
+                <div class="footer-brand">
+                    <a href="#" class="logo" aria-label="BigQuery Optimizer home">
+                        <span class="logo-icon" aria-hidden="true">
+                            <i class="fas fa-chart-pie"></i>
+                        </span>
+                        BQ FinOps <span class="gradient-text">Optimizer</span>
+                    </a>
+                    <p>Enterprise-grade diagnostic, simulation, and governance suite for Google Cloud BigQuery cost optimization.</p>
+                </div>
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <a href="#features">Features</a>
+                    <a href="#demo">Example</a>
+                    <a href="simulator.html">Simulator</a>
+                    <a href="#workflow">Workflow</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener">GitHub</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md" target="_blank" rel="noopener">Documentation</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 BigQuery FinOps Optimizer. Open Source under Apache 2.0 License.</p>
+                <div class="footer-socials">
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener" aria-label="GitHub">
+                        <i class="fab fa-github"></i>
+                    </a>
+                </div>
+            </div>
         </div>
     </footer>
 
-    <!-- Scripts for navbar scroll and mock data -->
+    <!-- Scripts for navbar scroll, mock data, animations -->
     <script>
+        // ── Navbar scroll effect ──
         const navbar = document.getElementById('navbar');
         const onScroll = () => navbar.classList.toggle('scrolled', window.scrollY > 40);
         window.addEventListener('scroll', onScroll, { passive: true });
+
+        // ── Mobile hamburger ──
+        const hamburger = document.getElementById('nav-hamburger');
+        const navLinks = document.getElementById('nav-links');
+        const hamburgerIcon = document.getElementById('hamburger-icon');
+        if (hamburger) {
+            hamburger.addEventListener('click', () => {
+                navLinks.classList.toggle('mobile-open');
+                const isOpen = navLinks.classList.contains('mobile-open');
+                hamburgerIcon.className = isOpen ? 'fas fa-times' : 'fas fa-bars';
+            });
+            // Close menu on link click
+            navLinks.querySelectorAll('a').forEach(link => {
+                link.addEventListener('click', () => {
+                    navLinks.classList.remove('mobile-open');
+                    hamburgerIcon.className = 'fas fa-bars';
+                });
+            });
+        }
+
+        // ── IntersectionObserver for fade-in-up animations ──
+        const fadeObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('is-visible');
+                    fadeObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+        document.querySelectorAll('.fade-in-up').forEach(el => fadeObserver.observe(el));
+
+        // ── Animated counters ──
+        function animateCounter(el, target, prefix, suffix) {
+            const duration = 1500;
+            const start = performance.now();
+            const update = (now) => {
+                const progress = Math.min((now - start) / duration, 1);
+                const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+                const current = Math.round(eased * target);
+                el.textContent = (prefix || '') + current + (suffix || '');
+                if (progress < 1) requestAnimationFrame(update);
+            };
+            requestAnimationFrame(update);
+        }
+
+        const counterObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const el = entry.target;
+                    const count = parseInt(el.dataset.count, 10);
+                    const prefix = el.dataset.prefix || '';
+                    const suffix = el.dataset.suffix || '';
+                    animateCounter(el, count, prefix, suffix);
+                    counterObserver.unobserve(el);
+                }
+            });
+        }, { threshold: 0.5 });
+
+        document.querySelectorAll('.stat-value[data-count]').forEach(el => counterObserver.observe(el));
+
+        // ══════════════════════════════════════════
+        // MOCK DATA (unchanged from original)
+        // ══════════════════════════════════════════
 
         // Mock data
         const mockData = [
@@ -703,681 +973,6 @@
     "physical_cost": 499.16,
     "recommendation": "Physical",
     "savings": 561.24
-  },
-  {
-    "id": 26,
-    "project": "iot-events-3",
-    "dataset": "users_25",
-    "logical_cost": 10.7,
-    "physical_cost": 8.53,
-    "recommendation": "Physical",
-    "savings": 2.17
-  },
-  {
-    "id": 27,
-    "project": "ecommerce-web-3",
-    "dataset": "users_26",
-    "logical_cost": 24.23,
-    "physical_cost": 30.11,
-    "recommendation": "Logical",
-    "savings": 5.89
-  },
-  {
-    "id": 28,
-    "project": "data-warehouse-prod-3",
-    "dataset": "users_27",
-    "logical_cost": 157.06,
-    "physical_cost": 181.49,
-    "recommendation": "Logical",
-    "savings": 24.43
-  },
-  {
-    "id": 29,
-    "project": "recommendation-engine-3",
-    "dataset": "device_logs_28",
-    "logical_cost": 951.2,
-    "physical_cost": 997.52,
-    "recommendation": "Logical",
-    "savings": 46.32
-  },
-  {
-    "id": 30,
-    "project": "identity-services-5",
-    "dataset": "user_profiles_29",
-    "logical_cost": 1071.32,
-    "physical_cost": 493.8,
-    "recommendation": "Physical",
-    "savings": 577.52
-  },
-  {
-    "id": 31,
-    "project": "recommendation-engine-5",
-    "dataset": "users_30",
-    "logical_cost": 1529.86,
-    "physical_cost": 1565.97,
-    "recommendation": "Logical",
-    "savings": 36.11
-  },
-  {
-    "id": 32,
-    "project": "ecommerce-web-5",
-    "dataset": "audit_logs_31",
-    "logical_cost": 1916.04,
-    "physical_cost": 1028.85,
-    "recommendation": "Physical",
-    "savings": 887.19
-  },
-  {
-    "id": 33,
-    "project": "marketing-analytics-2",
-    "dataset": "users_32",
-    "logical_cost": 328.92,
-    "physical_cost": 313.25,
-    "recommendation": "Physical",
-    "savings": 15.68
-  },
-  {
-    "id": 34,
-    "project": "marketing-analytics-3",
-    "dataset": "users_33",
-    "logical_cost": 743.16,
-    "physical_cost": 608.87,
-    "recommendation": "Physical",
-    "savings": 134.29
-  },
-  {
-    "id": 35,
-    "project": "identity-services-3",
-    "dataset": "pricing_model_34",
-    "logical_cost": 3.3,
-    "physical_cost": 4.36,
-    "recommendation": "Logical",
-    "savings": 1.07
-  },
-  {
-    "id": 36,
-    "project": "data-warehouse-prod-3",
-    "dataset": "pricing_model_35",
-    "logical_cost": 1677.26,
-    "physical_cost": 1325.46,
-    "recommendation": "Physical",
-    "savings": 351.8
-  },
-  {
-    "id": 37,
-    "project": "iot-events-2",
-    "dataset": "user_profiles_36",
-    "logical_cost": 782.35,
-    "physical_cost": 461.47,
-    "recommendation": "Physical",
-    "savings": 320.89
-  },
-  {
-    "id": 38,
-    "project": "logistics-stg-1",
-    "dataset": "inventory_37",
-    "logical_cost": 13.06,
-    "physical_cost": 8.82,
-    "recommendation": "Physical",
-    "savings": 4.24
-  },
-  {
-    "id": 39,
-    "project": "recommendation-engine-5",
-    "dataset": "users_38",
-    "logical_cost": 1137.34,
-    "physical_cost": 959.2,
-    "recommendation": "Physical",
-    "savings": 178.13
-  },
-  {
-    "id": 40,
-    "project": "ecommerce-web-2",
-    "dataset": "audit_logs_39",
-    "logical_cost": 183.07,
-    "physical_cost": 137.05,
-    "recommendation": "Physical",
-    "savings": 46.03
-  },
-  {
-    "id": 41,
-    "project": "logistics-stg-1",
-    "dataset": "user_profiles_40",
-    "logical_cost": 20.12,
-    "physical_cost": 24.08,
-    "recommendation": "Physical",
-    "savings": 3.96
-  },
-  {
-    "id": 42,
-    "project": "iot-events-3",
-    "dataset": "inventory_41",
-    "logical_cost": 1880.7,
-    "physical_cost": 1007.94,
-    "recommendation": "Physical",
-    "savings": 872.75
-  },
-  {
-    "id": 43,
-    "project": "data-warehouse-prod-5",
-    "dataset": "device_logs_42",
-    "logical_cost": 34.5,
-    "physical_cost": 26.45,
-    "recommendation": "Physical",
-    "savings": 8.06
-  },
-  {
-    "id": 44,
-    "project": "logistics-stg-4",
-    "dataset": "ab_testing_43",
-    "logical_cost": 349.25,
-    "physical_cost": 290.98,
-    "recommendation": "Physical",
-    "savings": 58.27
-  },
-  {
-    "id": 45,
-    "project": "identity-services-1",
-    "dataset": "user_profiles_44",
-    "logical_cost": 415.92,
-    "physical_cost": 513.61,
-    "recommendation": "Logical",
-    "savings": 97.69
-  },
-  {
-    "id": 46,
-    "project": "ecommerce-web-4",
-    "dataset": "users_45",
-    "logical_cost": 780.45,
-    "physical_cost": 380.46,
-    "recommendation": "Physical",
-    "savings": 399.99
-  },
-  {
-    "id": 47,
-    "project": "iot-events-2",
-    "dataset": "pricing_model_46",
-    "logical_cost": 1076.51,
-    "physical_cost": 877.2,
-    "recommendation": "Physical",
-    "savings": 199.31
-  },
-  {
-    "id": 48,
-    "project": "recommendation-engine-5",
-    "dataset": "inventory_47",
-    "logical_cost": 7.52,
-    "physical_cost": 4.1,
-    "recommendation": "Physical",
-    "savings": 3.42
-  },
-  {
-    "id": 49,
-    "project": "data-warehouse-prod-1",
-    "dataset": "pricing_model_48",
-    "logical_cost": 15.01,
-    "physical_cost": 19.32,
-    "recommendation": "Physical",
-    "savings": 4.31
-  },
-  {
-    "id": 50,
-    "project": "ecommerce-web-4",
-    "dataset": "pricing_model_49",
-    "logical_cost": 662.3,
-    "physical_cost": 560.01,
-    "recommendation": "Physical",
-    "savings": 102.29
-  },
-  {
-    "id": 51,
-    "project": "iot-events-1",
-    "dataset": "users_50",
-    "logical_cost": 232.99,
-    "physical_cost": 221.97,
-    "recommendation": "Physical",
-    "savings": 11.02
-  },
-  {
-    "id": 52,
-    "project": "recommendation-engine-3",
-    "dataset": "device_logs_51",
-    "logical_cost": 747.12,
-    "physical_cost": 444.53,
-    "recommendation": "Physical",
-    "savings": 302.59
-  },
-  {
-    "id": 53,
-    "project": "iot-events-1",
-    "dataset": "audit_logs_52",
-    "logical_cost": 12.69,
-    "physical_cost": 5.49,
-    "recommendation": "Physical",
-    "savings": 7.2
-  },
-  {
-    "id": 54,
-    "project": "ecommerce-web-4",
-    "dataset": "transactions_53",
-    "logical_cost": 849.07,
-    "physical_cost": 887.68,
-    "recommendation": "Logical",
-    "savings": 38.61
-  },
-  {
-    "id": 55,
-    "project": "iot-events-4",
-    "dataset": "pricing_model_54",
-    "logical_cost": 1334.71,
-    "physical_cost": 971.96,
-    "recommendation": "Physical",
-    "savings": 362.75
-  },
-  {
-    "id": 56,
-    "project": "finance-prod-5",
-    "dataset": "ab_testing_55",
-    "logical_cost": 601.97,
-    "physical_cost": 287.64,
-    "recommendation": "Physical",
-    "savings": 314.33
-  },
-  {
-    "id": 57,
-    "project": "finance-prod-5",
-    "dataset": "user_profiles_56",
-    "logical_cost": 836.15,
-    "physical_cost": 740.16,
-    "recommendation": "Physical",
-    "savings": 95.99
-  },
-  {
-    "id": 58,
-    "project": "iot-events-1",
-    "dataset": "user_profiles_57",
-    "logical_cost": 428.7,
-    "physical_cost": 263.13,
-    "recommendation": "Physical",
-    "savings": 165.57
-  },
-  {
-    "id": 59,
-    "project": "marketing-analytics-1",
-    "dataset": "device_logs_58",
-    "logical_cost": 29.22,
-    "physical_cost": 19.38,
-    "recommendation": "Physical",
-    "savings": 9.84
-  },
-  {
-    "id": 60,
-    "project": "iot-events-3",
-    "dataset": "audit_logs_59",
-    "logical_cost": 33.51,
-    "physical_cost": 26.0,
-    "recommendation": "Physical",
-    "savings": 7.51
-  },
-  {
-    "id": 61,
-    "project": "recommendation-engine-3",
-    "dataset": "pricing_model_60",
-    "logical_cost": 789.72,
-    "physical_cost": 691.07,
-    "recommendation": "Physical",
-    "savings": 98.65
-  },
-  {
-    "id": 62,
-    "project": "ecommerce-web-2",
-    "dataset": "pricing_model_61",
-    "logical_cost": 1.64,
-    "physical_cost": 1.3,
-    "recommendation": "Logical",
-    "savings": 0.34
-  },
-  {
-    "id": 63,
-    "project": "logistics-stg-2",
-    "dataset": "pricing_model_62",
-    "logical_cost": 402.51,
-    "physical_cost": 349.93,
-    "recommendation": "Physical",
-    "savings": 52.59
-  },
-  {
-    "id": 64,
-    "project": "marketing-analytics-2",
-    "dataset": "pricing_model_63",
-    "logical_cost": 342.13,
-    "physical_cost": 322.7,
-    "recommendation": "Physical",
-    "savings": 19.43
-  },
-  {
-    "id": 65,
-    "project": "logistics-stg-4",
-    "dataset": "device_logs_64",
-    "logical_cost": 865.38,
-    "physical_cost": 922.44,
-    "recommendation": "Logical",
-    "savings": 57.06
-  },
-  {
-    "id": 66,
-    "project": "recommendation-engine-4",
-    "dataset": "user_profiles_65",
-    "logical_cost": 1515.41,
-    "physical_cost": 750.53,
-    "recommendation": "Physical",
-    "savings": 764.88
-  },
-  {
-    "id": 67,
-    "project": "recommendation-engine-3",
-    "dataset": "users_66",
-    "logical_cost": 765.69,
-    "physical_cost": 507.63,
-    "recommendation": "Physical",
-    "savings": 258.06
-  },
-  {
-    "id": 68,
-    "project": "marketing-analytics-1",
-    "dataset": "transactions_67",
-    "logical_cost": 409.4,
-    "physical_cost": 315.71,
-    "recommendation": "Physical",
-    "savings": 93.68
-  },
-  {
-    "id": 69,
-    "project": "data-warehouse-prod-2",
-    "dataset": "users_68",
-    "logical_cost": 223.94,
-    "physical_cost": 154.75,
-    "recommendation": "Physical",
-    "savings": 69.2
-  },
-  {
-    "id": 70,
-    "project": "identity-services-5",
-    "dataset": "click_stream_69",
-    "logical_cost": 509.87,
-    "physical_cost": 658.0,
-    "recommendation": "Logical",
-    "savings": 148.13
-  },
-  {
-    "id": 71,
-    "project": "iot-events-4",
-    "dataset": "inventory_70",
-    "logical_cost": 24.02,
-    "physical_cost": 27.39,
-    "recommendation": "Logical",
-    "savings": 3.37
-  },
-  {
-    "id": 72,
-    "project": "logistics-stg-4",
-    "dataset": "users_71",
-    "logical_cost": 18.67,
-    "physical_cost": 14.36,
-    "recommendation": "Logical",
-    "savings": 4.32
-  },
-  {
-    "id": 73,
-    "project": "recommendation-engine-4",
-    "dataset": "transactions_72",
-    "logical_cost": 276.08,
-    "physical_cost": 309.52,
-    "recommendation": "Logical",
-    "savings": 33.44
-  },
-  {
-    "id": 74,
-    "project": "iot-events-3",
-    "dataset": "order_history_73",
-    "logical_cost": 314.92,
-    "physical_cost": 205.55,
-    "recommendation": "Physical",
-    "savings": 109.38
-  },
-  {
-    "id": 75,
-    "project": "identity-services-3",
-    "dataset": "transactions_74",
-    "logical_cost": 78.86,
-    "physical_cost": 54.66,
-    "recommendation": "Physical",
-    "savings": 24.2
-  },
-  {
-    "id": 76,
-    "project": "recommendation-engine-3",
-    "dataset": "order_history_75",
-    "logical_cost": 762.02,
-    "physical_cost": 572.14,
-    "recommendation": "Physical",
-    "savings": 189.89
-  },
-  {
-    "id": 77,
-    "project": "ecommerce-web-4",
-    "dataset": "order_history_76",
-    "logical_cost": 1689.36,
-    "physical_cost": 2038.99,
-    "recommendation": "Logical",
-    "savings": 349.63
-  },
-  {
-    "id": 78,
-    "project": "logistics-stg-3",
-    "dataset": "audit_logs_77",
-    "logical_cost": 15.5,
-    "physical_cost": 7.87,
-    "recommendation": "Physical",
-    "savings": 7.63
-  },
-  {
-    "id": 79,
-    "project": "marketing-analytics-2",
-    "dataset": "pricing_model_78",
-    "logical_cost": 338.65,
-    "physical_cost": 428.34,
-    "recommendation": "Logical",
-    "savings": 89.69
-  },
-  {
-    "id": 80,
-    "project": "logistics-stg-1",
-    "dataset": "ab_testing_79",
-    "logical_cost": 1029.93,
-    "physical_cost": 555.1,
-    "recommendation": "Physical",
-    "savings": 474.83
-  },
-  {
-    "id": 81,
-    "project": "logistics-stg-1",
-    "dataset": "user_profiles_80",
-    "logical_cost": 7.57,
-    "physical_cost": 3.66,
-    "recommendation": "Logical",
-    "savings": 3.92
-  },
-  {
-    "id": 82,
-    "project": "iot-events-3",
-    "dataset": "pricing_model_81",
-    "logical_cost": 1595.85,
-    "physical_cost": 1392.13,
-    "recommendation": "Physical",
-    "savings": 203.72
-  },
-  {
-    "id": 83,
-    "project": "logistics-stg-2",
-    "dataset": "user_profiles_82",
-    "logical_cost": 19.47,
-    "physical_cost": 11.33,
-    "recommendation": "Physical",
-    "savings": 8.15
-  },
-  {
-    "id": 84,
-    "project": "marketing-analytics-1",
-    "dataset": "click_stream_83",
-    "logical_cost": 148.83,
-    "physical_cost": 130.41,
-    "recommendation": "Physical",
-    "savings": 18.42
-  },
-  {
-    "id": 85,
-    "project": "data-warehouse-prod-3",
-    "dataset": "users_84",
-    "logical_cost": 1016.96,
-    "physical_cost": 1105.46,
-    "recommendation": "Logical",
-    "savings": 88.5
-  },
-  {
-    "id": 86,
-    "project": "data-warehouse-prod-2",
-    "dataset": "click_stream_85",
-    "logical_cost": 1381.56,
-    "physical_cost": 1584.18,
-    "recommendation": "Logical",
-    "savings": 202.62
-  },
-  {
-    "id": 87,
-    "project": "identity-services-5",
-    "dataset": "user_profiles_86",
-    "logical_cost": 659.35,
-    "physical_cost": 456.38,
-    "recommendation": "Physical",
-    "savings": 202.97
-  },
-  {
-    "id": 88,
-    "project": "data-warehouse-prod-5",
-    "dataset": "pricing_model_87",
-    "logical_cost": 1728.16,
-    "physical_cost": 1730.19,
-    "recommendation": "Logical",
-    "savings": 2.03
-  },
-  {
-    "id": 89,
-    "project": "logistics-stg-3",
-    "dataset": "order_history_88",
-    "logical_cost": 22.32,
-    "physical_cost": 23.47,
-    "recommendation": "Logical",
-    "savings": 1.15
-  },
-  {
-    "id": 90,
-    "project": "recommendation-engine-2",
-    "dataset": "pricing_model_89",
-    "logical_cost": 180.16,
-    "physical_cost": 179.95,
-    "recommendation": "Physical",
-    "savings": 0.21
-  },
-  {
-    "id": 91,
-    "project": "iot-events-4",
-    "dataset": "device_logs_90",
-    "logical_cost": 400.36,
-    "physical_cost": 412.25,
-    "recommendation": "Logical",
-    "savings": 11.89
-  },
-  {
-    "id": 92,
-    "project": "ecommerce-web-3",
-    "dataset": "pricing_model_91",
-    "logical_cost": 747.23,
-    "physical_cost": 411.77,
-    "recommendation": "Physical",
-    "savings": 335.47
-  },
-  {
-    "id": 93,
-    "project": "recommendation-engine-2",
-    "dataset": "order_history_92",
-    "logical_cost": 70.56,
-    "physical_cost": 57.33,
-    "recommendation": "Physical",
-    "savings": 13.23
-  },
-  {
-    "id": 94,
-    "project": "marketing-analytics-1",
-    "dataset": "order_history_93",
-    "logical_cost": 718.95,
-    "physical_cost": 352.54,
-    "recommendation": "Physical",
-    "savings": 366.4
-  },
-  {
-    "id": 95,
-    "project": "finance-prod-4",
-    "dataset": "order_history_94",
-    "logical_cost": 25.52,
-    "physical_cost": 30.17,
-    "recommendation": "Logical",
-    "savings": 4.65
-  },
-  {
-    "id": 96,
-    "project": "logistics-stg-2",
-    "dataset": "ab_testing_95",
-    "logical_cost": 518.8,
-    "physical_cost": 420.46,
-    "recommendation": "Physical",
-    "savings": 98.34
-  },
-  {
-    "id": 97,
-    "project": "identity-services-1",
-    "dataset": "click_stream_96",
-    "logical_cost": 13.42,
-    "physical_cost": 7.25,
-    "recommendation": "Physical",
-    "savings": 6.17
-  },
-  {
-    "id": 98,
-    "project": "ecommerce-web-1",
-    "dataset": "audit_logs_97",
-    "logical_cost": 259.77,
-    "physical_cost": 228.26,
-    "recommendation": "Physical",
-    "savings": 31.51
-  },
-  {
-    "id": 99,
-    "project": "iot-events-4",
-    "dataset": "device_logs_98",
-    "logical_cost": 477.09,
-    "physical_cost": 393.0,
-    "recommendation": "Physical",
-    "savings": 84.09
-  },
-  {
-    "id": 100,
-    "project": "marketing-analytics-3",
-    "dataset": "inventory_99",
-    "logical_cost": 6.74,
-    "physical_cost": 4.55,
-    "recommendation": "Physical",
-    "savings": 2.18
   }
 ];
 
@@ -1402,10 +997,10 @@
             "id": 1,
             "job_id": "job_nwp_edw_dag_2026_03_20",
             "user": "airflow@company.com",
-            "on_demand_cost": 131.03,
-            "editions_cost": 3.93,
+            "on_demand_cost": 15430.00,
+            "editions_cost": 3120.00,
             "profile": "Reservation Candidate",
-            "savings": 127.10
+            "savings": 12310.00
           },
           {
             "id": 2,
@@ -1429,10 +1024,10 @@
             "id": 4,
             "job_id": "job_etl_load_daily_001",
             "user": "data-eng@company.com",
-            "on_demand_cost": 245.50,
-            "editions_cost": 12.30,
+            "on_demand_cost": 2450.50,
+            "editions_cost": 1230.30,
             "profile": "Reservation Candidate",
-            "savings": 233.20
+            "savings": 1220.20
           },
           {
             "id": 5,
@@ -1447,10 +1042,10 @@
             "id": 6,
             "job_id": "job_ml_training_v2_999",
             "user": "ml-model@company.com",
-            "on_demand_cost": 500.00,
-            "editions_cost": 480.00,
+            "on_demand_cost": 5000.00,
+            "editions_cost": 4800.00,
             "profile": "Balanced / Uncertain",
-            "savings": 20.00
+            "savings": 200.00
           },
           {
             "id": 7,
@@ -1465,118 +1060,28 @@
             "id": 8,
             "job_id": "job_weekly_finance_rpt_888",
             "user": "cfo-team@company.com",
-            "on_demand_cost": 85.00,
-            "editions_cost": 92.00,
+            "on_demand_cost": 850.00,
+            "editions_cost": 920.00,
             "profile": "On-Demand Candidate",
-            "savings": -7.00
+            "savings": -70.00
           },
           {
             "id": 9,
             "job_id": "job_customer_segmentation_02",
             "user": "marketing@company.com",
-            "on_demand_cost": 120.00,
-            "editions_cost": 30.00,
+            "on_demand_cost": 1200.00,
+            "editions_cost": 300.00,
             "profile": "Reservation Candidate",
-            "savings": 90.00
+            "savings": 900.00
           },
           {
             "id": 10,
             "job_id": "job_real_time_streaming_911",
             "user": "pubsub-svc@company.com",
-            "on_demand_cost": 15.00,
-            "editions_cost": 85.00,
-            "profile": "On-Demand Candidate",
-            "savings": -70.00
-          },
-          {
-            "id": 11,
-            "job_id": "job_daily_aggregation_007",
-            "user": "dbt-cloud@company.com",
-            "on_demand_cost": 300.00,
-            "editions_cost": 50.00,
-            "profile": "Reservation Candidate",
-            "savings": 250.00
-          },
-          {
-            "id": 12,
-            "job_id": "job_custom_report_user_123",
-            "user": "john.doe@company.com",
-            "on_demand_cost": 2.50,
-            "editions_cost": 2.60,
-            "profile": "Balanced / Uncertain",
-            "savings": -0.10
-          },
-          {
-            "id": 13,
-            "job_id": "job_backup_verification_99",
-            "user": "devops@company.com",
-            "on_demand_cost": 1.00,
-            "editions_cost": 0.10,
-            "profile": "Reservation Candidate",
-            "savings": 0.90
-          },
-          {
-            "id": 14,
-            "job_id": "job_large_export_csv_456",
-            "user": "analyst_2@company.com",
             "on_demand_cost": 150.00,
-            "editions_cost": 160.00,
-            "profile": "Balanced / Uncertain",
-            "savings": -10.00
-          },
-          {
-            "id": 15,
-            "job_id": "job_prometheus_metric_pull_1",
-            "user": "prom-scraper@company.com",
-            "on_demand_cost": 0.10,
-            "editions_cost": 0.50,
+            "editions_cost": 850.00,
             "profile": "On-Demand Candidate",
-            "savings": -0.40
-          },
-          {
-            "id": 16,
-            "job_id": "job_recommendation_calc_202",
-            "user": "recommender@company.com",
-            "on_demand_cost": 450.00,
-            "editions_cost": 40.00,
-            "profile": "Reservation Candidate",
-            "savings": 410.00
-          },
-          {
-            "id": 17,
-            "job_id": "job_monthly_rollup_202603",
-            "user": "finance-svc@company.com",
-            "on_demand_cost": 800.00,
-            "editions_cost": 100.00,
-            "profile": "Reservation Candidate",
-            "savings": 700.00
-          },
-          {
-            "id": 18,
-            "job_id": "job_ad_hoc_investigation_x",
-            "user": "security_ops@company.com",
-            "on_demand_cost": 50.00,
-            "editions_cost": 60.00,
-            "profile": "Balanced / Uncertain",
-            "savings": -10.00
-          },
-          {
-            "id": 19,
-            "job_id": "job_weekly_archive_cleanup",
-            "user": "archive-svc@company.com",
-            "on_demand_cost": 10.00,
-            "editions_cost": 2.00,
-            "profile": "Reservation Candidate",
-            "savings": 8.00
-          },
-          {
-            "id": 20,
-            "job_id": "job_live_traffic_analysis",
-            "user": "analytics-svc@company.com",
-            "on_demand_cost": 5.00,
-            "editions_cost": 25.00,
-            "profile": "On-Demand Candidate",
-            "savings": -20.00
+            "savings": -700.00
           }
         ];
 
@@ -1598,6 +1103,26 @@
         // Mock Data for Workload Profiler
         const mockProfilerData = [
             {
+                "query": "SELECT t1.* FROM `enterprise_project.warehouse.dim_customer` t1 CROSS JOIN `enterprise_project.warehouse.fact_sales` t2",
+                "project": "data-warehouse-prod-3",
+                "job_id": "job_cross_join_abc",
+                "frequency": 8760,
+                "avg_slot_hours": 245.100000,
+                "avg_duration_seconds": 1450.30,
+                "avg_bytes": 52428800000000,
+                "recommendation": "Candidate"
+            },
+            {
+                "query": "SELECT * FROM `recommendation-engine-4.logs.user_events` WHERE CAST(timestamp AS STRING) = '2026-06-20'",
+                "project": "recommendation-engine-4",
+                "job_id": "job_partition_scan_456",
+                "frequency": 17520,
+                "avg_slot_hours": 83.000000,
+                "avg_duration_seconds": 120.50,
+                "avg_bytes": 1073741824000,
+                "recommendation": "Candidate"
+            },
+            {
                 "query": "COMMIT TRANSACTION",
                 "project": "identity-services-2",
                 "job_id": "job_commit_123",
@@ -1618,13 +1143,13 @@
                 "recommendation": "Candidate"
             },
             {
-                "query": "SELECT * FROM `analytics_project.ecommerce.products`",
+                "query": "SELECT * FROM `analytics_project.ecommerce.products` LIMIT 100",
                 "project": "ecommerce-web-5",
                 "job_id": "job_select_456",
                 "frequency": 5259,
-                "avg_slot_hours": 0.000000,
-                "avg_duration_seconds": 0.00,
-                "avg_bytes": 1048576,
+                "avg_slot_hours": 45.000000,
+                "avg_duration_seconds": 23.00,
+                "avg_bytes": 50485760000,
                 "recommendation": "Candidate"
             },
             {
@@ -1644,23 +1169,23 @@
             {
                 "user": "airflow@company.com",
                 "count": 145000,
-                "bytes": 1567621120000,
-                "slots": 120.5,
-                "cost": 1250.00
+                "bytes": 125676211200000,
+                "slots": 12050.5,
+                "cost": 45500.00
             },
             {
                 "user": "analyst@company.com",
                 "count": 25000,
-                "bytes": 500000000000,
-                "slots": 45.2,
-                "cost": 350.00
+                "bytes": 5000000000000,
+                "slots": 4520.2,
+                "cost": 15350.00
             },
             {
                 "user": "powerbi-svc@company.com",
                 "count": 12000,
-                "bytes": 100000000000,
-                "slots": 15.6,
-                "cost": 75.00
+                "bytes": 1000000000000,
+                "slots": 1560.6,
+                "cost": 8750.00
             }
         ];
 
