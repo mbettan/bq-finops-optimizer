@@ -501,11 +501,19 @@ def test_effective_options_empty_falls_back_to_project_options(monkeypatch):
         def __init__(self, v): self.option_value = v
 
     class FakeQueryJob:
-        def __init__(self, rows): self._rows = rows
+        def __init__(self, rows):
+            self._rows = rows
+            self.total_bytes_processed = 0
+            self.total_bytes_billed = 0
+            self.project = "test-project"
+            self.location = "us"
+            self.job_id = "test-job-id"
+            self.cache_hit = False
+
         def result(self): return self._rows
 
     class FakeClient:
-        def query(self, sql):
+        def query(self, sql, *args, **kwargs):
             if "EFFECTIVE_PROJECT_OPTIONS" in sql:
                 return FakeQueryJob([])  # empty, like the real bug
             if "PROJECT_OPTIONS" in sql:

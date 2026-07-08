@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Literal
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class FluidScalingParams(BaseModel):
     max_bytes_billed_gb: Optional[int] = None
 
 
-class FluidEstimateParams(BaseModel):
+class FluidEstimateParams(FocusMixin):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
@@ -98,6 +99,35 @@ def _strip_qualifier(reservation_id: Optional[str]) -> str:
     return re.split(r"[.:]", reservation_id)[-1]
 
 
+def _run_and_log(client, sql, label, params=None, query_parameters=None):
+    """Run a query with timing, BQ URL, and structured logging."""
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", label, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    results = query_job.result()
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Status endpoint
 # ---------------------------------------------------------------------------
@@ -121,7 +151,7 @@ def _render_sql(template: str, **idents) -> str:
     return out
 
 
-def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: str, region: str) -> set[str]:
+def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: str, region: str, params=None) -> set[str]:
     effective_sql = f"""
       SELECT option_value
       FROM `{project}`.`{region}`.INFORMATION_SCHEMA.EFFECTIVE_PROJECT_OPTIONS
@@ -132,9 +162,9 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
       FROM `{project}`.`{region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS
       WHERE option_name = 'preflight_fluid_autoscaling_reservations'
     """
-    for label, sql in [("EFFECTIVE_PROJECT_OPTIONS", effective_sql), ("PROJECT_OPTIONS", fallback_sql)]:
+    for label, sql in [("Fluid Options (EFFECTIVE)", effective_sql), ("Fluid Options (Fallback)", fallback_sql)]:
         try:
-            results = list(client.query(sql).result())
+            results = list(_run_and_log(client, sql, label, params=params))
             for row in results:
                 vals = _parse_option_value(row.option_value)
                 if vals:
@@ -148,6 +178,7 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
 
 @router.post("/status", response_model=List[FluidScalingStatus])
 def check_fluid_scaling_status(params: FluidScalingParams):
+    t0 = log_endpoint_start("Fluid Scaling Status", params, _logger=logger)
     try:
         client, project = init_bq_client_and_resolve_project(params)
         admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else project
@@ -159,9 +190,10 @@ def check_fluid_scaling_status(params: FluidScalingParams):
             SELECT reservation_name
             FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATIONS
         """
-        all_reservations = [r.reservation_name for r in client.query(sql_reservations).result()]
+        res_results = _run_and_log(client, sql_reservations, "Fluid Scaling Reservations", params=params)
+        all_reservations = [r.reservation_name for r in res_results]
 
-        enabled = get_effective_fluid_scaling_reservations(client, admin_project, region)
+        enabled = get_effective_fluid_scaling_reservations(client, admin_project, region, params=params)
         enabled_norm = {_strip_qualifier(r) for r in enabled}
 
         output: List[FluidScalingStatus] = []
@@ -179,6 +211,7 @@ def check_fluid_scaling_status(params: FluidScalingParams):
                     f");"
                 )
             output.append(FluidScalingStatus(reservation_id=res, enabled=is_enabled, ddl=ddl))
+        log_endpoint_end("Fluid Scaling Status", t0, _logger=logger)
         return output
 
     except gax_exc.Forbidden:
@@ -243,6 +276,7 @@ WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback
   AND reservation_id IS NOT NULL
   AND reservation_id != ''
   AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+  {focus_clause}
 GROUP BY reservation_id, edition, period_start
 """
 
@@ -399,18 +433,40 @@ def _run_query_to_df(
     lookback_days: int,
     label: str,
     params=None,
+    extra_query_params=None,
 ) -> pd.DataFrame:
+    all_params = [
+        bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
+    ] + (extra_query_params or [])
+    max_bytes = get_max_bytes_billed(params)
     job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
-        ],
-        maximum_bytes_billed=get_max_bytes_billed(params),
+        query_parameters=all_params,
+        maximum_bytes_billed=max_bytes,
     )
-    logger.info("Running %s query (lookback=%d days)", label, lookback_days)
+    logger.info("⏳ %s — submitting query (lookback=%d days, safety cap: %s GiB)…", label, lookback_days, max_bytes // (1024**3))
     logger.debug("%s SQL:\n%s", label.upper(), sql)
-    return client.query(sql, job_config=job_config).result().to_dataframe(
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    df = query_job.result().to_dataframe(
         create_bqstorage_client=True,
     )
+    elapsed = time.time() - t0
+    # Log profile with clickable BQ Console URL
+    job_project = query_job.project
+    job_location = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={job_project}"
+        f"&j=bq:{job_location}:{query_job.job_id}&page=queryresults"
+    )
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return df
 
 
 def _build_config_status(
@@ -464,6 +520,8 @@ def _build_config_status(
 
 @router.post("/estimate", response_model=FluidScalingEstimateResponse)
 def estimate_fluid_scaling(params: FluidEstimateParams):
+    params.focus_projects = validate_focus_projects(params.focus_projects)
+    t0 = log_endpoint_start("Fluid Scaling Estimate", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
         admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else org_project
@@ -471,11 +529,12 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         reject_dummy_project(admin_project)
         region = _safe_ident(_normalize_region(params.region), "region")
 
+        focus_clause, focus_params = build_project_filter(params.focus_projects)
         capacity_sql = _render_sql(_SQL_PER_SECOND_CAPACITY, admin_project=admin_project, region=region)
-        usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region)
+        usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region, focus_clause=focus_clause)
 
         capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
-        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params)
+        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params, extra_query_params=focus_params)
 
         logger.info(
             "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)
@@ -506,7 +565,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         metrics.sort(key=lambda m: m.extrapolated_annual_usd, reverse=True)
 
         # Config status check
-        enabled_reservations = get_effective_fluid_scaling_reservations(client, admin_project, region)
+        enabled_reservations = get_effective_fluid_scaling_reservations(client, admin_project, region, params=params)
         config_status = _build_config_status(summaries, enabled_reservations, admin_project, region)
         
         logger.info(
@@ -516,6 +575,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
             config_status.missing_reservations,
         )
 
+        log_endpoint_end("Fluid Scaling Estimate", t0, _logger=logger)
         return FluidScalingEstimateResponse(
             reservations=metrics,
             config_status=config_status

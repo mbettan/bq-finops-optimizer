@@ -1,12 +1,138 @@
 import logging
 import re
-from typing import Optional
+import time
+import contextvars
+from typing import Optional, List
 from fastapi import HTTPException
 from google.cloud import bigquery
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Request correlation ID
+# ---------------------------------------------------------------------------
+# Set once per request via middleware; automatically injected into every log
+# line by RequestIdFilter.  Default "--------" for startup / non-request logs.
+request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="--------"
+)
+
+
+class RequestIdFilter(logging.Filter):
+    """Inject the current request_id into every LogRecord so the formatter
+    can include %(request_id)s without any per-call changes."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()  # type: ignore[attr-defined]
+        return True
+
+
+def log_endpoint_start(endpoint_name: str, params, _logger=None) -> float:
+    """Log a structured summary at the start of every endpoint call. Returns time.time() for elapsed calculation."""
+    log = _logger or logger
+    project = getattr(params, 'org_project_id', '?')
+    region = getattr(params, 'region', '?')
+    lookback = getattr(params, 'lookback_days', None)
+    focus = getattr(params, 'focus_projects', None) or []
+    cap_gb = getattr(params, 'max_bytes_billed_gb', None)
+    cap_str = f"{cap_gb} GiB" if cap_gb else "200 GiB (default)"
+
+    scope_str = f"{len(focus)} projects ({', '.join(focus[:3])}{'…' if len(focus) > 3 else ''})" if focus else "full organization"
+    lookback_str = f" | lookback={lookback}d" if lookback else ""
+
+    log.info(
+        "▶ %s — project=%s | region=%s | scope=%s%s | safety_cap=%s",
+        endpoint_name, project, region, scope_str, lookback_str, cap_str
+    )
+    return time.time()
+
+
+def log_endpoint_end(endpoint_name: str, start_time: float, _logger=None):
+    """Log endpoint completion with elapsed time."""
+    log = _logger or logger
+    elapsed = time.time() - start_time
+    log.info("◼ %s — completed in %.1fs", endpoint_name, elapsed)
+
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_\-\.\:]+\Z")
+_ALIAS_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+# Cap for UX sanity and validation cost — filtering actually *reduces* result size
+# vs. org-wide, so SQL-length and result-set size aren't the concern.
+MAX_FOCUS_PROJECTS = 50
+
+
+class FocusMixin(BaseModel):
+    """Mixin providing the optional focus_projects field.
+    Inherit alongside existing param classes to add project-scoping support."""
+    focus_projects: Optional[List[str]] = None
+
+
+def validate_focus_projects(projects: Optional[List[str]]) -> Optional[List[str]]:
+    """Validate, sanitize, and deduplicate a list of focus project IDs.
+    Returns None if the list is empty (= org-wide scan)."""
+    if not projects:
+        return None
+    # Order-preserving dedup + trim
+    seen = set()
+    validated = []
+    for p in projects:
+        p = p.strip()
+        if not p:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        reject_dummy_project(p)
+        _safe_ident(p, "focus_projects entry")
+        validated.append(p)
+    if not validated:
+        return None
+    if len(validated) > MAX_FOCUS_PROJECTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"focus_projects supports at most {MAX_FOCUS_PROJECTS} projects, got {len(validated)}."
+        )
+    return validated
+
+
+# Column allow-list — never interpolate caller-provided column names freely
+_ALLOWED_FILTER_COLUMNS = {"project_id", "project_name"}
+
+
+def build_project_filter(
+    focus_projects: Optional[List[str]],
+    column: str = "project_id",
+    table_alias: Optional[str] = None,
+) -> tuple:
+    """Returns (sql_clause, query_params).
+    Value is parameterized via IN UNNEST(@focus_projects), not interpolated.
+    Logs once when the filter is active (centralized observability —
+    no per-endpoint logger.info needed).
+
+    Args:
+        focus_projects: List of project IDs, or None for org-wide.
+        column: Column name (must be in allow-list).
+        table_alias: Optional table alias for JOIN contexts (e.g., "j").
+                     Validated against _ALIAS_RE.
+
+    Examples:
+      None             -> ("", [])
+      ["a"]            -> ("AND project_id IN UNNEST(@focus_projects)", [...])
+      ["a"], alias="j"  -> ("AND j.project_id IN UNNEST(@focus_projects)", [...])
+    """
+    if not focus_projects:
+        return "", []
+    if column not in _ALLOWED_FILTER_COLUMNS:
+        raise ValueError(f"Unsupported filter column: {column}")
+    qualified_col = column
+    if table_alias:
+        if not _ALIAS_RE.match(table_alias):
+            raise ValueError(f"Invalid table alias: {table_alias!r}")
+        qualified_col = f"{table_alias}.{column}"
+    logger.info("Focus filter active: %d projects", len(focus_projects))
+    param = bigquery.ArrayQueryParameter("focus_projects", "STRING", focus_projects)
+    return f"AND {qualified_col} IN UNNEST(@focus_projects)", [param]
 
 def _safe_ident(value: str, name: str) -> str:
     """Validates that a string is a safe GCP identifier (project, dataset, table, etc.)."""

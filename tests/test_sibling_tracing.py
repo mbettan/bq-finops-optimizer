@@ -70,8 +70,7 @@ def test_linter_sibling_parent_job_warning_propagation():
             "org_project_id": "mbettan-project",
             "region": "region-us",
             "lookback_days": 7,
-            "limit_per_project": 100,
-            "scan_mode": "organization"
+            "limit_per_project": 100
         }
         
         response = client.post("/api/antipatterns/linter", json=payload)

@@ -74,8 +74,8 @@ const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
-    scanMode: localStorage.getItem('bq_scan_mode') || 'organization',
     maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
+    focusProjects: JSON.parse(localStorage.getItem('bq_focus_projects') || '[]'),
     storageData: [],
     slotsData: [],
     slotsChart: null,
@@ -93,6 +93,21 @@ function safeSetLocalStorage(key, value) {
         console.warn(`[localStorage] Failed to write key "${key}" (possibly quota exceeded):`, e);
         try { localStorage.removeItem(key); } catch (_) {}
         return false;
+    }
+}
+
+// Update scope badge visibility based on focusProjects state
+function updateScopeBadge() {
+    const container = document.getElementById('scope-badge-container');
+    const badge = document.getElementById('scope-badge');
+    if (!container || !badge) return;
+    const projects = state.focusProjects || [];
+    if (projects.length > 0) {
+        container.style.display = '';
+        badge.textContent = `${projects.length} project${projects.length > 1 ? 's' : ''}`;
+    } else {
+        container.style.display = 'none';
+        badge.textContent = '';
     }
 }
 
@@ -342,9 +357,9 @@ document.addEventListener('DOMContentLoaded', () => {
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
-        cfgScanMode: document.getElementById('cfg-scan-mode'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
+        cfgFocusProjects: document.getElementById('cfg-focus-projects'),
         
         // Storage Form & Elements
         btnAnalyzeStorage: document.getElementById('analyze-storage-btn'),
@@ -414,7 +429,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeBi: document.getElementById('analyze-bi-btn'),
         
-        // AI Reviewer
+        // AI Doctor
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit'),
@@ -440,8 +455,9 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgOrgProject.value = state.orgProject;
         if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
-        if (elements.cfgScanMode) elements.cfgScanMode.value = state.scanMode;
         if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
+        if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
+        updateScopeBadge();
         
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -473,19 +489,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Save Settings
     elements.saveSettingsBtn.addEventListener('click', () => {
+        // GCP project ID regex: starts with lowercase letter, 6-30 chars, [a-z0-9-]
+        const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
+        const validationErrors = [];
+
+        // --- Strip & validate Org Project ---
         state.orgProject = elements.cfgOrgProject.value.trim();
         elements.cfgOrgProject.value = state.orgProject;
+        if (state.orgProject && !PROJECT_ID_RE.test(state.orgProject)) {
+            validationErrors.push(`Invalid Organization Project ID "${state.orgProject}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
+        }
+
+        // --- Strip & validate Admin Project ---
         if (elements.cfgAdminProject) {
             state.adminProject = elements.cfgAdminProject.value.trim();
             elements.cfgAdminProject.value = state.adminProject;
+            if (state.adminProject && !PROJECT_ID_RE.test(state.adminProject)) {
+                validationErrors.push(`Invalid Admin Project ID "${state.adminProject}". Must be 6-30 lowercase chars, starting with a letter.`);
+            }
             localStorage.setItem('bq_admin_project', state.adminProject);
         }
-        state.region = elements.cfgRegion.value;
-        if (elements.cfgScanMode) {
-            state.scanMode = elements.cfgScanMode.value;
-            localStorage.setItem('bq_scan_mode', state.scanMode);
-        }
 
+        // --- Region (dropdown, no validation needed — just trim) ---
+        state.region = elements.cfgRegion.value;
+
+        // --- Strip & validate Max Bytes Billed ---
         if (elements.cfgMaxBytesBilled) {
             const val = parseInt(elements.cfgMaxBytesBilled.value);
             state.maxBytesBilledGb = (val && val > 0) ? val : null;
@@ -496,14 +524,48 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // --- Strip & validate Focus Projects ---
+        if (elements.cfgFocusProjects) {
+            const raw = elements.cfgFocusProjects.value;
+            state.focusProjects = raw.split(',').map(s => s.trim()).filter(Boolean);
+            // Validate each focus project ID
+            const invalidProjects = state.focusProjects.filter(p => !PROJECT_ID_RE.test(p));
+            if (invalidProjects.length > 0) {
+                validationErrors.push(`Invalid Focus Project ID(s): ${invalidProjects.map(p => `"${p}"`).join(', ')}. Each must be 6-30 lowercase chars, starting with a letter.`);
+            }
+            // Write back cleaned values to the input field
+            elements.cfgFocusProjects.value = state.focusProjects.join(', ');
+            if (state.focusProjects.length > 0) {
+                safeSetLocalStorage('bq_focus_projects', JSON.stringify(state.focusProjects));
+            } else {
+                localStorage.removeItem('bq_focus_projects');
+            }
+        }
+
+        // --- Abort on validation errors ---
+        if (validationErrors.length > 0) {
+            showNotification(validationErrors.join('\n'), 'error');
+            return;
+        }
+
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
+
+        // Flush all cached module results — stale data from a previous scope
+        // (e.g., org-wide results before focus_projects was set) must not persist.
+        const allKeys = Object.keys(localStorage);
+        const resultKeys = allKeys.filter(k => k.startsWith('bq_') && k.endsWith('_results'));
+        resultKeys.forEach(k => localStorage.removeItem(k));
+        // Also clear any cached summaries/timelines/status that are scope-dependent
+        ['bq_hbo_status', 'bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries',
+         'bq_top_spenders', 'bq_cost_attr_results', 'bq_cost_attr_config'].forEach(k => localStorage.removeItem(k));
 
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
         elements.currentRegion.textContent = state.region;
+        updateScopeBadge();
 
-        showNotification('Settings saved successfully.', 'success');
+        showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
         Router.navigate('storage');
     });
 
@@ -566,6 +628,7 @@ document.addEventListener('DOMContentLoaded', () => {
             min_monthly_saving: parseFloat(elements.stMinSave.value),
             min_monthly_saving_pct: parseFloat(elements.stMinSavePct.value),
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
             max_bytes_billed_gb: state.maxBytesBilledGb
         };
@@ -647,6 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 slot_step_size: parseInt(document.getElementById('jb-slot-step').value),
                 lookback_days: parseInt(document.getElementById('jb-lookback').value),
                 region: state.region,
+                focus_projects: state.focusProjects,
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 min_bytes_billed: parseInt(document.getElementById('jb-min-size').value) * 1024 * 1024,
@@ -969,6 +1033,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.querySelector('#active-assist-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
+        
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 2rem;">
+                <div style="background: rgba(234, 179, 8, 0.1); border: 1px dashed rgba(234, 179, 8, 0.3); border-radius: 8px; padding: 1.5rem; display: inline-block;">
+                    <h4 style="color: #fef08a; margin: 0 0 0.5rem 0; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation"></i> No Active Assist Recommendations Found</h4>
+                    <div style="color: #cbd5e1; font-size: 0.9rem; margin: 0; text-align: left;">
+                        <p style="margin: 0 0 0.5rem 0;">This can happen when:</p>
+                        <ul style="margin: 0 0 1rem 0; padding-left: 1.5rem;">
+                            <li>Tables are already well-optimized</li>
+                            <li>Query history is under 30 days (Recommender needs more data)</li>
+                            <li>Active tables with heavy DML may be intentionally excluded to prioritize compute efficiency</li>
+                        </ul>
+                        <p style="margin: 0;">Rely on the <strong>Static Schema Auditor</strong> below for structural governance.</p>
+                    </div>
+                </div>
+            </td></tr>`;
+            
+            if ($.fn.DataTable.isDataTable('#active-assist-table')) {
+                $('#active-assist-table').DataTable().destroy();
+            }
+            return;
+        }
 
         const getRecBadge = (rec) => {
             let bg, color, border;
@@ -1023,6 +1109,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const params = {
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
             max_bytes_billed_gb: state.maxBytesBilledGb
         };
@@ -1160,9 +1247,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const params = {
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
-                max_bytes_billed_gb: state.maxBytesBilledGb,
-            scan_mode: state.scanMode || 'single'
+                max_bytes_billed_gb: state.maxBytesBilledGb
         };
 
         try {
@@ -1275,6 +1362,7 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
+          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           window_minutes: parseInt(elements.slWindow.value),
           percentile: percentile,
@@ -1290,6 +1378,7 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
+          focus_projects: state.focusProjects,
           lookback_days: lookbackDays
         }),
         signal: abortController.signal
@@ -1305,6 +1394,7 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
+          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
           resolution: 'HOUR'
@@ -1320,6 +1410,7 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
+          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
           edition: 'ENTERPRISE',
@@ -1439,6 +1530,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                         region: state.region,
+                focus_projects: state.focusProjects,
                         lookback_days: parseInt(document.getElementById('sim-lookback-days').value),
                         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                         max_baseline: parseInt(document.getElementById('sim-max-baseline').value),
@@ -2386,6 +2478,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                     region: state.region,
+                focus_projects: state.focusProjects,
                     admin_project_id: state.adminProject
                 };
 
@@ -2504,6 +2597,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject
             };
@@ -2563,6 +2657,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject,
                 od_price: parseFloat(document.getElementById('jb-od-rate').value) || 6.25,
@@ -2709,6 +2804,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: targetProject,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30),
                 limit: 10
             };
@@ -2784,6 +2880,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: projectOverride || state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: lookbackOverride ? parseInt(lookbackOverride) : 7
             };
 
@@ -2965,6 +3062,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 limit: 20
             };
 
@@ -3274,9 +3372,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
-                limit_per_project: 100,
-                scan_mode: state.scanMode || 'organization'
+                limit_per_project: 100
             };
             try {
                 const response = await fetch('/api/antipatterns/linter', {
@@ -3310,6 +3408,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 1,
                 threshold: 1000
             };
@@ -3345,6 +3444,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7
             };
             try {
@@ -3379,6 +3479,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit_per_project: 50
             };
@@ -3414,6 +3515,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit_per_project: 50
             };
@@ -3448,7 +3550,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
@@ -3488,7 +3591,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
@@ -3528,7 +3632,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/mv/analyze', {
@@ -3561,7 +3666,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/resource_warnings/analyze', {
@@ -3701,6 +3807,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit: 50
             };
@@ -3914,6 +4021,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
                 lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7')
             };
@@ -5361,7 +5469,7 @@ const Router = (() => {
     const targetView = getCurrentViewId();
     
     // Global project check: redirect to settings if no project is set (ignore for dashboard/settings)
-    if (targetView !== 'settings' && targetView !== 'dashboard' && !state.orgProject) {
+    if (targetView !== 'settings' && targetView !== 'dashboard' && targetView !== 'about' && !state.orgProject) {
         showNotification('Execution Project ID must be set in Settings before proceeding.', 'warning');
         location.hash = '#settings';
         return;
@@ -5458,3 +5566,90 @@ Router.register('fluid-scaling', {
     FluidScaling.init();
   }
 });
+
+// ---------------------------------------------------------------------------
+// About Panel — fetches /api/about and populates the sidebar badge + view
+// ---------------------------------------------------------------------------
+(function initAboutPanel() {
+  let _aboutData = null;
+
+  async function fetchAbout() {
+    if (_aboutData) return _aboutData;
+    try {
+      const res = await fetch('/api/about');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      _aboutData = await res.json();
+    } catch (err) {
+      console.warn('About: failed to fetch /api/about:', err);
+      _aboutData = {
+        name: 'BigQuery FinOps Optimizer',
+        version: '?.?.?',
+        release_date: '—',
+        releases: [],
+        repo_url: '#',
+        changelog_url: '#',
+        demo_url: '#',
+      };
+    }
+    return _aboutData;
+  }
+
+  // Populate sidebar badge on page load
+  document.addEventListener('DOMContentLoaded', async () => {
+    const data = await fetchAbout();
+    const badge = document.getElementById('sidebar-version-badge');
+    if (badge) badge.textContent = `v${data.version}`;
+  });
+
+  // Populate About view when navigated to
+  Router.register('about', {
+    show: async () => {
+      const data = await fetchAbout();
+
+      // Header
+      const nameEl = document.getElementById('about-app-name');
+      if (nameEl) nameEl.textContent = data.name;
+
+      const versionEl = document.getElementById('about-version');
+      if (versionEl) versionEl.textContent = `v${data.version}`;
+
+      const dateEl = document.getElementById('about-release-date');
+      if (dateEl) dateEl.textContent = data.release_date;
+
+      // Releases
+      const releasesContainer = document.getElementById('about-releases-container');
+      if (releasesContainer) {
+        releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
+          const isLatest = index === 0;
+          return `
+            <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #38bdf8; ${isLatest ? '' : 'opacity: 0.8;'}">
+                        ${isLatest ? '<i class="fa-solid fa-sparkles" style="margin-right: 0.5rem;"></i>' : ''}${release.version}
+                    </h3>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    ${(release.highlights || []).map(h => 
+                        `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${h}
+                        </li>`
+                    ).join('')}
+                </ul>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Links
+      const changelogLink = document.getElementById('about-changelog-link');
+      if (changelogLink) changelogLink.href = data.changelog_url || '#';
+
+      const demoLink = document.getElementById('about-demo-link');
+      if (demoLink) demoLink.href = data.demo_url || '#';
+
+      const repoLink = document.getElementById('about-repo-link');
+      if (repoLink) repoLink.href = data.repo_url || '#';
+    }
+  });
+})();

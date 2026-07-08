@@ -1488,6 +1488,7 @@ table.dataTable tbody tr:last-child td {
     .tooltip:hover::before {
         opacity: 1;
         transform: translateX(-50%) translateY(4px);
+        transition-delay: 0.2s;
     }
     
     /* ─── Responsive ─── */

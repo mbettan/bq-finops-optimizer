@@ -400,7 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeBi: document.getElementById('analyze-bi-btn'),
         
-        // AI Reviewer
+        // AI Doctor
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit')

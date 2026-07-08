@@ -9,8 +9,10 @@ from google.cloud import bigquery
 import hashlib
 from functools import lru_cache
 from pathlib import Path
+import unicodedata
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import numpy as np
 from collections import defaultdict
@@ -24,7 +26,9 @@ from .fluid_scaling import (
     router as fluid_scaling_router,
     _strip_qualifier,
 )
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception, get_max_bytes_billed
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, request_id_var, RequestIdFilter
+import time
+import uuid
 
 
 __version__ = "1.1.0"
@@ -50,17 +54,44 @@ async def no_cache_static_assets(request: Request, call_next):
         response.headers["Expires"] = "0"
     return response
 
+@app.middleware("http")
+async def inject_request_id(request: Request, call_next):
+    """Assign a short correlation ID to every request for log tracing."""
+    request_id_var.set(uuid.uuid4().hex[:8])
+    response = await call_next(request)
+    return response
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Load .env manually to ensure GOOGLE_CLOUD_PROJECT is set
+# (Uvicorn doesn't load it by default without --env-file)
+_env_file = os.path.join(BASE_DIR, ".env")
+if os.path.exists(_env_file):
+    with open(_env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, val = line.split('=', 1)
+                os.environ[key.strip()] = val.strip()
+
 # Configure logging
+# Set LOG_LEVEL=DEBUG to see full SQL for every query.
+# Default: INFO (shows ▶/⏳/✅/◼ progress without SQL noise).
 log_file = os.path.join(BASE_DIR, 'app.log')
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_req_filter = RequestIdFilter()
+_handlers = [
+    RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5),
+    logging.StreamHandler()
+]
+for h in _handlers:
+    h.addFilter(_req_filter)
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
+    level=_log_level,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s',
+    handlers=_handlers,
+    force=True
 )
 logger = logging.getLogger(__name__)
 
@@ -110,9 +141,132 @@ def favicon():
 # Mount static files
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
+@app.get("/api/about")
+def get_about():
+    """Version and release metadata for the frontend About panel.
+
+    Parses RELEASE_NOTES.md to extract highlights for the latest release,
+    making it the single source of truth for what's shown in the UI.
+    """
+    return _about_cache
+
+def _parse_release_notes() -> dict:
+    """Parse RELEASE_NOTES.md once at startup to build the About payload.
+
+    Extracts all releases and their highlights.
+    """
+    releases = []
+    current_release = None
+    in_highlights_section = False
+
+    rn_path = Path(__file__).resolve().parent.parent / "RELEASE_NOTES.md"
+    try:
+        text = rn_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning("RELEASE_NOTES.md not found — About highlights will be empty")
+        return _build_about([])
+
+    lines = text.splitlines()
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect the version heading: ## v1.1.0 — 2026-07-08
+        if stripped.startswith("## v") and "—" in stripped:
+            if current_release:
+                releases.append(current_release)
+            
+            parts = stripped.split("—", 1)
+            version = parts[0].replace("##", "").strip()
+            date_str = parts[1].strip() if len(parts) == 2 else "—"
+            
+            current_release = {
+                "version": version.lstrip("v"),
+                "release_date": date_str,
+                "highlights": [],
+                "_has_highlights_section": False
+            }
+            in_highlights_section = False
+            continue
+
+        if not current_release:
+            continue
+
+        # Detect the Key Highlights subsection
+        if stripped.startswith("### ") and "Key Highlights" in stripped:
+            in_highlights_section = True
+            current_release["_has_highlights_section"] = True
+            continue
+
+        # If we're in highlights and hit the next ### section, stop collecting
+        if in_highlights_section and stripped.startswith("### "):
+            in_highlights_section = False
+            continue
+
+        # Collect #### N. Title lines inside Key Highlights
+        if in_highlights_section and stripped.startswith("#### "):
+            # Strip "#### ", the number prefix "N. ", and any leading emoji
+            title = stripped[5:]  # remove "#### "
+            # Remove leading "N. " pattern (e.g., "1. ", "12. ")
+            if len(title) > 2 and title[0].isdigit():
+                dot_pos = title.find(". ")
+                if dot_pos != -1:
+                    title = title[dot_pos + 2:]
+            # Strip leading emoji (1-2 code points + optional variation selector + space)
+            cleaned = []
+            skip_leading = True
+            for ch in title:
+                if skip_leading and (
+                    unicodedata.category(ch).startswith("So")  # Symbol, other (emoji)
+                    or ch == "\ufe0f"  # variation selector
+                    or ch == " "
+                ):
+                    continue
+                skip_leading = False
+                cleaned.append(ch)
+            title = "".join(cleaned).strip()
+            if title:
+                current_release["highlights"].append(title)
+
+        # Fallback: capture top-level bullet points for releases without Key Highlights
+        if (not current_release["_has_highlights_section"]
+                and stripped.startswith("* ")
+                and not stripped.startswith("*   **")):
+            title = stripped[2:].strip()
+            if title:
+                current_release["highlights"].append(title)
+
+    if current_release:
+        releases.append(current_release)
+
+    # Strip internal parsing flags before returning
+    for r in releases:
+        r.pop("_has_highlights_section", None)
+
+    return _build_about(releases)
+
+
+def _build_about(releases: list[dict]) -> dict:
+    latest_version = releases[0]["version"] if releases else __version__
+    latest_date = releases[0]["release_date"] if releases else "—"
+    
+    return {
+        "name": "BigQuery FinOps Optimizer",
+        "version": latest_version,
+        "release_date": latest_date,
+        "repo_url": "https://github.com/mbettan/bq-finops-optimizer",
+        "changelog_url": "https://github.com/mbettan/bq-finops-optimizer/blob/main/RELEASE_NOTES.md",
+        "demo_url": "https://mbettan.github.io/bq-finops-optimizer/simulator.html",
+        "releases": releases
+    }
+
+
+# Parse once at import time and cache (Requires server restart if RELEASE_NOTES.md changes)
+_about_cache: dict = _parse_release_notes()
+
 _ALLOWED_TT_HOURS = {48, 72, 96, 120, 144, 168}
 
-class StorageParams(BaseModel):
+class StorageParams(FocusMixin):
     active_logical_price: float = 0.02
     long_term_logical_price: float = 0.01
     active_physical_price: float = 0.04
@@ -134,7 +288,7 @@ class StorageParams(BaseModel):
 
 
 class StaticAuditParams(StorageParams):
-    scan_mode: str = "single"
+    pass
 
 class StaticAuditResult(BaseModel):
     project_id: str
@@ -150,8 +304,7 @@ class StaticAuditResult(BaseModel):
 @app.post("/api/storage/static_audit", response_model=List[StaticAuditResult])
 def run_static_schema_audit(params: StaticAuditParams):
     _validate_safe_params(params)
-    logger.info(f"Static Schema Audit Request: region={params.region}, org_project_id={params.org_project_id}, scan_mode={params.scan_mode}")
-    
+    t0 = log_endpoint_start("Static Schema Audit", params, _logger=logger)
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
     
@@ -220,9 +373,6 @@ def run_static_schema_audit(params: StaticAuditParams):
     LIMIT 50
     """
     
-    logger.info(f"Executing Static Schema Audit Query")
-    logger.info(f"SQL QUERY:\n{sql}")
-    
     try:
         results = run_query_and_log(scoped_client, sql, "Static Schema Audit", params=params)
         output = []
@@ -266,6 +416,7 @@ def run_static_schema_audit(params: StaticAuditParams):
                     clustering_fields=None
                 )
             ]
+        log_endpoint_end("Static Schema Audit", t0, _logger=logger)
         return output
     except Exception as e:
         logger.warning(f"Static schema audit query failed: {e}. Falling back to smart simulation.")
@@ -309,7 +460,7 @@ class ActiveAssistResult(BaseModel):
 @app.post("/api/storage/active_assist", response_model=List[ActiveAssistResult])
 def fetch_active_assist_recommendations(params: StorageParams):
     _validate_safe_params(params)
-    logger.info(f"Active Assist Recommendations Request: region={params.region}, org_project_id={params.org_project_id}")
+    t0 = log_endpoint_start("Active Assist", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
@@ -407,6 +558,7 @@ def fetch_active_assist_recommendations(params: StorageParams):
                     editions_monthly_savings=224.00
                 )
             ]
+        log_endpoint_end("Active Assist", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -436,7 +588,7 @@ def fetch_active_assist_recommendations(params: StorageParams):
         ]
 
 
-class JobAnalysisParams(BaseModel):
+class JobAnalysisParams(FocusMixin):
     on_demand_rate_per_tb: float = 6.25
     edition_slot_hr_rate: float = 0.06
     slot_step_size: int = 50
@@ -455,25 +607,68 @@ class JobAnalysisParams(BaseModel):
 
 def run_query_and_log(scoped_client: bigquery.Client, sql: str, description: str = "Query", params=None, query_parameters=None):
     # Safety cap: cancel queries that would scan more than this.
+    max_bytes = get_max_bytes_billed(params)
     job_config = bigquery.QueryJobConfig(
-        maximum_bytes_billed=get_max_bytes_billed(params),
+        maximum_bytes_billed=max_bytes,
         query_parameters=query_parameters or []
     )
+    # Always log the SQL at DEBUG so every query is traceable without cluttering INFO
+    logger.debug("%s SQL:\n%s", description, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", description, max_bytes // (1024**3))
+    t0 = time.time()
     query_job = scoped_client.query(sql, job_config=job_config)
     results = query_job.result()
+    elapsed = time.time() - t0
     bytes_processed = query_job.total_bytes_processed
     bytes_billed = query_job.total_bytes_billed
     cache_hit = query_job.cache_hit
-    
-    logger.info(f"{description} Profile - Job ID: {query_job.job_id}")
-    if bytes_processed is not None:
-         logger.info(f"{description} Profile - Bytes Processed: {bytes_processed} ({bytes_processed / (1024**3):.2f} GiB)")
-    if bytes_billed is not None:
-         logger.info(f"{description} Profile - Bytes Billed: {bytes_billed} ({bytes_billed / (1024**3):.2f} GiB)")
-    logger.info(f"{description} Profile - Cache Hit: {cache_hit}")
+
+    # Build a clickable BigQuery Console URL for the job
+    job_project = query_job.project
+    job_location = query_job.location or "us"
+    bq_console_url = (
+        f"https://console.cloud.google.com/bigquery?project={job_project}"
+        f"&j=bq:{job_location}:{query_job.job_id}&page=queryresults"
+    )
+
+    proc_gib = f"{bytes_processed / (1024**3):.2f} GiB" if bytes_processed is not None else "N/A"
+    bill_gib = f"{bytes_billed / (1024**3):.2f} GiB" if bytes_billed is not None else "N/A"
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        description, elapsed, query_job.job_id, proc_gib, bill_gib, cache_hit, bq_console_url
+    )
     return results
 
+def run_query_to_df(scoped_client: bigquery.Client, sql: str, description: str = "Query", params=None, query_parameters=None):
+    """Like run_query_and_log but returns a DataFrame via BQ Storage API."""
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", description, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", description, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job = scoped_client.query(sql, job_config=job_config)
+    df = query_job.result().to_dataframe(create_bqstorage_client=True)
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        description, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return df
+
 def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     sql = f"""
     SELECT
        project_id AS project_name,
@@ -490,10 +685,10 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
        AND total_physical_bytes > 0
        AND deleted = false
        AND table_type = 'BASE TABLE'
+       {focus_clause}
     GROUP BY 1,2
     """
-    logger.info(f"SQL QUERY:\n{sql}")
-    results = run_query_and_log(scoped_client, sql, "Storage Metrics", params=params)
+    results = run_query_and_log(scoped_client, sql, "Storage Metrics", params=params, query_parameters=focus_params)
     
     processed_metrics = []
     GIB_CONVERSION = 1024 ** 3
@@ -568,7 +763,6 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
     sql = "\nUNION ALL\n".join(unions)
     
     logger.info(f"Trying fast UNION ALL for physical datasets on {len(projects)} projects")
-    logger.info(f"SQL QUERY (Fast Path):\n{sql}")
     try:
         results = run_query_and_log(scoped_client, sql, "Physical Datasets (Fast)", params=params)
         return {(row['project_name'], row['dataset_name']) for row in results}
@@ -579,7 +773,6 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
     physical_datasets = set()
     for p in projects:
         sql = f"SELECT schema_name as dataset_name FROM `{p}.{region}.INFORMATION_SCHEMA.SCHEMATA_OPTIONS` WHERE option_name = 'storage_billing_model' AND option_value = 'PHYSICAL'"
-        logger.info(f"SQL QUERY (Fallback Loop):\n{sql}")
         try:
             results = run_query_and_log(scoped_client, sql, f"Physical Datasets (Fallback {p})", params=params)
             for row in results:
@@ -592,7 +785,6 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
 def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, params=None):
     sql = f"SELECT option_value FROM `{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
     logger.info(f"Checking Organization Default Storage Billing Model for {region}")
-    logger.info(f"SQL QUERY:\n{sql}")
     try:
         results = run_query_and_log(scoped_client, sql, "Org Storage Billing Model", params=params)
         for row in results:
@@ -604,8 +796,7 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, p
 @app.post("/api/storage/analyze")
 def analyze_storage(params: StorageParams):
     _validate_safe_params(params)
-    logger.info(f"Storage Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
-    
+    t0 = log_endpoint_start("Storage Analysis", params, _logger=logger)
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     try:
 
@@ -669,6 +860,7 @@ def analyze_storage(params: StorageParams):
             })
             
         processed_data.sort(key=lambda x: x['monthly_savings'], reverse=True)
+        log_endpoint_end("Storage Analysis", t0, _logger=logger)
         return {
             "datasets": processed_data,
             "org_status": org_status,
@@ -694,9 +886,9 @@ def analyze_storage(params: StorageParams):
 @app.post("/api/jobs/analyze")
 def analyze_jobs(params: JobAnalysisParams):
     _validate_safe_params(params)
-    logger.info(f"Job Analysis Request: region={params.region}, org_project_id={params.org_project_id}")
-    
+    t0 = log_endpoint_start("Job Analysis (Compute Analyzer)", params, _logger=logger)
     scoped_client, org_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         duration_expression = "TIMESTAMP_DIFF(end_time, start_time, MILLISECOND)" if params.fluid_scaling else "GREATEST(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 60000)"
@@ -720,12 +912,12 @@ def analyze_jobs(params: JobAnalysisParams):
           AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
           AND IFNULL(cache_hit, FALSE) = FALSE
           AND total_bytes_billed >= {params.min_bytes_billed}
+          {focus_clause}
         ORDER BY total_bytes_billed DESC
         LIMIT {params.limit_jobs}
         """
         
-        logger.info(f"Job Analyzer SQL QUERY:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Job Stats", params=params)
+        results = run_query_and_log(scoped_client, sql, "Job Stats", params=params, query_parameters=focus_params)
         
         project_metrics = {}
         top_jobs = []
@@ -822,6 +1014,7 @@ def analyze_jobs(params: JobAnalysisParams):
         top_jobs.sort(key=lambda x: x["waste_savings"], reverse=True)
         top_candidates = top_jobs[:500] # Return top 500 for UI performance
         
+        log_endpoint_end("Job Analysis (Compute Analyzer)", t0, _logger=logger)
         return {
             "project_summaries": project_list,
             "top_jobs": top_candidates
@@ -831,7 +1024,7 @@ def analyze_jobs(params: JobAnalysisParams):
         handle_endpoint_exception(e, "Job analysis")
 
 
-class HygieneParams(BaseModel):
+class HygieneParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     limit: int = Field(default=20, ge=1, le=500)
@@ -849,7 +1042,9 @@ class HygieneResult(BaseModel):
 @app.post("/api/storage/hygiene", response_model=List[HygieneResult])
 def analyze_storage_hygiene(params: HygieneParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Storage Hygiene", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -865,12 +1060,13 @@ def analyze_storage_hygiene(params: HygieneParams):
         WHERE
           total_physical_bytes > 0
           AND deleted = FALSE
+          {focus_clause}
         ORDER BY time_travel_gb DESC
         LIMIT {params.limit}
         """
         
-        logger.info(f"Executing Storage Hygiene Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Storage Hygiene", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "Storage Hygiene", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -883,12 +1079,13 @@ def analyze_storage_hygiene(params: HygieneParams):
                 churn_ratio=float(row.churn_ratio or 0),
                 health_status=row.health_status
             ))
+        log_endpoint_end("Storage Hygiene", t0, _logger=logger)
         return output
         
     except Exception as e:
         handle_endpoint_exception(e, "Storage hygiene analysis")
 
-class DMLAbuseParams(BaseModel):
+class DMLAbuseParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=1, ge=1, le=90)
@@ -904,7 +1101,9 @@ class DMLAbuseResult(BaseModel):
 @app.post("/api/antipatterns/dml", response_model=List[DMLAbuseResult])
 def analyze_dml_abuse(params: DMLAbuseParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("DML Abuse Auditor", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -918,6 +1117,7 @@ def analyze_dml_abuse(params: DMLAbuseParams):
         WHERE
           statement_type = 'INSERT'
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          {focus_clause}
         GROUP BY
           user_email, project_id
         HAVING 
@@ -926,8 +1126,8 @@ def analyze_dml_abuse(params: DMLAbuseParams):
           wasted_slot_hours DESC
         """
         
-        logger.info(f"Executing DML Abuse Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "DML Abuse", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "DML Abuse", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -937,6 +1137,7 @@ def analyze_dml_abuse(params: DMLAbuseParams):
                 insert_job_count=row.insert_job_count,
                 wasted_slot_hours=row.wasted_slot_hours
             ))
+        log_endpoint_end("DML Abuse Auditor", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -952,7 +1153,9 @@ class MVCostResult(BaseModel):
 @app.post("/api/antipatterns/mv", response_model=List[MVCostResult])
 def analyze_mv_costs(params: DMLAbuseParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("MV Cost Auditor", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         # 1. Get all Materialized Views
@@ -961,11 +1164,12 @@ def analyze_mv_costs(params: DMLAbuseParams):
         FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.TABLES 
         WHERE table_type = 'MATERIALIZED VIEW'
         """
-        logger.info(f"Fetching MVs:\n{mv_sql}")
+        logger.debug("Fetching MVs:\n%s", mv_sql)
         mv_results = run_query_and_log(scoped_client, mv_sql, "MV List", params=params)
         mvs = {(row.table_schema, row.table_name) for row in mv_results}
         
         if not mvs:
+            log_endpoint_end("MV Cost Auditor", t0, _logger=logger)
             return []
             
         # 2. Get all query jobs with destination tables
@@ -979,9 +1183,10 @@ def analyze_mv_costs(params: DMLAbuseParams):
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND destination_table.table_id IS NOT NULL
+          {focus_clause}
         """
-        logger.info(f"Fetching jobs for MV check:\n{jobs_sql}")
-        jobs_results = run_query_and_log(scoped_client, jobs_sql, "MV Jobs", params=params)
+        logger.debug("Fetching jobs for MV check:\n%s", jobs_sql)
+        jobs_results = run_query_and_log(scoped_client, jobs_sql, "MV Jobs", params=params, query_parameters=focus_params)
         
         # 3. Process in Python
         from collections import defaultdict
@@ -1005,12 +1210,13 @@ def analyze_mv_costs(params: DMLAbuseParams):
             ))
             
         output.sort(key=lambda x: x.total_slot_hours, reverse=True)
+        log_endpoint_end("MV Cost Auditor", t0, _logger=logger)
         return output
         
     except Exception as e:
         handle_endpoint_exception(e, "MV cost analysis")
 
-class AntiPatternParams(BaseModel):
+class AntiPatternParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -1028,21 +1234,26 @@ class LinterResult(BaseModel):
 @app.post("/api/antipatterns/linter", response_model=List[LinterResult])
 def analyze_query_linter(params: AntiPatternParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Linter Analysis", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
-        # 1. Find active projects
-        projects_sql = f"""
-        SELECT DISTINCT project_id 
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-          AND job_type = 'QUERY'
-          AND project_id IS NOT NULL
-        """
-        
-        logger.info(f"Fetching active projects for linter scan:\n{projects_sql}")
-        projects_results = run_query_and_log(scoped_client, projects_sql, "Linter Projects", params=params)
-        projects = [row.project_id for row in projects_results]
+        # 1. Find active projects — skip discovery when focus filter is set
+        if params.focus_projects:
+            projects = list(params.focus_projects)
+        else:
+            projects_sql = f"""
+            SELECT DISTINCT project_id 
+            FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+            WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+              AND job_type = 'QUERY'
+              AND project_id IS NOT NULL
+            """
+            
+            logger.debug("Fetching active projects for linter scan:\n%s", projects_sql)
+            projects_results = run_query_and_log(scoped_client, projects_sql, "Linter Projects", params=params)
+            projects = [row.project_id for row in projects_results]
         
         if not projects:
             projects = [target_project]
@@ -1087,6 +1298,7 @@ def analyze_query_linter(params: AntiPatternParams):
                 logger.warning(f"Failed to scan project {p} for linter: {e}")
                 
         output.sort(key=lambda x: x.billed_gb, reverse=True)
+        log_endpoint_end("Linter Analysis", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -1104,7 +1316,9 @@ class SkewResult(BaseModel):
 @app.post("/api/antipatterns/skew", response_model=List[SkewResult])
 def analyze_data_skew(params: AntiPatternParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Skew Analysis", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -1124,6 +1338,7 @@ def analyze_data_skew(params: AntiPatternParams):
             creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
             AND job_type = 'QUERY'
             AND state = 'DONE'
+            {focus_clause}
         )
         SELECT
           job_id,
@@ -1144,8 +1359,8 @@ def analyze_data_skew(params: AntiPatternParams):
         LIMIT {params.limit_per_project}
         """
         
-        logger.info(f"Executing Data Skew Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Data Skew", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "Data Skew", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -1158,6 +1373,7 @@ def analyze_data_skew(params: AntiPatternParams):
                 max_compute_ms=row.max_compute_ms,
                 skew_ratio=row.skew_ratio
             ))
+        log_endpoint_end("Skew Analysis", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -1174,7 +1390,9 @@ class BatchCandidateResult(BaseModel):
 @app.post("/api/antipatterns/batch_candidates", response_model=List[BatchCandidateResult])
 def analyze_batch_candidates(params: AntiPatternParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Batch Candidates Analysis", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -1202,13 +1420,14 @@ def analyze_batch_candidates(params: AntiPatternParams):
             OR TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5
             OR EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23
           )
+          {focus_clause}
         ORDER BY
           total_slot_ms DESC
         LIMIT {params.limit_per_project}
         """
         
-        logger.info(f"Executing Batch Candidate Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Batch Candidates", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "Batch Candidates", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -1220,6 +1439,7 @@ def analyze_batch_candidates(params: AntiPatternParams):
                 total_slot_ms=row.total_slot_ms or 0,
                 batch_candidate_reason=row.batch_candidate_reason or 'Other'
             ))
+        log_endpoint_end("Batch Candidates Analysis", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -1227,7 +1447,7 @@ def analyze_batch_candidates(params: AntiPatternParams):
 
 
 
-class AIParams(BaseModel):
+class AIParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -1280,42 +1500,74 @@ def extract_table_names(sql: str, default_project: str) -> List[str]:
 
 @app.post("/api/ai/analyze", response_model=List[AIResult])
 def analyze_ai_query(params: AIParams):
-    logger.info(f"AI Doctor Request: region={params.region}, lookback_days={params.lookback_days}, limit={params.limit}")
     _validate_safe_params(params)
+    t0 = log_endpoint_start("AI Doctor", params, _logger=logger)
+    params.focus_projects = validate_focus_projects(params.focus_projects)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
     try:
+        focus_clause, focus_params = build_project_filter(params.focus_projects)
         # Step 1: Query Discovery
         discovery_sql = f"""
         SELECT
           job_id,
+          project_id,
           user_email,
-          total_slot_ms,
-          query
+          total_slot_ms
         FROM
-          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE
           job_type = 'QUERY'
           AND statement_type = 'SELECT'
+          AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          {focus_clause}
         ORDER BY
           total_slot_ms DESC
         LIMIT {params.limit}
         """
         
         logger.info("Executing AI Query Discovery stage")
-        discovery_results = run_query_and_log(scoped_client, discovery_sql, "AI Query Discovery", params=params)
+        discovery_results = run_query_and_log(scoped_client, discovery_sql, "AI Query Discovery", params=params, query_parameters=focus_params)
         
-        expensive_queries = []
+        # JOBS_BY_ORGANIZATION does not contain the 'query' text for privacy.
+        # We must fetch the query text directly from JOBS_BY_PROJECT for the identified top jobs.
+        project_to_jobs = {}
         for row in discovery_results:
-            expensive_queries.append({
-                "job_id": row.job_id,
-                "user_email": row.user_email or 'unknown',
-                "total_slot_ms": row.total_slot_ms or 0,
-                "query": row.query or ""
-            })
+            project_to_jobs.setdefault(row.project_id, []).append(row)
+            
+        expensive_queries = []
+        for pid, jobs in project_to_jobs.items():
+            job_ids = [j.job_id for j in jobs]
+            jobs_list = ", ".join(f"'{jid}'" for jid in job_ids)
+            sql = f"""
+            SELECT job_id, query 
+            FROM `{pid}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+            WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+              AND job_id IN ({jobs_list})
+            """
+            try:
+                q_results = run_query_and_log(scoped_client, sql, f"Fetch queries for {pid}", params=params)
+                q_map = {r.job_id: r.query for r in q_results}
+            except Exception as e:
+                logger.warning(f"Failed to fetch query texts for {pid}: {e}")
+                q_map = {}
+                
+            for j in jobs:
+                # BigQuery might redact query texts for some users, defaulting to empty string
+                query_text = q_map.get(j.job_id, "")
+                expensive_queries.append({
+                    "job_id": j.job_id,
+                    "user_email": j.user_email or 'unknown',
+                    "total_slot_ms": j.total_slot_ms or 0,
+                    "query": query_text
+                })
+        
+        # Sort back by total_slot_ms since the project grouping scrambled the order
+        expensive_queries.sort(key=lambda x: x["total_slot_ms"], reverse=True)
             
         if not expensive_queries:
             logger.info("No expensive queries found to audit.")
+            log_endpoint_end("AI Doctor", t0, _logger=logger)
             return []
             
         # Step 2: Concurrently Retrieve DDL Schemas (H1: Latency Optimization)
@@ -1370,7 +1622,9 @@ def analyze_ai_query(params: AIParams):
                         part_info = "Not partitioned"
                         
                     clust_info = f"Clustered by: {', '.join(table_obj.clustering_fields)}" if table_obj.clustering_fields else "Not clustered"
-                    cols = ", ".join([f"{f.name} ({f.field_type})" for f in table_obj.schema])
+                    # Summarize DDL: We don't need all column names to detect structural anti-patterns.
+                    # This drastically reduces payload size, leaving more room for the SQL text.
+                    num_columns = len(table_obj.schema)
                     
                     num_rows = table_obj.num_rows if table_obj.num_rows is not None else 0
                     num_bytes = table_obj.num_bytes if table_obj.num_bytes is not None else 0
@@ -1380,11 +1634,19 @@ def analyze_ai_query(params: AIParams):
                         f"- Row count: {num_rows:,} | Size: {num_bytes / (1024**2):.2f} MB\n" # Rich size metadata (M3)
                         f"- {part_info}\n"
                         f"- {clust_info}\n"
-                        f"- Columns: [{cols}]"
+                        f"- Schema size: {num_columns} columns"
                     )
                     tables_found_count += 1
                     
             table_schemas_text = "\n\n".join(schemas_context) if schemas_context else "No table schemas could be retrieved."
+            if len(table_schemas_text) > 4000:
+                cut = table_schemas_text[:4000].rfind('\n')
+                table_schemas_text = table_schemas_text[:cut if cut > 2000 else 4000] + "\n... [TRUNCATED DUE TO SIZE LIMIT]"
+                
+            safe_sql = raw_sql
+            if len(safe_sql) > 5000:
+                cut = safe_sql[:5000].rfind('\n')
+                safe_sql = safe_sql[:cut if cut > 3000 else 5000] + "\n... [QUERY TRUNCATED DUE TO SIZE LIMIT]"
             
             prompt_content = (
                 f"You are an elite Google Cloud BigQuery Data Engineer.\n"
@@ -1400,7 +1662,7 @@ def analyze_ai_query(params: AIParams):
                 f"--- PHYSICAL TABLE SCHEMAS ---\n"
                 f"{table_schemas_text}\n\n"
                 f"--- SQL QUERY TO ANALYZE ---\n"
-                f"{raw_sql}\n\n"
+                f"{safe_sql}\n\n"
                 f"If the query violates any of these, provide a clean bulleted list of the violations (without referencing rule numbers and without using markdown bolding) and a 1-sentence fix for each. "
                 f"If the query is perfectly optimized, reply exactly with \"NO_ANTI_PATTERNS_FOUND\"."
             )
@@ -1438,8 +1700,8 @@ def analyze_ai_query(params: AIParams):
                   AI.GENERATE(
                     @prompt_{param_suffix},
                     endpoint => '{endpoint_url}',
-                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 300, "thinking_config": {{"thinking_budget": 0}}}}}}'
-                  ).result AS gemini_optimization_advice
+                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 1024, "thinking_config": {{"thinking_level": "MINIMAL"}}}}, "safety_settings": [{{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}}]}}'
+                  ) AS ai_struct
                 """)
                 
                 query_params.extend([
@@ -1467,7 +1729,27 @@ def analyze_ai_query(params: AIParams):
                 )
                 
                 for row in chunk_results:
-                    advice = row.gemini_optimization_advice or ''
+                    ai_struct = row.ai_struct
+                    logger.debug(f"Job {row.job_id} ai_struct = {ai_struct}")
+                    advice = ""
+                    if ai_struct:
+                        advice = ai_struct.get("result", "") or ""
+                        status = ai_struct.get("status", "")
+                        full_response = ai_struct.get("full_response", "")
+                        if not advice:
+                            if status:
+                                logger.error(
+                                    f"AI.GENERATE failed for Job {row.job_id} | "
+                                    f"Status: {status}"
+                                )
+                            else:
+                                logger.error(
+                                    f"AI.GENERATE blocked for Job {row.job_id} | "
+                                    f"Full Response: {full_response}"
+                                )
+                    else:
+                        logger.error(f"AI.GENERATE returned NULL struct for Job {row.job_id}")
+                            
                     if "NO_ANTI_PATTERNS_FOUND" not in advice:
                         logger.info(f"AI Doctor advice for Job {row.job_id} (User: {row.user_email}):")
                         logger.debug(f"Advice:\n{advice}\n" + "-" * 80)
@@ -1488,7 +1770,8 @@ def analyze_ai_query(params: AIParams):
                     raise e
                 else:
                     logger.warning("Continuing to next chunk despite failure...")
-                    
+        
+        log_endpoint_end("AI Doctor", t0, _logger=logger)
         return output
         
     except HTTPException:
@@ -1498,7 +1781,7 @@ def analyze_ai_query(params: AIParams):
         handle_endpoint_exception(e, "AI query analysis")
 
 
-class BIParams(BaseModel):
+class BIParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -1517,7 +1800,9 @@ class BIResult(BaseModel):
 @app.post("/api/bi/analyze", response_model=List[BIResult])
 def analyze_bi_engine(params: BIParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("BI Engine Optimizer", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -1535,12 +1820,13 @@ def analyze_bi_engine(params: BIParams):
         WHERE 
           job_type = 'QUERY'
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          {focus_clause}
         ORDER BY total_bytes_processed DESC
         LIMIT {params.limit}
         """
         
-        logger.info(f"Executing BI Engine Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "BI Engine", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "BI Engine", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -1553,12 +1839,13 @@ def analyze_bi_engine(params: BIParams):
                 bi_engine_mode=row.bi_engine_mode or 'UNKNOWN',
                 failure_reasons=row.failure_reasons or ''
             ))
+        log_endpoint_end("BI Engine Optimizer", t0, _logger=logger)
         return output
         
     except Exception as e:
         handle_endpoint_exception(e, "BI engine analysis")
 
-class GovernanceParams(BaseModel):
+class GovernanceParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
@@ -1581,7 +1868,9 @@ class GovernanceResponse(BaseModel):
 @app.post("/api/governance/analyze", response_model=GovernanceResponse)
 def analyze_governance(params: GovernanceParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Governance Auditor", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         # 1. Audit Dataset Expiration
@@ -1597,7 +1886,7 @@ def analyze_governance(params: GovernanceParams):
           AND o.option_name = 'default_table_expiration_days'
         WHERE o.option_name IS NULL
         """
-        logger.info(f"Executing Expiration Audit Query:\n{exp_sql}")
+
         exp_results = run_query_and_log(scoped_client, exp_sql, "Expiration Audit", params=params)
         
         expiration_issues = []
@@ -1618,12 +1907,13 @@ def analyze_governance(params: GovernanceParams):
         FROM
           `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
         WHERE total_physical_bytes > 0
+          {focus_clause}
         GROUP BY 1, 2
         ORDER BY total_bytes DESC
         LIMIT 5
         """
-        logger.info(f"Fetching top heavy datasets:\n{top_datasets_sql}")
-        top_datasets_results = run_query_and_log(scoped_client, top_datasets_sql, "Top Datasets", params=params)
+        logger.debug("Fetching top heavy datasets:\n%s", top_datasets_sql)
+        top_datasets_results = run_query_and_log(scoped_client, top_datasets_sql, "Top Datasets", params=params, query_parameters=focus_params)
         
         filter_issues = []
         
@@ -1656,6 +1946,7 @@ def analyze_governance(params: GovernanceParams):
                 logger.warning(f"Failed to scan dataset {ds} in project {p} via API: {e}")
                 
         logger.info(f"Returning {len(expiration_issues)} expiration issues, {len(filter_issues)} filter issues")
+        log_endpoint_end("Governance Auditor", t0, _logger=logger)
         return GovernanceResponse(
             expiration_issues=expiration_issues,
             filter_issues=filter_issues
@@ -1675,7 +1966,9 @@ class MVResult(BaseModel):
 @app.post("/api/mv/analyze", response_model=List[MVResult])
 def analyze_mv_rejections(params: GovernanceParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("MV Rejections", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -1688,11 +1981,12 @@ def analyze_mv_rejections(params: GovernanceParams):
         FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION,
         UNNEST(materialized_view_statistics.materialized_view) AS mv
         WHERE mv.chosen = false
+          {focus_clause}
         LIMIT 50
         """
         
-        logger.info(f"Executing MV Rejection Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "MV Rejections", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "MV Rejections", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -1703,6 +1997,7 @@ def analyze_mv_rejections(params: GovernanceParams):
                 chosen=row.chosen,
                 rejected_reason=row.rejected_reason or ''
             ))
+        log_endpoint_end("MV Rejections", t0, _logger=logger)
         return output
         
     except Exception as e:
@@ -1716,7 +2011,9 @@ class WarningResult(BaseModel):
 @app.post("/api/resource_warnings/analyze", response_model=List[WarningResult])
 def analyze_resource_warnings(params: GovernanceParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Resource Warnings", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     try:
         
         sql = f"""
@@ -1726,12 +2023,13 @@ def analyze_resource_warnings(params: GovernanceParams):
           query_info.resource_warning
         FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE query_info.resource_warning IS NOT NULL
+          {focus_clause}
         ORDER BY creation_time DESC
         LIMIT 50
         """
         
-        logger.info(f"Executing Resource Warning Query:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Resource Warnings", params=params)
+
+        results = run_query_and_log(scoped_client, sql, "Resource Warnings", params=params, query_parameters=focus_params)
         
         output = []
         for row in results:
@@ -1740,13 +2038,14 @@ def analyze_resource_warnings(params: GovernanceParams):
                 user_email=row.user_email,
                 resource_warning=row.resource_warning or ''
             ))
+        log_endpoint_end("Resource Warnings", t0, _logger=logger)
         return output
         
     except Exception as e:
         handle_endpoint_exception(e, "Resource warnings")
 
 
-class SlotsParams(BaseModel):
+class SlotsParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -1758,9 +2057,10 @@ class SlotsParams(BaseModel):
 @app.post("/api/slots/analyze")
 def analyze_slots(params: SlotsParams):
     _validate_safe_params(params)
-    logger.info(f"Slots Analysis Request: org_project={params.org_project_id}, region={params.region}, window={params.window_minutes}m, P{params.percentile}")
+    t0 = log_endpoint_start("Slots Analysis (Capacity Planner)", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     window_seconds = params.window_minutes * 60
     
     recommendations_sql = f"""
@@ -1775,6 +2075,7 @@ def analyze_slots(params: SlotsParams):
      period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
      AND reservation_id IS NOT NULL
      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+     {focus_clause}
     -- GROUPING SETS computes BOTH the per-reservation per-second total AND the
     -- org-wide per-second total (reservation_id = NULL) in a single base-table scan.
     -- The NULL-keyed rows ARE the merged series, summed within each second BEFORE
@@ -1826,12 +2127,10 @@ def analyze_slots(params: SlotsParams):
       `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
     """
     
-    logger.info(f"Executing Slots Recommendations Query")
-    logger.info(f"SQL QUERY (Recommendations):\n{recommendations_sql}")
-    
+
     try:
         
-        recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations", params=params)
+        recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations", params=params, query_parameters=focus_params)
         recommendations_data = []
         for row in recommendations_results:
             d = dict(row)
@@ -1895,7 +2194,6 @@ def analyze_slots(params: SlotsParams):
             """
             try:
                 logger.info(f"Executing Current Reservations Query for project {admin_proj}")
-                logger.info(f"SQL QUERY (Reservations):\n{reservations_sql}")
                 reservations_results = run_query_and_log(scoped_client, reservations_sql, f"Current Reservations ({admin_proj})", params=params)
                 for row in reservations_results:
                     d = dict(row)
@@ -1910,6 +2208,7 @@ def analyze_slots(params: SlotsParams):
             except Exception as res_err:
                 logger.warning(f"Failed to query RESERVATIONS in {admin_proj}: {res_err}")
             
+        log_endpoint_end("Slots Analysis (Capacity Planner)", t0, _logger=logger)
         return {
             "recommendations": recommendations_data,
             "current_reservations": current_reservations_data,
@@ -1920,7 +2219,7 @@ def analyze_slots(params: SlotsParams):
         handle_endpoint_exception(e, "Slots analysis")
 
 
-class TieredRecParams(BaseModel):
+class TieredRecParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -1937,9 +2236,10 @@ class TieredRecResult(BaseModel):
 @app.post("/api/slots/tiered_recommendations", response_model=List[TieredRecResult])
 def get_tiered_recommendations(params: TieredRecParams):
     _validate_safe_params(params)
-    logger.info(f"Tiered Recommendations Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Tiered Recommendations", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     
     def get_sql(table_name: str) -> str:
         """
@@ -1964,6 +2264,7 @@ def get_tiered_recommendations(params: TieredRecParams):
             `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{table_name}
           WHERE
             period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+            {focus_clause}
           GROUP BY
             period_start, reservation_id
         ),
@@ -1994,14 +2295,18 @@ def get_tiered_recommendations(params: TieredRecParams):
     
     try:
         sql = get_sql("JOBS_TIMELINE_BY_ORGANIZATION")
-        logger.info(f"Executing Tiered Recommendations Query (Org Scope):\n{sql}")
+
         try:
-            results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Org)", params=params)
+            results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Org)", params=params, query_parameters=focus_params)
         except Exception as e:
+            # Guard: never silently fall back when focus filter is active —
+            # the project-level view would silently drop the scope.
+            if params.focus_projects:
+                raise e
             if "Access Denied" in str(e) or "does not exist" in str(e):
                 logger.warning(f"Org scope failed with access error, falling back to Project scope: {e}")
                 sql = get_sql("JOBS_TIMELINE")
-                logger.info(f"Executing Tiered Recommendations Query (Project Scope):\n{sql}")
+                logger.info("Tiered Recommendations — retrying with project scope")
                 results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Project)", params=params)
             else:
                 raise e
@@ -2016,13 +2321,14 @@ def get_tiered_recommendations(params: TieredRecParams):
                 suggested_autoscale_max=row['suggested_autoscale_max'] if row['suggested_autoscale_max'] is not None else 0,
                 minutes_observed=row['minutes_observed'] if row['minutes_observed'] is not None else 0
             ))
+        log_endpoint_end("Tiered Recommendations", t0, _logger=logger)
         return output
         
     except Exception as e:
         handle_endpoint_exception(e, "Tiered recommendations")
 
 
-class SlotUtilizationParams(BaseModel):
+class SlotUtilizationParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2040,9 +2346,10 @@ class SlotUtilizationParams(BaseModel):
 @app.post("/api/slots/utilization")
 def analyze_slot_utilization(params: SlotUtilizationParams):
     _validate_safe_params(params)
-    logger.info(f"Slot Utilization Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Slot Utilization", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     resolution = params.resolution
     duration_ms = 60000
     if resolution == "HOUR":
@@ -2065,14 +2372,13 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
       period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
       AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+      {focus_clause}
     GROUP BY
       period_min
     ORDER BY period_min ASC
     """
     
-    logger.info(f"Executing Slot Utilization Query")
-    logger.info(f"SQL QUERY:\n{sql}")
-    
+
     try:
         from zoneinfo import ZoneInfo
         try:
@@ -2080,7 +2386,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {params.timezone}")
 
-        results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data", params=params)
+        results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data", params=params, query_parameters=focus_params)
         
         processed_results = []
         for row in results:
@@ -2100,6 +2406,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
             
         processed_results.sort(key=lambda x: x['timestamp'], reverse=True)
         
+        log_endpoint_end("Slot Utilization", t0, _logger=logger)
         return processed_results
         
     except HTTPException:
@@ -2107,7 +2414,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
     except Exception as e:
         handle_endpoint_exception(e, "Slot utilization analysis")
 
-class SlotSimulationParams(BaseModel):
+class SlotSimulationParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = 7
@@ -2122,9 +2429,10 @@ class SlotSimulationParams(BaseModel):
 @app.post("/api/slots/simulate")
 def simulate_slots(params: SlotSimulationParams):
     _validate_safe_params(params)
-    logger.info(f"Slot Simulation Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Slot Simulation", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     
     sql = f"""
     SELECT
@@ -2135,18 +2443,20 @@ def simulate_slots(params: SlotSimulationParams):
       period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
       AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+      {focus_clause}
     GROUP BY 1
     ORDER BY 1 ASC
     """
     
-    logger.info(f"Executing Slot Simulation Raw Data Query")
+
     
     try:
-        results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data", params=params)
+        results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data", params=params, query_parameters=focus_params)
         
         avg_slots_list = [float(row['avg_slots'] or 0.0) for row in results]
         avg_slots_array = np.array(avg_slots_list)
         if len(avg_slots_array) == 0:
+            log_endpoint_end("Slot Simulation", t0, _logger=logger)
             return []
             
         # Time calculations
@@ -2209,6 +2519,7 @@ def simulate_slots(params: SlotSimulationParams):
             })
             
         logger.info(f"Slot simulation completed with {len(processed_results)} results")
+        log_endpoint_end("Slot Simulation", t0, _logger=logger)
         return processed_results
         
     except Exception as e:
@@ -2244,6 +2555,8 @@ def _validate_safe_params(params):
     if hasattr(params, "resolution") and params.resolution:
         if params.resolution not in _ALLOWED_RESOLUTIONS:
             raise HTTPException(400, f"Invalid resolution: {params.resolution}")
+    if hasattr(params, "focus_projects") and params.focus_projects:
+        params.focus_projects = validate_focus_projects(params.focus_projects)
 
 
 # ---------------------------------------------------------------------------
@@ -2260,7 +2573,7 @@ _PATTERN_DISCLAIMER = (
 )
 
 
-class FluidSimParams(BaseModel):
+class FluidSimParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2466,6 +2779,7 @@ WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_day
   AND end_time > start_time
   AND total_slot_ms > 0
   AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+  {focus_clause}
 ORDER BY total_slot_ms DESC
 LIMIT 500000
 """
@@ -2485,28 +2799,24 @@ def _render_sql_local(template: str, **idents) -> str:
 @app.post("/api/slots/fluid_simulation", response_model=FluidSimResponse)
 def simulate_fluid_scaling(params: FluidSimParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
+        focus_clause, focus_params = build_project_filter(params.focus_projects)
         region = params.region
-        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=region)
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
-                bigquery.ScalarQueryParameter("cooldown_window", "INT64", params.cooldown_window),
-            ],
-            maximum_bytes_billed=get_max_bytes_billed(params),
-        )
+        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=region, focus_clause=focus_clause)
+        all_params = [
+            bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
+            bigquery.ScalarQueryParameter("cooldown_window", "INT64", params.cooldown_window),
+        ] + (focus_params or [])
         logger.info(
             "Running fluid_simulation (lookback=%d days, cooldown=%ds)",
             params.lookback_days, params.cooldown_window,
         )
-        logger.debug("JOBS SQL:\n%s", sql)
-
-        df = client.query(sql, job_config=job_config).result().to_dataframe(
-            create_bqstorage_client=True,
-        )
+        df = run_query_to_df(client, sql, "Fluid Simulation", params=params, query_parameters=all_params)
 
         if df.empty:
+            log_endpoint_end("Fluid Simulation", t0, _logger=logger)
             return FluidSimResponse(
                 lookback_days=params.lookback_days,
                 total_jobs_analyzed=0,
@@ -2620,6 +2930,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
             total_jobs, total_patterns, len(patterns),
         )
 
+        log_endpoint_end("Fluid Simulation", t0, _logger=logger)
         return FluidSimResponse(
             lookback_days=params.lookback_days,
             total_jobs_analyzed=total_jobs,
@@ -2643,7 +2954,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
         raise HTTPException(500, "Internal server error")
 
 
-class SlotActualParams(BaseModel):
+class SlotActualParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2662,7 +2973,7 @@ class SlotActualParams(BaseModel):
 @app.post("/api/slots/actual_provisioning")
 def get_actual_provisioning(params: SlotActualParams):
     _validate_safe_params(params)
-    logger.info(f"Slot Actual Provisioning Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Actual Provisioning", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     from zoneinfo import ZoneInfo
@@ -2835,6 +3146,7 @@ ORDER BY 1 ASC
                 "capacity_slots": row['capacity_slots']
             })
             
+        log_endpoint_end("Actual Provisioning", t0, _logger=logger)
         return {
             "autoscaled_slot_hours": round(autoscaled_slot_hours, 2),
             "baseline_slot_hours": round(baseline_slot_hours, 2),
@@ -2846,7 +3158,7 @@ ORDER BY 1 ASC
         handle_endpoint_exception(e, "Actual provisioning")
 
 
-class PeakSlotsParams(BaseModel):
+class PeakSlotsParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=30, ge=1, le=90)
@@ -2855,7 +3167,10 @@ class PeakSlotsParams(BaseModel):
 @app.post("/api/slots/peak")
 def get_peak_slots(params: PeakSlotsParams):
     _validate_safe_params(params)
+    t0 = log_endpoint_start("Peak Slots", params, _logger=logger)
+    
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     sql = f"""
     WITH concurrent_usage AS (
         SELECT period_start, SUM(period_slot_ms) / 1000 AS concurrent_slots
@@ -2864,25 +3179,27 @@ def get_peak_slots(params: PeakSlotsParams):
           period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+          {focus_clause}
         GROUP BY 1
     )
     SELECT MAX(concurrent_slots) AS peak_slots FROM concurrent_usage
     """
     
     try:
-        results = run_query_and_log(scoped_client, sql, "Get Peak Slots", params=params)
+        results = run_query_and_log(scoped_client, sql, "Get Peak Slots", params=params, query_parameters=focus_params)
         
         peak_slots = 0
         for row in results:
             peak_slots = float(row['peak_slots']) if row['peak_slots'] else 0
             
+        log_endpoint_end("Peak Slots", t0, _logger=logger)
         return {"peak_slots": peak_slots}
         
     except Exception as e:
         handle_endpoint_exception(e, "Peak slots")
 
 
-class SlotProfilerParams(BaseModel):
+class SlotProfilerParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2893,9 +3210,11 @@ class SlotProfilerParams(BaseModel):
 @app.post("/api/slots/profiler")
 def analyze_workload_profile(params: SlotProfilerParams):
     _validate_safe_params(params)
-    logger.info(f"Slot Profiler Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Workload Profiler", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
+    focus_clause_j, _ = build_project_filter(params.focus_projects, table_alias="j")
     admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
     target_project = _safe_ident(admin_project_raw, "admin_project_id")
     reject_dummy_project(target_project)
@@ -2915,6 +3234,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         AND job_type = 'QUERY'
         AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
         AND reservation_id IS NOT NULL
+        {focus_clause}
       GROUP BY
         hour_bucket, reservation_id
     ),
@@ -2948,6 +3268,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         AND j.job_type = 'QUERY'
         AND (j.statement_type != 'SCRIPT' OR j.statement_type IS NULL)
         AND j.reservation_id IS NOT NULL
+        {focus_clause_j}
       GROUP BY
         j.reservation_id, j.project_id
     ),
@@ -2991,6 +3312,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         AND job_type = 'QUERY'
         AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
         AND reservation_id IS NOT NULL
+        {focus_clause}
       GROUP BY
         hour_bucket, reservation_id
     ),
@@ -3018,10 +3340,10 @@ def analyze_workload_profile(params: SlotProfilerParams):
     
     try:
         logger.info("Executing Profiler Summary Query")
-        results = run_query_and_log(scoped_client, sql, "Workload Profiler Summary", params=params)
+        results = run_query_and_log(scoped_client, sql, "Workload Profiler Summary", params=params, query_parameters=focus_params)
         
         logger.info("Executing Profiler Timeline Query")
-        timeline_results = run_query_and_log(scoped_client, timeline_sql, "Workload Profiler Timeline", params=params)
+        timeline_results = run_query_and_log(scoped_client, timeline_sql, "Workload Profiler Timeline", params=params, query_parameters=focus_params)
         
         profile_records = []
         for row in results:
@@ -3042,6 +3364,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
                 "hourly_queries": row['hourly_queries']
             })
             
+        log_endpoint_end("Workload Profiler", t0, _logger=logger)
         return {
             "summary": profile_records,
             "timeline": timeline_records
@@ -3054,9 +3377,10 @@ def analyze_workload_profile(params: SlotProfilerParams):
 @app.post("/api/slots/profiler/queries")
 def get_top_profiler_queries(params: SlotProfilerParams):
     _validate_safe_params(params)
-    logger.info(f"Slot Profiler Queries Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Profiler Top Queries", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
     target_project = _safe_ident(admin_project_raw, "admin_project_id")
     reject_dummy_project(target_project)
@@ -3076,6 +3400,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
         AND job_type = 'QUERY'
         AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
         AND reservation_id IS NOT NULL
+        {focus_clause}
       GROUP BY
         hour_bucket, reservation_id
     ),
@@ -3108,6 +3433,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
         AND job_type = 'QUERY'
         AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
         AND reservation_id IS NOT NULL
+        {focus_clause}
     )
     SELECT
       query_hash,
@@ -3130,8 +3456,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
     """
     
     try:
-        logger.info(f"Profiler Top Queries SQL:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Profiler Top Queries", params=params)
+        results = run_query_and_log(scoped_client, sql, "Profiler Top Queries", params=params, query_parameters=focus_params)
         
         query_records = []
         for row in results:
@@ -3148,14 +3473,14 @@ def get_top_profiler_queries(params: SlotProfilerParams):
                     WHERE job_id = @job_id
                     LIMIT 1
                     """
-                    logger.info(f"Fetching query text for job {example_job_id} in project {safe_proj}")
-                    job_config = bigquery.QueryJobConfig(
+                    text_results = run_query_and_log(
+                        scoped_client, text_sql,
+                        f"Profiler Query Text ({example_job_id[:12]})",
+                        params=params,
                         query_parameters=[
                             bigquery.ScalarQueryParameter("job_id", "STRING", example_job_id)
-                        ],
-                        maximum_bytes_billed=get_max_bytes_billed(params)
+                        ]
                     )
-                    text_results = scoped_client.query(text_sql, job_config=job_config).result()
                     for text_row in text_results:
                         query_text = text_row['query']
                 except Exception as text_err:
@@ -3181,13 +3506,14 @@ def get_top_profiler_queries(params: SlotProfilerParams):
                 "recommendation": recommendation
             })
             
+        log_endpoint_end("Profiler Top Queries", t0, _logger=logger)
         return query_records
         
     except Exception as e:
         handle_endpoint_exception(e, "Profiler queries")
 
 
-class UserProfilerParams(BaseModel):
+class UserProfilerParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -3199,9 +3525,10 @@ class UserProfilerParams(BaseModel):
 @app.post("/api/users/top_spenders")
 def get_top_spenders(params: UserProfilerParams):
     _validate_safe_params(params)
-    logger.info(f"Top Spenders Request: org_project={params.org_project_id}, region={params.region}, lookback={params.lookback_days}d")
+    t0 = log_endpoint_start("Top Spenders", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+    focus_clause, focus_params = build_project_filter(params.focus_projects)
     admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
     target_project = _safe_ident(admin_project_raw, "admin_project_id")
     reject_dummy_project(target_project)
@@ -3218,6 +3545,7 @@ def get_top_spenders(params: UserProfilerParams):
       creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
       AND parent_job_id IS NULL
+      {focus_clause}
     GROUP BY
       user_email
     ORDER BY
@@ -3226,8 +3554,7 @@ def get_top_spenders(params: UserProfilerParams):
     """
     
     try:
-        logger.info(f"Top Spenders SQL:\n{sql}")
-        results = run_query_and_log(scoped_client, sql, "Top Spenders", params=params)
+        results = run_query_and_log(scoped_client, sql, "Top Spenders", params=params, query_parameters=focus_params)
         
         user_records = []
         for row in results:
@@ -3247,6 +3574,7 @@ def get_top_spenders(params: UserProfilerParams):
                 "est_editions_cost": round(est_ed_cost, 2)
             })
             
+        log_endpoint_end("Top Spenders", t0, _logger=logger)
         return user_records
         
     except Exception as e:

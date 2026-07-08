@@ -78,6 +78,11 @@ def test_ai_doctor_schema_aware_analysis():
         # 2. Verify SQL Query construction logic
         assert mock_bq_client.query.call_count == 2
         
+        # Verify the first call (discovery query) uses org-level view
+        discovery_sql = mock_bq_client.query.call_args_list[0][0][0]
+        assert "JOBS_BY_ORGANIZATION" in discovery_sql, "Discovery query must use JOBS_BY_ORGANIZATION, not JOBS_BY_PROJECT"
+        assert "JOBS_BY_PROJECT" not in discovery_sql
+
         # Verify the second call (the UNION ALL AI analysis query)
         called_args, called_kwargs = mock_bq_client.query.call_args
         called_sql = called_args[0]

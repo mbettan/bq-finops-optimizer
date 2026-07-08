@@ -3,11 +3,12 @@ from pydantic import BaseModel, field_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed
+from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
 from collections import defaultdict
 import json
 import os
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,36 @@ router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
 CONFIG_FILE = "cost_attribution_config.json"
 
 # _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
+
+
+def _run_and_log(client, sql, label, params=None, query_parameters=None):
+    """Run a query with timing, BQ URL, and structured logging."""
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", label, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    results = query_job.result()
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return results
+
 
 class ReservationConfig(BaseModel):
     sku_rate: float
@@ -27,7 +58,7 @@ class CostAttributionConfig(BaseModel):
     borrowing_rule: str = "lender_pays" # "lender_pays", "borrower_pays"
     reservations: Dict[str, ReservationConfig] = {}
 
-class CostAttributionParams(BaseModel):
+class CostAttributionParams(FocusMixin):
     billing_month_start: str
     billing_month_end: str
     org_project_id: Optional[str] = None
@@ -74,8 +105,9 @@ def update_config(config: CostAttributionConfig):
 
 @router.post("/calculate")
 def calculate_cost_attribution(params: CostAttributionParams):
+    params.focus_projects = validate_focus_projects(params.focus_projects)
     config = load_config()
-    
+    t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
         scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
@@ -83,6 +115,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
         target_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
         target_project = _safe_ident(target_project_raw, "admin_project_id")
         reject_dummy_project(target_project)
+        focus_clause, focus_params = build_project_filter(params.focus_projects)
         
         if target_project:
             table_name = f"`{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
@@ -107,20 +140,17 @@ def calculate_cost_attribution(params: CostAttributionParams):
               AND job_type = 'QUERY'
               AND statement_type != 'SCRIPT'
               AND reservation_id IS NOT NULL
+              {focus_clause}
             GROUP BY
               project_id,
               reservation_id
         """
         
-        logger.info(f"Executing Cost Attribution Query:\n{query}")
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
-                bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
-            ],
-            maximum_bytes_billed=get_max_bytes_billed(params),
-        )
-        job_results = scoped_client.query(query, job_config=job_config).result()
+        all_params = [
+            bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
+            bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
+        ] + (focus_params or [])
+        job_results = _run_and_log(scoped_client, query, "Cost Attribution", params=params, query_parameters=all_params)
         
         project_usage = []
         reservation_totals = defaultdict(float)
@@ -203,7 +233,8 @@ def calculate_cost_attribution(params: CostAttributionParams):
                         "total_cost_attribution_usd": round(waste_cost, 2)
                     })
             
-        logger.info(f"Returning {len(final_attributions)} attribution records.")
+        logger.info("Returning %d attribution records.", len(final_attributions))
+        log_endpoint_end("Cost Attribution", t0, _logger=logger)
         return final_attributions
         
     except Exception as e:
