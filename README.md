@@ -273,8 +273,6 @@ To query organization-wide metadata (`INFORMATION_SCHEMA` tables scoped with `*_
     *   **Organization-level Grant (Recommended)**: Must be granted at the **Organization** resource level to query the organization-wide `INFORMATION_SCHEMA.RECOMMENDATIONS_BY_ORGANIZATION` view.
     *   **Project-level Grant**: Can be granted at the individual **Project** level if only analyzing specific standalone projects.
 *   **Recommender Viewer** (`roles/recommender.viewer`): General viewer role providing broader read access across Google's recommendation engines (can also be granted at the Org or Project level depending on target scope).
-    
-    > **Note on Materialized Views:** When querying `INFORMATION_SCHEMA.RECOMMENDATIONS`, BigQuery checks permissions for all available recommenders under the hood. You may see warnings in your IAM troubleshooter about missing permissions like `recommender.bigqueryMaterializedViewRecommendations.list`. Because this application explicitly filters for Partition/Cluster recommendations, missing Materialized View permissions can be safely ignored.
 
 ### 5. AI Doctor Permissions (Required for GenAI Query Analysis)
 The AI Doctor is the **only module that uses AI**. It calls BigQuery's `AI.GENERATE` function with the Vertex AI publisher endpoint — **no model creation, no remote model, no BigQuery ML dataset, and no Cloud Resource Connection are required** for the default setup.
