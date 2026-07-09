@@ -2,6 +2,32 @@
 
 ---
 
+## v1.1.1 — 2026-07-09
+
+### 🐛 Bug Fixes
+
+#### fix(fluid-scaling): `max_bytes_billed_gb` not sent to backend
+*   **Root Cause:** The frontend's `fetchEstimate()` and `fetchJobSimulation()` functions were not including `max_bytes_billed_gb` in the POST body, even though the value was correctly stored in `state.maxBytesBilledGb`. This caused both `/api/fluid-scaling/estimate` and `/api/slots/fluid_simulation` to fall back to the backend's default 200 GiB safety cap, ignoring the user's configured limit.
+*   **Fix:** Added `maxBytesBilledGb` to the call sites, function signatures, and request payloads of both `fetchEstimate()` and `fetchJobSimulation()` in `static/app.js` and `docs/static/app.js`.
+
+#### fix(data-integrity): removed all hardcoded fallback data from backend
+*   **Root Cause:** Multiple endpoints returned fabricated demo data instead of honest empty results:
+    *   **Static Schema Audit** (`POST /api/storage/static_audit`): When the query returned empty results *or* threw an exception, the endpoint returned two hardcoded fake tables (`EDW_WCM_CONTACT.wcm_contact_matching_history`, `ODS_CORE_ECOM.ecom_order_item_ledger`) with fabricated row counts and byte sizes. Users with clean schema hygiene would see phantom risk items.
+    *   **Active Assist** (`POST /api/storage/active_assist`): Same two fake tables were returned on empty results or exceptions. Additionally, real recommendations used a hardcoded `savings = 120.0` default, fabricated column suggestions (`CREATED_DATE`, `CUSTOMER_KEY`, `EVENT_TYPE_ID`), and an arbitrary `editions_monthly_savings = savings * 0.8` formula.
+    *   **Dashboard stubs** (`/api/dashboard/kpis`, `/opportunities`, `/top-projects`, `/anomalies`): Returned hardcoded fake project names, dollar amounts, and anomaly alerts (e.g., `data-warehouse-prod $18,400/mo`, `analytics-pool idle 80%`, `etl@svc.gserviceaccount.com`).
+*   **Fix:**
+    *   Static Schema Audit and Active Assist exception/empty handlers now return `[]`.
+    *   Active Assist savings fields (`on_demand_monthly_savings`, `editions_monthly_savings`) made `Optional[float] = None` — only populated when BigQuery provides real `cost_projection` data.
+    *   Active Assist column suggestions now parsed from `additional_details` instead of hardcoded values.
+    *   Dashboard KPI fields made `Optional` with `None` defaults; returns `KpiResponse(stub=True)` until real billing is implemented. Other dashboard stubs return `[]`.
+
+### ✨ Improvements
+
+#### refactor(active-assist): removed `focus_projects` parameter
+*   **Rationale:** `INFORMATION_SCHEMA.RECOMMENDATIONS` is inherently scoped to the execution project by BigQuery — there is no cross-project recommendations view. Sending `focus_projects` had no effect. The parameter has been removed from the Active Assist frontend request payload to avoid confusion. Active Assist now cleanly operates at org/execution project scope.
+
+---
+
 ## v1.1.0 — 2026-07-08
 
 We are proud to announce the release of **v1.1.0** of the **BigQuery FinOps Optimizer**—an enterprise-grade diagnostic, simulation, and governance suite designed to maximize cost efficiency and eliminate compute waste across Google Cloud BigQuery environments. 

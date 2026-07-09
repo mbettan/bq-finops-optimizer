@@ -434,7 +434,6 @@ def run_static_schema_audit(params: StaticAuditParams):
                 is_clustered=bool(row['is_clustered']),
                 clustering_fields=row['clustering_fields']
             ))
-
         # No large unpartitioned/unclustered tables found — a genuinely empty
         # result is a valid, informative answer; do not mask it with fake rows.
         log_endpoint_end("Static Schema Audit", t0, _logger=logger)
@@ -447,11 +446,11 @@ class ActiveAssistResult(BaseModel):
     project_id: str
     dataset_id: str
     table_id: str
-    recommendation: str # 'Partition' or 'Cluster'
+    recommendation: str  # 'Partition' or 'Cluster'
     cluster_columns: List[str]
     partition_column: Optional[str] = None
-    on_demand_monthly_savings: float
-    editions_monthly_savings: float
+    on_demand_monthly_savings: Optional[float] = None
+    editions_monthly_savings: Optional[float] = None
 
 @app.post("/api/storage/active_assist", response_model=List[ActiveAssistResult])
 def fetch_active_assist_recommendations(params: StorageParams):
@@ -502,9 +501,8 @@ def fetch_active_assist_recommendations(params: StorageParams):
                     
             desc = (row['description'] or "").lower()
             rec_type = "Partition" if "partition" in desc else "Cluster"
-
-            # Savings come from Google's own cost projection when present;
-            # 0.0 (not a guessed figure) when the recommendation didn't include one.
+            
+            # Parse savings from primary_impact if available
             savings = 0.0
             primary_impact = row.get('primary_impact')
             if primary_impact and isinstance(primary_impact, dict):
@@ -512,11 +510,18 @@ def fetch_active_assist_recommendations(params: StorageParams):
                 if cost_proj and isinstance(cost_proj, dict):
                     savings = float(cost_proj.get('cost_in_local_currency') or cost_proj.get('cost_savings') or 0.0)
 
-            # This INFORMATION_SCHEMA view doesn't expose the specific column(s)
-            # Google's recommender suggests partitioning/clustering by — report
-            # the recommendation type honestly rather than guessing column names.
-            cluster_cols = []
-            part_col = None
+            # Parse column suggestions from additional_details if available
+            cluster_cols: List[str] = []
+            part_col: Optional[str] = None
+            additional_details = row.get('additional_details') or {}
+            if isinstance(additional_details, dict):
+                # Best-effort extraction: real parsing depends on recommender payload shape
+                if rec_type == 'Partition':
+                    part_col = additional_details.get('recommended_partition_column') or None
+                else:
+                    cols = additional_details.get('recommended_cluster_columns')
+                    if isinstance(cols, list):
+                        cluster_cols = [str(c) for c in cols]
 
             output.append(ActiveAssistResult(
                 project_id=row['project_id'] or resolved_project,
@@ -526,12 +531,9 @@ def fetch_active_assist_recommendations(params: StorageParams):
                 cluster_columns=cluster_cols,
                 partition_column=part_col,
                 on_demand_monthly_savings=savings,
-                editions_monthly_savings=savings * 0.8
+                editions_monthly_savings=None,
             ))
             
-        # No active Google Active Assist recommendations for this project/region —
-        # a genuinely empty result is a valid, informative answer; do not mask
-        # it with fake rows.
         log_endpoint_end("Active Assist", t0, _logger=logger)
         return output
 
@@ -3553,13 +3555,13 @@ def get_top_spenders(params: UserProfilerParams):
 # -- Dashboard Response models ---------------------------------------------------------
 
 class KpiResponse(BaseModel):
-    mtdSpend: float
-    mtdSpendDelta: float       # percent change MoM, e.g. 12.5 = +12.5%
-    forecastSpend: float
-    lastMonthSpend: float
-    potentialSavings: float
-    opportunityCount: int
-    anomalyCount: int
+    mtdSpend: Optional[float] = None
+    mtdSpendDelta: Optional[float] = None  # percent change MoM, e.g. 12.5 = +12.5%
+    forecastSpend: Optional[float] = None
+    lastMonthSpend: Optional[float] = None
+    potentialSavings: Optional[float] = None
+    opportunityCount: Optional[int] = None
+    anomalyCount: Optional[int] = None
     stub: bool = True          # True = stub/mock data, False = live data
 
 
@@ -3597,18 +3599,8 @@ def get_kpis():
          - Anti-pattern linter (sum of estimated waste)
       4. opportunityCount = count of all rows above
       5. anomalyCount = len(get_anomalies())
-
-    For now: return realistic-looking stub data.
     """
-    return KpiResponse(
-        mtdSpend=42310.00,
-        mtdSpendDelta=12.5,
-        forecastSpend=58200.00,
-        lastMonthSpend=51400.00,
-        potentialSavings=12400.00,
-        opportunityCount=47,
-        anomalyCount=3,
-    )
+    return KpiResponse(stub=True)
 
 
 @app.get("/api/dashboard/opportunities", response_model=List[Opportunity])
@@ -3624,23 +3616,7 @@ def get_opportunities(limit: int = 5):
       - Each row's deepLink should pre-filter the target module to highlight
         the specific dataset/job (e.g. "#storage?dataset=warehouse_db").
     """
-    return [
-        Opportunity(label="Switch warehouse_db to physical storage",
-                    module="STORAGE", monthlySavings=4200.00,
-                    deepLink="#storage?dataset=warehouse_db"),
-        Opportunity(label="Move project-analytics-prod to On-Demand",
-                    module="COMPUTE", monthlySavings=3100.00,
-                    deepLink="#compute?project=project-analytics-prod"),
-        Opportunity(label="Reduce Time Travel on events_db to 2 days",
-                    module="STORAGE", monthlySavings=2800.00,
-                    deepLink="#storage-hygiene?dataset=events_db"),
-        Opportunity(label="Right-size reservation 'analytics-pool'",
-                    module="CAPACITY", monthlySavings=1400.00,
-                    deepLink="#capacity?reservation=analytics-pool"),
-        Opportunity(label="Rewrite top SELECT * queries by user@example.com",
-                    module="QUERY QUALITY", monthlySavings=900.00,
-                    deepLink="#linter?user=user@example.com"),
-    ][:limit]
+    return []
 
 
 @app.get("/api/dashboard/top-projects", response_model=List[ProjectCost])
@@ -3650,13 +3626,7 @@ def get_top_projects(limit: int = 5):
     Aggregate Direct Usage Cost + Allocated Waste per project for current month.
     Return top `limit` by total cost descending.
     """
-    return [
-        ProjectCost(projectId="data-warehouse-prod", cost=18400.00),
-        ProjectCost(projectId="ml-training-prod",    cost=12900.00),
-        ProjectCost(projectId="analytics-prod",      cost=6300.00),
-        ProjectCost(projectId="reporting-prod",      cost=3100.00),
-        ProjectCost(projectId="dev-sandbox",         cost=1600.00),
-    ][:limit]
+    return []
 
 
 @app.get("/api/dashboard/anomalies", response_model=List[Anomaly])
