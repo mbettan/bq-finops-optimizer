@@ -31,6 +31,7 @@ An enterprise-grade BigQuery FinOps diagnostic suite and interactive simulation 
 *   **Compute Right-Sizing**: Evaluates On-Demand vs. Editions pricing, simulates optimal baseline capacities, and analyzes autoscaler performance.
 *   **Architectural Diagnostics**: Identifies anti-patterns such as DML abuse, redundant materialized views, and slot-inefficient query designs.
 *   **Cost Attribution**: Overcomes GCP billing limitations to proportionally distribute unallocated reservation waste back to business units.
+*   **Project-Focus Scoping**: Isolates analytics to specific project boundaries without corrupting org-wide mathematical invariants (like capacity planning or attribution denominators).
 *   **AI-Powered Query Analysis**: Uses Gemini models via BigQuery's `AI.GENERATE` function to perform semantic SQL review at scale.
 
 ---
@@ -85,6 +86,11 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 *   **Newline-Aware Truncation:** SQL payloads exceeding 5,000 characters and DDL payloads exceeding 4,000 characters are truncated at the last newline boundary to prevent feeding malformed SQL fragments to the model.
 *   **Parallel Execution:** Queries are batched into `UNION ALL` chunks (5 per chunk), with each subquery independently calling `AI.GENERATE`. This enables parallel LLM evaluation within a single BigQuery job.
 *   **3-Tier Error Handling:** The backend extracts the full Vertex AI response struct (`result`, `status`, `full_response`) to distinguish between function-level failures (NULL struct), API errors (status populated), and model-level blocks (`finish_reason: MAX_TOKENS` or `SAFETY`).
+
+### 6. Built-in Security & Access Guardrails
+*   **Defense-in-Depth Validation**: All BigQuery-derived identifiers (e.g., project IDs, reservation names) are actively sanitized via `_safe_ident()` before DDL generation or query interpolation to prevent second-order SQL injection.
+*   **Strict Scope Preservation**: Endpoints correctly differentiate between scoped views (e.g., usage filtering) and mathematical invariants (e.g., capacity planning, fluid scaling estimation, cost attribution) which explicitly reject or bypass scope filters to guarantee financial accuracy.
+*   **Data Sanitization**: Complete frontend HTML escaping prevents XSS across anomaly logs, AI recommendations, and query snippets.
 
 ---
 
