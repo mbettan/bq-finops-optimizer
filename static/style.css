@@ -610,6 +610,47 @@ input:checked + .slider:before {
         -webkit-text-fill-color: transparent;
 }
 
+/* ─── Scope Indicator (inline pill next to view-title) ─── */
+.scope-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    vertical-align: middle;
+    margin-left: 0.75rem;
+    background: transparent;
+    -webkit-text-fill-color: initial; /* override gradient text from .view-title */
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    position: relative;
+    top: -2px;
+}
+
+/* Focus mode — amber tint */
+.scope-indicator[data-active-scope="focus"] {
+    background: rgba(245, 158, 11, 0.12);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Org-wide mode — neutral slate */
+.scope-indicator[data-active-scope="org"] {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+/* Org-wide forced (capacity modules) — with subtle warning accent */
+.scope-indicator[data-active-scope="org-forced"] {
+    background: rgba(96, 165, 250, 0.1);
+    color: #60a5fa;
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    cursor: help;
+}
+
 /* ─── Glass Card ─── */
 .glass-card {
     background: hsl(var(--card));

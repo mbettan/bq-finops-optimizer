@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, DAYS_PER_MONTH
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ router = APIRouter(prefix="/api/fluid-scaling", tags=["fluid-scaling"])
 # ---------------------------------------------------------------------------
 
 
-DAYS_PER_MONTH = 30.44
 DAYS_PER_YEAR = 365.25
 SECONDS_PER_HOUR = 3600
 SECONDS_PER_MINUTE = 60
@@ -374,24 +373,19 @@ def _rollup_to_summaries(
         [used_above_baseline, merged["autoscale_capacity_slot_seconds"]], axis=1
     ).min(axis=1).clip(lower=0)
 
-    # Per-res sums
+    # Per-res sums (single groupby for all aggregates)
     per_res = merged.groupby("reservation_id", as_index=False).agg(
         legacy_slot_seconds=("autoscale_capacity_slot_seconds", "sum"),
         fluid_slot_seconds=("fluid_slot_seconds_min", "sum"),
         total_pure_used_seconds=("used_slots", "sum"),
-    )
-
-    # Calculate status criteria using capacity presence indicator (Gap C)
-    res_sums = merged.groupby("reservation_id").agg(
         has_capacity=("_from_capacity", "max"),
-        sum_used=("used_slots", "sum")
+        sum_used=("used_slots", "sum"),
     )
 
     output = []
     for row in per_res.itertuples():
-        # Robust scalar extraction (avoids Series-truthiness ValueError)
-        has_capacity = float(res_sums.at[row.reservation_id, "has_capacity"])
-        sum_used = float(res_sums.at[row.reservation_id, "sum_used"])
+        has_capacity = float(row.has_capacity)
+        sum_used = float(row.sum_used)
 
         if has_capacity == 0 and sum_used > 0:
             status = "External Admin"
@@ -539,7 +533,7 @@ def _build_config_status(
 
 @router.post("/estimate", response_model=FluidScalingEstimateResponse)
 def estimate_fluid_scaling(params: FluidEstimateParams):
-    params.focus_projects = validate_focus_projects(params.focus_projects)
+    # NOTE: focus_projects intentionally NOT applied to capacity planning.
     t0 = log_endpoint_start("Fluid Scaling Estimate", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
@@ -553,7 +547,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region, focus_clause=focus_clause)
 
         capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
-        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params, extra_query_params=focus_params)
+        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params)
 
         logger.info(
             "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)

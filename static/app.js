@@ -326,6 +326,26 @@ const Snapshot = (() => {
       }
       keysToClear.forEach(k => localStorage.removeItem(k));
 
+      // Sanitize imported data to prevent XSS via snapshot hydration.
+      // The global fetch-proxy sanitizer only covers network responses;
+      // imported snapshots bypass it entirely, so we must sanitize here.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      function sanitizeImport(data) {
+          if (data === null || data === undefined) return data;
+          if (typeof data === 'string') return escHtml(data);
+          if (Array.isArray(data)) return data.map(sanitizeImport);
+          if (typeof data === 'object') {
+              const out = {};
+              for (const k2 in data) {
+                  if (Object.prototype.hasOwnProperty.call(data, k2)) {
+                      out[k2] = sanitizeImport(data[k2]);
+                  }
+              }
+              return out;
+          }
+          return data;
+      }
+
       let written = 0;
       keys.forEach(k => {
         if (k.startsWith(KEY_PREFIX)) {
@@ -1405,7 +1425,6 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
-          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           window_minutes: parseInt(elements.slWindow.value),
           percentile: percentile,
@@ -1421,7 +1440,6 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
-          focus_projects: state.focusProjects,
           lookback_days: lookbackDays
         }),
         signal: abortController.signal
@@ -1437,7 +1455,6 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
-          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
           resolution: 'HOUR'
@@ -1453,7 +1470,6 @@ document.addEventListener('DOMContentLoaded', () => {
           org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
           region: state.region,
-          focus_projects: state.focusProjects,
           lookback_days: lookbackDays,
           timezone: 'America/New_York',
           edition: 'ENTERPRISE',
@@ -1573,7 +1589,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                         region: state.region,
-                focus_projects: state.focusProjects,
                         lookback_days: parseInt(document.getElementById('sim-lookback-days').value),
                         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                         max_baseline: parseInt(document.getElementById('sim-max-baseline').value),
@@ -2101,6 +2116,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
         };
 
+        // XSS-safe helper: escapes HTML entities for use in innerHTML / title attributes
+        const esc = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+
         data.forEach(row => {
             const avgBytes = row.avg_bytes_processed || 0;
             const recommendation = row.recommendation || 'N/A';
@@ -2110,7 +2128,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const badgeText = isCandidate ? 'Candidate' : 'N/A';
             
             table.row.add([
-                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.query}">${row.query}</div>`,
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.query)}">${esc(row.query)}</div>`,
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>

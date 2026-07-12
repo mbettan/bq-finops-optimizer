@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -206,9 +206,9 @@ def get_hbo_summary(params: HBOCommonParams):
             daily_slot_avg = total_saved_slot_hours / lookback
             daily_usd_avg = (total_saved_slot_hours * 0.06) / lookback
             
-            # Project to standard month (30.41 days)
-            monthly_saved_slot_hours = daily_slot_avg * 30.41
-            monthly_estimated_savings_usd = daily_usd_avg * 30.41
+            # Project to standard month (365.25/12 = 30.4375 days)
+            monthly_saved_slot_hours = daily_slot_avg * DAYS_PER_MONTH
+            monthly_estimated_savings_usd = daily_usd_avg * DAYS_PER_MONTH
             
             log_endpoint_end("HBO Summary", t0, _logger=logger)
             return HBOSummary(

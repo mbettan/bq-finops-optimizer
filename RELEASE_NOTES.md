@@ -2,29 +2,271 @@
 
 ---
 
-## v1.1.1 — 2026-07-09
+## v1.1.4 — 2026-07-11
+
+Data correctness and deployment hardening release addressing **14 findings** from a 4th independent code review (Cloud SWE / DB Architect / AppSec perspective).
 
 ### 🐛 Bug Fixes
 
-#### fix(fluid-scaling): `max_bytes_billed_gb` not sent to backend
-*   **Root Cause:** The frontend's `fetchEstimate()` and `fetchJobSimulation()` functions were not including `max_bytes_billed_gb` in the POST body, even though the value was correctly stored in `state.maxBytesBilledGb`. This caused both `/api/fluid-scaling/estimate` and `/api/slots/fluid_simulation` to fall back to the backend's default 200 GiB safety cap, ignoring the user's configured limit.
-*   **Fix:** Added `maxBytesBilledGb` to the call sites, function signatures, and request payloads of both `fetchEstimate()` and `fetchJobSimulation()` in `static/app.js` and `docs/static/app.js`.
+#### fix(slot-utilization): concurrency metrics measured single-job peaks instead of org-wide demand
+*   **Root Cause:** `analyze_slot_utilization` took `MAX`/`APPROX_QUANTILES` over raw `JOBS_TIMELINE_BY_ORGANIZATION` rows. Since this view emits one row per `(job_id, period_start)`, the aggregate measured the **largest single job's per-second slot usage**, not total concurrent org demand. With N jobs running simultaneously, `max_slots` underestimated peak concurrency by up to N×.
+*   **Fix Applied (`src/main.py`):**
+    *   Added a `per_second` CTE that `SUM(period_slot_ms) GROUP BY period_start` — aggregating across all concurrent jobs before taking MAX/quantiles
+    *   Fixed `bytes_billed_avg` divisor from hard-coded `/60` to `COUNT(*)` (actual seconds in bucket)
+*   **Impact:** `max_slots`, `p90_slots`, `p99_slots` now correctly reflect org-wide concurrent demand. Capacity planning decisions based on these metrics are no longer systematically under-provisioned.
 
-#### fix(data-integrity): removed all hardcoded fallback data from backend
-*   **Root Cause:** Multiple endpoints returned fabricated demo data instead of honest empty results:
-    *   **Static Schema Audit** (`POST /api/storage/static_audit`): When the query returned empty results *or* threw an exception, the endpoint returned two hardcoded fake tables (`EDW_WCM_CONTACT.wcm_contact_matching_history`, `ODS_CORE_ECOM.ecom_order_item_ledger`) with fabricated row counts and byte sizes. Users with clean schema hygiene would see phantom risk items.
-    *   **Active Assist** (`POST /api/storage/active_assist`): Same two fake tables were returned on empty results or exceptions. Additionally, real recommendations used a hardcoded `savings = 120.0` default, fabricated column suggestions (`CREATED_DATE`, `CUSTOMER_KEY`, `EVENT_TYPE_ID`), and an arbitrary `editions_monthly_savings = savings * 0.8` formula.
-    *   **Dashboard stubs** (`/api/dashboard/kpis`, `/opportunities`, `/top-projects`, `/anomalies`): Returned hardcoded fake project names, dollar amounts, and anomaly alerts (e.g., `data-warehouse-prod $18,400/mo`, `analytics-pool idle 80%`, `etl@svc.gserviceaccount.com`).
-*   **Fix:**
-    *   Static Schema Audit and Active Assist exception/empty handlers now return `[]`.
-    *   Active Assist savings fields (`on_demand_monthly_savings`, `editions_monthly_savings`) made `Optional[float] = None` — only populated when BigQuery provides real `cost_projection` data.
-    *   Active Assist column suggestions now parsed from `additional_details` instead of hardcoded values.
-    *   Dashboard KPI fields made `Optional` with `None` defaults; returns `KpiResponse(stub=True)` until real billing is implemented. Other dashboard stubs return `[]`.
+#### fix(mv-auditor): MV inventory was project-scoped while jobs were org-scoped
+*   **Root Cause:** The MV Cost Auditor built its MV inventory from single-project `INFORMATION_SCHEMA.TABLES` (admin project only), then joined against `JOBS_BY_ORGANIZATION` (org-wide). MVs in any project other than the admin project were invisible — their refresh costs were silently missed, producing a falsely "healthy" picture.
+*   **Fix Applied (`src/main.py`):**
+    *   Added a project discovery step: queries `DISTINCT destination_table.project_id` from `JOBS_BY_ORGANIZATION` to find all projects with MV refresh activity
+    *   Batches `INFORMATION_SCHEMA.TABLES` queries across discovered projects (20 per UNION ALL batch) with `_safe_ident` validation
+    *   Gracefully handles per-batch failures without aborting the entire audit
+*   **Impact:** MV refresh costs are now accurately measured org-wide. MVs in non-admin projects are no longer silently excluded.
+
+#### fix(cost-attribution): `focus_projects` corrupted waste allocation math
+*   **Root Cause:** `reservation_totals` was built from focus-filtered job data, but `total_admin_bill` covered the entire reservation. With a focus filter, excluded projects' legitimate usage was reclassified as "waste" and dumped onto focused projects.
+*   **Fix Applied (`src/cost_attribution.py`):**
+    *   Cost attribution now rejects `focus_projects` with a `400` error and explanation
+    *   Consistent with how capacity-planning endpoints already exclude focus filters
+*   **Impact:** Cost attribution waste allocation is always computed against full-reservation usage.
+
+#### fix(compute): On-Demand cost incorrectly included failed queries
+*   **Root Cause:** BigQuery does not bill On-Demand for queries that fail with errors, but the model computed `on_demand_cost = bytes_billed × rate` for errored jobs, inflating the On-Demand side and biasing the comparison toward Editions.
+*   **Fix Applied (`src/main.py`):**
+    *   `on_demand_cost = 0.0 if has_error else (bytes_billed / TB_CONVERSION) * rate`
+*   **Impact:** Editions vs. On-Demand comparison is no longer artificially skewed by error-heavy workloads.
+
+#### fix(hbo): project query failures silently reported as "HBO enabled"
+*   **Root Cause:** `_check_project_status` returned `(project, None)` on any failure (403, quota, etc.). The results loop only appended projects where `enabled is False`, so failed projects were indistinguishable from "enabled" ones.
+*   **Fix Applied (`src/hbo.py`):**
+    *   Added `status: str = "known"` field to `HBOStatus` model
+    *   Projects where the query failed are now surfaced with `status="unknown"`
+*   **Impact:** Admins can distinguish between "verified enabled" and "could not verify" instead of seeing a false all-green dashboard.
+
+### 🛡️ Hardening
+
+#### hardening(env): `.env` loader no longer overrides real environment variables
+*   **Root Cause:** `os.environ[key] = val` unconditionally overwrote Cloud Run / GKE injected variables (`GOOGLE_CLOUD_PROJECT`, `LOG_LEVEL`, credential paths) if a stray `.env` file was present.
+*   **Fix:** Changed to `os.environ.setdefault(key, val)` — `.env` only fills in missing variables.
+
+#### hardening(storage): error fallback response shape now matches success shape
+*   **Root Cause:** The `analyze_storage` "views not enabled" fallback returned a dict without `effective_pricing_ratio`, causing frontend destructuring errors.
+*   **Fix:** Added `"effective_pricing_ratio": 0` to the fallback dict.
+
+#### hardening(tiered-recs): typed exception matching replaces brittle string matching
+*   **Root Cause:** The org-to-project fallback used `if "Access Denied" in str(e)` — brittle across SDK versions/locales.
+*   **Fix:** Changed to `except (gax_exc.Forbidden, gax_exc.NotFound)`.
+
+#### hardening(cost-attribution): date range `start <= end` validation
+*   **Root Cause:** Reversed date ranges (`start > end`) silently returned empty results, presented as `$0.00` attribution — a legitimate-looking but incorrect result.
+*   **Fix:** Added `@model_validator(mode='after')` that rejects reversed ranges.
+
+#### hardening(cost-attribution): deprecated `config.dict()` → `model_dump()`
+*   Pydantic v2 migration: `config.dict()` → `config.model_dump()`.
+
+#### hardening(cost-attribution): removed dead `/test-hbo` debug endpoint
+*   Leftover debug endpoint removed — reduces attack surface.
 
 ### ✨ Improvements
 
-#### refactor(active-assist): removed `focus_projects` parameter
-*   **Rationale:** `INFORMATION_SCHEMA.RECOMMENDATIONS` is inherently scoped to the execution project by BigQuery — there is no cross-project recommendations view. Sending `focus_projects` had no effect. The parameter has been removed from the Active Assist frontend request payload to avoid confusion. Active Assist now cleanly operates at org/execution project scope.
+#### feat(compute): response includes sample metadata
+*   The `analyze_jobs` response now includes `sample_info.sampled_job_count` and a note explaining the sampling bias (`ORDER BY bytes_billed DESC`). Enables the frontend to display "Analysis based on top N jobs by bytes_billed."
+
+#### feat(cache): versioned static assets get long-lived caching
+*   Static assets served with `?v=<hash>` query parameters now receive `Cache-Control: public, max-age=31536000, immutable` instead of `no-store`. Unversioned paths retain `no-store`. Reduces repeat page-load latency.
+
+#### feat(logging): `RotatingFileHandler` gated behind `ENABLE_FILE_LOG` env var
+*   Cloud Run containers use tmpfs — writing `app.log` consumes instance memory and vanishes on scale-down. File logging is now opt-in via `ENABLE_FILE_LOG=1`. Stdout logging (always active) is sufficient for Cloud Run's Cloud Logging integration.
+
+---
+
+## v1.1.3 — 2026-07-11
+
+Security hardening and correctness release addressing **9 findings** from a comprehensive tri-report code review (3 independent backend reviews + 1 frontend security audit, with independent validator cross-check).
+
+### 🔒 Security Fixes
+
+#### fix(frontend): DOM-based Stored XSS via sanitizer whitelist bypass
+*   **Root Cause:** The global `window.fetch` proxy sanitizer ([`app.js:59-60`](static/app.js)) whitelisted 5 JSON keys (`query`, `sql`, `gemini_optimization_advice`, `ddl`, `referenced_schemas`), passing their values through without HTML-escaping. The Slots Profiler renderer at line 2068 then injected `row.query` directly into `.innerHTML` via DataTables' `table.row.add()` — with no local escaping. A BigQuery query containing `SELECT "<img src=x onerror=alert(1)>"` would execute as JavaScript when an admin viewed the profiler table.
+*   **Fix Applied (`static/app.js`):**
+    *   Added a local `esc()` HTML-escape helper inside `renderProfilerQueries`
+    *   `row.query` is now escaped in both the `title` attribute and innerHTML content
+*   **Note:** The AI Doctor renderer was **not** vulnerable — it already applies its own local `escapeHtml()` at line 3934 and `renderMarkdown()` HTML-escapes at lines 3893-3896. The DDL renderer uses `.textContent` (safe).
+
+#### fix(frontend): full application XSS via snapshot hydration bypass
+*   **Root Cause:** The `importSnapshot()` function wrote uploaded JSON directly to `localStorage` without sanitization. On page reload, cached data is parsed and passed straight to render functions — completely bypassing the global `fetch`-proxy sanitizer. An attacker could craft a malicious snapshot containing `<img src=x onerror=...>` in any field, trick an admin into importing it, and achieve persistent XSS across all dashboard views.
+*   **Fix Applied (`static/app.js`):**
+    *   Added `sanitizeImport()` — a recursive HTML-escaping function applied to all imported snapshot values before writing to `localStorage`
+    *   String values are escaped; objects/arrays are recursively traversed; non-string primitives pass through unchanged
+
+### 🐛 Bug Fixes
+
+#### fix(cost-attribution): waste silently vanishes under Rule B (Central Dump)
+*   **Root Cause:** When `waste_rule="B"` (Central Dump) was selected but `central_cost_center_project` was `None` (the default in `cost_attribution_config.json`), the guard condition `if waste_rule == "B" and central_cost_center_project:` was falsy. The waste cost was withheld from individual projects (line 204: `pass`) but the dump block was skipped entirely. Waste simply disappeared — the sum of attributed costs no longer matched the GCP invoice.
+*   **Fix Applied (`src/cost_attribution.py`):**
+    *   Changed the guard to an explicit rejection: Rule B now raises `HTTPException(400)` if `central_cost_center_project` is not configured
+    *   Added missing `"slot_hours": 0.0` key to Rule-B dump records for schema consistency with Rule-A records
+*   **Impact:** Cost attribution totals now always reconcile with the GCP bill. Users are notified if their Rule B config is incomplete.
+
+#### fix(storage): time-travel DDL shows savings it can't deliver
+*   **Root Cause:** Setting `time_travel_rescale=0.28` without specifying `time_travel_hours` caused the savings forecast to show a 72% reduction in time-travel costs. However, the generated DDL only flipped the billing model — it did **not** include `max_time_travel_hours`, so the time-travel window remained unchanged. Users who executed the DDL would never see the forecasted savings.
+*   **Fix Applied (`src/main.py`):**
+    *   Added `@model_validator(mode='after')` to `StorageParams` that rejects `time_travel_rescale < 1.0` when `time_travel_hours is None`
+    *   Error message: *"time_travel_hours must be set when time_travel_rescale < 1.0. Without it, the generated DDL will not reduce time travel."*
+*   **Impact:** Users cannot generate misleading DDL — they must explicitly specify the target time-travel window to unlock rescale savings.
+
+#### fix(exceptions): `static_audit` and `active_assist` silently return `[]` on errors
+*   **Root Cause:** Both `run_static_schema_audit` and `fetch_active_assist_recommendations` caught all exceptions and returned an empty list. A 403 (missing permissions), 404 (wrong project), or quota error was indistinguishable from "no findings." Users saw an empty table and assumed they were fully optimized, when in reality the scan never completed.
+*   **Fix Applied (`src/main.py`):**
+    *   Replaced `logger.warning(...); return []` with `handle_endpoint_exception(e, "...")` in both handlers
+    *   Errors now surface as structured HTTP responses (403, 404, 400, or 500) with appropriate error messages
+*   **Impact:** Permission and quota errors are now visible to the user. The frontend's existing error-state UI handles these correctly.
+
+#### fix(slots): 50-slot passthrough cliff decoupled from `slot_step_size`
+*   **Root Cause:** The slot-packing heuristic used a hard-coded `if effective_slots < 50:` threshold. This was intended to match BigQuery's 50-slot autoscaler increment, but `slot_step_size` is a user-configurable parameter. A user setting `slot_step_size=100` still had the passthrough cutoff at 50, creating a 2× cost discontinuity at the 50-slot boundary where jobs in `[50, 100)` rounded up to 100 while jobs `< 50` passed through at actual cost.
+*   **Fix Applied (`src/main.py`):**
+    *   Changed `if effective_slots < 50:` → `if effective_slots < params.slot_step_size:`
+*   **Impact:** The passthrough cutoff now tracks the user's configured step size, eliminating the cost discontinuity.
+
+### 🛡️ Hardening
+
+#### hardening(params): bounded numeric fields prevent crash and DoS
+*   **Root Cause:** Several Pydantic param models accepted unbounded integers. `slot_step_size=0` caused a `ZeroDivisionError` at `math.ceil(effective_slots / params.slot_step_size)`. `lookback_days=365` triggered an unbounded org-wide INFORMATION_SCHEMA scan that could time out or consume excessive bytes.
+*   **Fix Applied (3 files):**
+    *   `src/main.py` — `JobAnalysisParams.slot_step_size`: `int = 50` → `Field(default=50, gt=0)`; `min_bytes_billed`: `Field(ge=0)`; `SlotSimulationParams.lookback_days`: `Field(ge=1, le=90)`; `max_baseline`: `Field(ge=50, le=100000)`; `step_size`: `Field(gt=0)`
+    *   `src/hbo.py` — `HBOCommonParams.lookback_days` and `HBOStatusParams.lookback_days`: `Field(default=7, ge=1, le=90)`
+*   **Impact:** Invalid values now return a 422 Validation Error with a clear message instead of crashing. Maximum lookback window capped at 90 days.
+
+#### hardening(errors): BigQuery error details no longer leaked to client
+*   **Root Cause:** The `BadRequest` handler in `handle_endpoint_exception` returned `f"BigQuery Query Failed: {str(e)[:500]}"` to the client. BQ error messages can contain table names, column names, and SQL fragments — leaking internal schema details.
+*   **Fix Applied (`src/utils.py`):**
+    *   Error details are now logged server-side only (`logger.error`)
+    *   Client receives a generic message: *"BigQuery Query Failed: The query contained an error; check server logs for details."*
+*   **Impact:** No internal schema information is exposed to API consumers. Operators can still diagnose issues via server logs.
+
+---
+
+## v1.1.2 — 2026-07-10
+
+Patch release fixing **4 bugs** and **3 code quality improvements** identified during an LLM-assisted code review.
+
+### 🐛 Bug Fixes
+
+#### fix(static-audit): `row_count` returned fabricated estimate instead of real row count
+*   **Root Cause:** The Static Schema Audit SQL computed row count as `CAST(COALESCE(s.size_bytes, 0) / 220 AS INT64)` — a fabricated estimate dividing total logical bytes by a hardcoded 220-byte "average row width." This produced wildly inaccurate results (e.g., a 1 GB table always reported ~4.8M "rows" regardless of actual schema or row count). The constant `220` appears to be a typo for `2^20` (1 MiB), but either way the approach is incorrect because `INFORMATION_SCHEMA.TABLE_STORAGE` provides a real `total_rows` column.
+*   **Affected Endpoint:** `POST /api/storage/static_audit` → `StaticAuditResult.row_count`
+*   **Fix Applied (`src/main.py`):**
+    *   Added `total_rows` to the `table_sizes` CTE SELECT list
+    *   Replaced `CAST(COALESCE(s.size_bytes, 0) / 220 AS INT64)` with `COALESCE(s.total_rows, 0)`
+    *   Updated the comment above the query (removed misleading justification for the approximation)
+*   **Impact:** `row_count` now returns the real row count from BigQuery metadata instead of a fabricated estimate. All existing consumers of this field will see accurate values.
+
+#### fix(mv-auditor): cross-project false positives due to missing `project_id` in MV key
+*   **Root Cause:** The MV Cost Auditor built a set of materialized views keyed by `(table_schema, table_name)` — with **no project_id**. It then matched jobs from `JOBS_BY_ORGANIZATION` (org-wide, all projects) against this set. If two projects each had a dataset named `analytics` with a table `daily_agg`, jobs from either project would match, producing inflated refresh counts and slot-hour costs for MVs that weren't actually refreshed.
+*   **Affected Endpoint:** `POST /api/antipatterns/mv` → `MVCostResult`
+*   **Fix Applied (`src/main.py`):**
+    *   Added `table_catalog AS project_id` to the MV list SQL query
+    *   Changed the MV set key from `(table_schema, table_name)` → `(project_id, table_schema, table_name)`
+    *   Changed the job lookup key from `(row.dataset_id, row.table_id)` → `(row.project_id, row.dataset_id, row.table_id)`
+*   **Impact:** MV refresh detection is now project-scoped. No more phantom refresh counts from identically-named tables in different projects.
+
+#### fix(storage): `time_travel_hours` accepted floats, producing invalid DDL
+*   **Root Cause:** `StorageParams.time_travel_hours` was typed `Optional[float]`, and the validator cast to `int()` before checking the allow-list. A value like `72.5` was silently truncated to `72` (which is in the allowed set), passing validation — but the untruncated `72.5` flowed through to the generated DDL: `max_time_travel_hours=72.5`. BigQuery rejects non-integer values for this option.
+*   **Affected Endpoint:** `POST /api/storage/analyze` → DDL generation
+*   **Fix Applied (`src/main.py`):**
+    *   Changed field type from `Optional[float]` → `Optional[int]` (Pydantic now rejects `72.5` at the API boundary)
+    *   Removed the `int(v)` cast in the validator (no longer needed since the type is already `int`)
+*   **Impact:** Non-integer `time_travel_hours` values are now rejected with a clear validation error instead of producing DDL that BigQuery would reject.
+
+#### fix(cost-attribution): config file path CWD-relative, fails in containers
+*   **Root Cause:** `CONFIG_FILE = "cost_attribution_config.json"` was a bare relative path, resolved against the process's current working directory. In Docker (Dockerfile sets `WORKDIR /app`), the config file is at `/app/src/cost_attribution_config.json`, but `os.path.exists("cost_attribution_config.json")` looked for `/app/cost_attribution_config.json` — a path that doesn't exist. The code silently fell back to default config values.
+*   **Affected Module:** `src/cost_attribution.py` → `load_config()` / `save_config()`
+*   **Fix Applied (`src/cost_attribution.py`):**
+    *   Changed `CONFIG_FILE = "cost_attribution_config.json"` → `CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"`
+    *   Added `from pathlib import Path` import
+*   **Impact:** Config file is now correctly resolved relative to the module's location, working in any working directory including Docker containers.
+
+### ✨ Improvements
+
+#### refactor(finops): centralize `DAYS_PER_MONTH` constant across all modules
+*   **Issue:** `hbo.py` used `30.41` and `fluid_scaling.py` used `30.44` for monthly projections. The standard calendar average is `365.25 / 12 = 30.4375`. Inconsistent constants produce subtly different dollar figures across dashboard panels.
+*   **Fix Applied:**
+    *   Added `DAYS_PER_MONTH = 365.25 / 12` to `src/utils.py`
+    *   `fluid_scaling.py` and `hbo.py` now import from `utils.py` instead of defining locally
+
+#### refactor(ai-doctor): parameterize job IDs instead of string interpolation
+*   **Issue:** AI Doctor query fetching used `", ".join(f"'{jid}'" ...)` to build a SQL `IN (...)` clause. While job IDs come from prior BQ results (not user input), relying on upstream format constraints for SQL safety is an anti-pattern.
+*   **Fix Applied (`src/main.py`):**
+    *   Replaced f-string interpolation with `UNNEST(@job_ids)` and `bigquery.ArrayQueryParameter`
+    *   Eliminated all raw string quoting of job IDs
+
+#### refactor(fluid-scaling): merge redundant groupby in `_rollup_to_summaries`
+*   **Issue:** Two separate `merged.groupby("reservation_id")` calls aggregated the same DataFrame — one for legacy/fluid/usage sums, another for `has_capacity`/`sum_used` status criteria. The second pass was redundant.
+*   **Fix Applied (`src/fluid_scaling.py`):**
+    *   Combined into a single `.agg()` call with all 5 aggregate columns
+    *   Eliminated the `res_sums` intermediate DataFrame and `.at[]` index lookups
+
+---
+
+## v1.1.1 — 2026-07-09
+
+Patch release focused on **data integrity** and **cost safety compliance**. Removes all hardcoded demo/fallback data from production endpoints and ensures the user-configured `max_bytes_billed_gb` safety cap is respected across all Fluid Scaling queries.
+
+### 🐛 Bug Fixes
+
+#### fix(fluid-scaling): `max_bytes_billed_gb` not forwarded to backend API calls
+*   **Root Cause:** The frontend's Fluid Scaling module called two backend endpoints — `POST /api/fluid-scaling/estimate` and `POST /api/slots/fluid_simulation` — without including `max_bytes_billed_gb` in the POST body, even though the value was correctly stored in `state.maxBytesBilledGb` (read from localStorage and the Settings form). This caused the backend to fall back to its default 200 GiB safety cap, ignoring the user's configured limit (e.g., 4,500 GB).
+*   **Affected Files (4 files changed, 6 edits):**
+    *   `static/app.js` — `fetchEstimate()`: added `maxBytesBilledGb` to call site, function signature (`{ orgProject, adminProject, region, lookback, price }` → `{ orgProject, adminProject, region, lookback, price, maxBytesBilledGb }`), and JSON body (`max_bytes_billed_gb: maxBytesBilledGb`).
+    *   `static/app.js` — `fetchJobSimulation()`: identical 3-point fix (call site, signature, body).
+    *   `docs/static/app.js` — both functions: same fixes applied to keep the docs copy in sync.
+*   **Impact:** Users who configured a custom `max_bytes_billed_gb` (e.g., 4,500 GB for large orgs) now have that limit correctly enforced on Fluid Scaling queries, preventing unexpected `Query exceeded limit` errors or silent fallback to the 200 GiB default.
+
+#### fix(data-integrity): removed all hardcoded fallback data from 6 backend endpoints
+*   **Root Cause:** Multiple backend endpoints returned fabricated demo data to production users instead of honest empty results. This was originally implemented to ensure the UI "always looks highly informative and doesn't appear blank" but leaked fake project names, dollar amounts, and table metadata to real users.
+*   **Affected Endpoints & Specific Values Removed:**
+
+    | Endpoint | Trigger | Fake Data Removed |
+    |:---------|:--------|:------------------|
+    | `POST /api/storage/static_audit` | Query returns empty (`if not output:`) | `EDW_WCM_CONTACT.wcm_contact_matching_history` (184M rows, 342 GB, unpartitioned), `ODS_CORE_ECOM.ecom_order_item_ledger` (459M rows, 894 GB, partitioned on `ORDER_DATE`) |
+    | `POST /api/storage/static_audit` | Query throws exception | Same two fake tables (identical fallback block) |
+    | `POST /api/storage/active_assist` | Query returns empty | Same two fake tables with hardcoded savings ($450/mo, $280/mo) |
+    | `POST /api/storage/active_assist` | Query throws exception | Same two fake tables |
+    | `POST /api/storage/active_assist` | Every real recommendation | Hardcoded `savings = 120.0` default, fabricated column suggestions (`CREATED_DATE`, `CUSTOMER_KEY`, `EVENT_TYPE_ID`), arbitrary `editions_monthly_savings = savings * 0.8` formula |
+    | `GET /api/dashboard/kpis` | Always | `mtdSpend=42310.00`, `forecastSpend=58200.00`, `lastMonthSpend=51400.00`, `potentialSavings=12400.00`, `opportunityCount=47`, `anomalyCount=3` |
+    | `GET /api/dashboard/opportunities` | Always | 5 fake entries: `warehouse_db` ($4,200/mo), `project-analytics-prod` ($3,100/mo), `events_db` ($2,800/mo), `analytics-pool` ($1,400/mo), `user@example.com` ($900/mo) |
+    | `GET /api/dashboard/top-projects` | Always | 5 fake projects: `data-warehouse-prod` ($18,400), `ml-training-prod` ($12,900), `analytics-prod` ($6,300), `reporting-prod` ($3,100), `dev-sandbox` ($1,600) |
+    | `GET /api/dashboard/anomalies` | Always | 3 fake alerts: `data-warehouse-prod +340%`, `analytics-pool idle 80%`, `etl@svc.gserviceaccount.com SELECT *` |
+
+*   **Fixes Applied (`src/main.py`, net −108 lines):**
+    *   **Static Schema Audit:** Removed `if not output:` fake table block and `except` fallback. Both paths now return `[]`.
+    *   **Active Assist:** Removed `if not output:` fake table block, `except` fallback, `savings = 120.0` default, hardcoded column suggestions, and `* 0.8` formula. `ActiveAssistResult.on_demand_monthly_savings` and `editions_monthly_savings` changed from `float` → `Optional[float] = None`. Column suggestions now parsed from `additional_details` metadata when available.
+    *   **Dashboard KPIs:** `KpiResponse` fields changed from required `float`/`int` → `Optional[float/int] = None`. Endpoint returns `KpiResponse(stub=True)` with all metrics as `null` until real billing integration is implemented.
+    *   **Dashboard Opportunities/Top-Projects/Anomalies:** All three endpoints now return `[]`.
+*   **Impact:** No production user will ever see fabricated project names, table names, savings estimates, or anomaly alerts. Frontend already handles empty states gracefully with "No results found" messaging.
+
+### ✨ Improvements
+
+#### refactor(active-assist): removed `focus_projects` parameter from API request
+*   **Rationale:** Active Assist queries `INFORMATION_SCHEMA.RECOMMENDATIONS`, which is inherently scoped to the execution project by BigQuery — there is no cross-project recommendations view. The `focus_projects` parameter was being sent from the frontend but had no effect on the backend query. Removed from the Active Assist `params` object in `static/app.js` to avoid confusion.
+*   **Scoping Decision:** Active Assist intentionally operates at the **org/execution project level** (not focus-project level). Unlike other endpoints that filter by `WHERE project_id IN UNNEST(@focus_projects)`, the `RECOMMENDATIONS` view cannot be filtered this way — it returns recommendations for all tables within the queried project.
+
+#### refactor(capacity): removed `focus_projects` from 7 capacity/slots endpoints
+*   **Rationale:** Capacity planning endpoints query `INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION` to measure org-wide slot demand. Applying a `focus_projects` filter to these queries gives **misleadingly small capacity numbers** — e.g., sizing a reservation based on 2 projects when 50 projects share it leads to under-provisioning, autoscaler cost overruns, and degraded query performance.
+*   **Affected Endpoints (7):**
+
+    | Endpoint | Module | Why Focus Distorts Results |
+    |:---------|:-------|:--------------------------|
+    | `POST /api/slots/analyze` | Slot Timeline | Slot timeline must reflect total org capacity, not a subset |
+    | `POST /api/slots/tiered_recommendations` | Tiered Recs | p80/p95/max baselines must reflect total org demand to size reservations correctly |
+    | `POST /api/slots/utilization` | Slot Utilization | Utilization % is meaningless unless measured against total org capacity |
+    | `POST /api/slots/simulate` | Slot Simulation | Simulation accuracy depends on seeing the full workload |
+    | `POST /api/slots/peak` | Peak Slots | Peak slot demand across a subset ≠ actual peak (jobs overlap cross-project) |
+    | `POST /api/slots/fluid_simulation` | Fluid Simulation | Same distortion risk as slot simulation |
+    | `POST /api/fluid-scaling/estimate` | Fluid Scaling Estimate | Per-second billing model comparison requires full org workload |
+
+*   **Changes:** Backend `build_project_filter()` calls replaced with empty clause `("", [])`. Frontend `focus_projects` removed from all capacity/slots `fetch()` payloads. The `FocusMixin` field remains on param models for backward API compatibility (the field is accepted but ignored). Tiered Recommendations' focus-guard fallback logic simplified since scoping no longer applies.
+*   **Scope Retained:** `focus_projects` remains fully active on **19 endpoints** that query `JOBS_BY_ORGANIZATION` and `TABLE_STORAGE_BY_ORGANIZATION` — job analysis, anti-pattern detection, AI Doctor, storage optimization, governance, HBO, cost attribution, and profiling — where project-level filtering is the exact intended use case.
 
 ---
 

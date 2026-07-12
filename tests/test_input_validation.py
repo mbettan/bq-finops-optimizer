@@ -288,3 +288,4 @@ class TestFluidSimBounds:
 # plus /api/hbo/status). This class previously documented the opposite
 # (no bounds) as a tracked gap — the gap is now closed.
 # ---------------------------------------------------------------------------
+

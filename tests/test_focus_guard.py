@@ -94,20 +94,7 @@ ENDPOINTS_TO_GUARD = [
          "focus_projects": _FOCUS_TEST_PROJECTS},
         "BI Engine (main.py)",
     ),
-    (
-        "/api/slots/analyze",
-        {"org_project_id": "valid-proj", "region": "region-us",
-         "lookback_days": 3, "window_minutes": 5, "percentile": 90,
-         "focus_projects": _FOCUS_TEST_PROJECTS},
-        "Slot analyzer (main.py)",
-    ),
-    (
-        "/api/slots/peak",
-        {"org_project_id": "valid-proj", "region": "region-us",
-         "lookback_days": 7,
-         "focus_projects": _FOCUS_TEST_PROJECTS},
-        "Peak slots (main.py)",
-    ),
+
     (
         "/api/governance/analyze",
         {"org_project_id": "valid-proj", "region": "region-us",
@@ -143,13 +130,6 @@ ENDPOINTS_TO_GUARD = [
          "billing_month_end": "2026-01-31",
          "focus_projects": _FOCUS_TEST_PROJECTS},
         "Cost attribution (cost_attribution.py)",
-    ),
-    (
-        "/api/fluid-scaling/estimate",
-        {"org_project_id": "valid-proj", "admin_project_id": "valid-proj", "region": "region-us",
-         "lookback_days": 3, "price_per_slot_hr": 0.06,
-         "focus_projects": _FOCUS_TEST_PROJECTS},
-        "Fluid scaling estimate (fluid_scaling.py)",
     ),
 ]
 

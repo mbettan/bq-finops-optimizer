@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
@@ -10,11 +10,13 @@ import os
 import logging
 import time
 
+from pathlib import Path
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
 
-CONFIG_FILE = "cost_attribution_config.json"
+CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"
 
 # _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 
@@ -75,6 +77,16 @@ class CostAttributionParams(FocusMixin):
         except ValueError:
             raise ValueError("Date parameters must be in YYYY-MM-DD format")
 
+    @model_validator(mode='after')
+    def validate_date_range(self):
+        """Ensure billing_month_start <= billing_month_end to prevent silent empty results."""
+        if self.billing_month_start > self.billing_month_end:
+            raise ValueError(
+                f"billing_month_start ({self.billing_month_start}) must be on or before "
+                f"billing_month_end ({self.billing_month_end})"
+            )
+        return self
+
 def load_config() -> CostAttributionConfig:
     """Load the saved config, or defaults if none has been saved yet.
 
@@ -93,7 +105,7 @@ def load_config() -> CostAttributionConfig:
 def save_config(config: CostAttributionConfig):
     try:
         with open(CONFIG_FILE, "w") as f:
-            json.dump(config.dict(), f, indent=2)
+            json.dump(config.model_dump(), f, indent=2)
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
         raise HTTPException(status_code=500, detail="Failed to save configuration")
@@ -114,6 +126,15 @@ def update_config(config: CostAttributionConfig):
 @router.post("/calculate")
 def calculate_cost_attribution(params: CostAttributionParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
+    # Cost attribution requires full-reservation usage to compute waste correctly.
+    # focus_projects would shrink the denominator, inflating waste allocation.
+    if params.focus_projects:
+        raise HTTPException(
+            status_code=400,
+            detail="focus_projects is not supported for cost attribution. "
+                   "Waste allocation requires full-reservation usage data to compute correctly."
+        )
+    config = load_config()
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
         config = load_config()
@@ -222,7 +243,13 @@ def calculate_cost_attribution(params: CostAttributionParams):
             })
             
         # Handle Rule B (Central Dump) properly if needed
-        if config.waste_rule == "B" and config.central_cost_center_project:
+        if config.waste_rule == "B":
+            if not config.central_cost_center_project:
+                raise HTTPException(
+                    400,
+                    "Cost attribution with waste_rule='B' (Central Dump) requires "
+                    "central_cost_center_project to be configured."
+                )
             for res_id, total_used_slots in reservation_totals.items():
                 short_res_id = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
                 res_config = config.reservations.get(short_res_id) or config.reservations.get(res_id)
@@ -239,7 +266,8 @@ def calculate_cost_attribution(params: CostAttributionParams):
                         "reservation_id": res_id,
                         "direct_usage_cost_usd": 0.0,
                         "allocated_waste_cost_usd": round(waste_cost, 2),
-                        "total_cost_attribution_usd": round(waste_cost, 2)
+                        "total_cost_attribution_usd": round(waste_cost, 2),
+                        "slot_hours": 0.0
                     })
             
         logger.info("Returning %d attribution records.", len(final_attributions))

@@ -10,6 +10,13 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Shared FinOps constants
+# ---------------------------------------------------------------------------
+# Standard calendar average: 365.25 / 12 = 30.4375.
+# Used consistently across all financial projections (HBO, Fluid Scaling, etc.)
+DAYS_PER_MONTH = 365.25 / 12  # 30.4375
+
+# ---------------------------------------------------------------------------
 # Request correlation ID
 # ---------------------------------------------------------------------------
 # Set once per request via middleware; automatically injected into every log
