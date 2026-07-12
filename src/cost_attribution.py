@@ -134,7 +134,6 @@ def calculate_cost_attribution(params: CostAttributionParams):
             detail="focus_projects is not supported for cost attribution. "
                    "Waste allocation requires full-reservation usage data to compute correctly."
         )
-    config = load_config()
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
         config = load_config()
