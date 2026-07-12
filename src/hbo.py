@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH, request_id_var
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -381,10 +381,13 @@ def check_hbo_status(params: HBOStatusParams):
 
         # Step 2: Check options for each active project concurrently
         # Using ThreadPoolExecutor as this is now a sync def route
-        import contextvars
-        ctx = contextvars.copy_context()
+        req_id = request_id_var.get()
         def check_with_ctx(prj):
-            return ctx.run(_check_project_status, prj)
+            token = request_id_var.set(req_id)
+            try:
+                return _check_project_status(prj)
+            finally:
+                request_id_var.reset(token)
             
         with ThreadPoolExecutor(max_workers=10) as executor:
             results = list(executor.map(check_with_ctx, projects))

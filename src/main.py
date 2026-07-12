@@ -1599,10 +1599,13 @@ def analyze_ai_query(params: AIParams):
                 return table_ref, None
                 
         # Concurrently fetch schemas using a ThreadPoolExecutor
-        import contextvars
-        ctx = contextvars.copy_context()
+        req_id = request_id_var.get()
         def fetch_with_ctx(table_ref):
-            return ctx.run(fetch_table_schema, table_ref)
+            token = request_id_var.set(req_id)
+            try:
+                return fetch_table_schema(table_ref)
+            finally:
+                request_id_var.reset(token)
 
         logger.info(f"Concurrently fetching schemas for {len(all_tables)} unique referenced tables")
         with ThreadPoolExecutor(max_workers=10) as executor:
