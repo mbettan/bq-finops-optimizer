@@ -233,9 +233,19 @@ def handle_endpoint_exception(e: Exception, service_name: str):
             detail="Resource Not Found: Requested project, region, or table was not found."
         )
     elif isinstance(e, gax_exc.BadRequest):
-        logger.error(f"{service_name} bad request: {e}")
-        # Surface the real BigQuery error (truncated) to the client
-        raise HTTPException(400, f"BigQuery Query Failed: {str(e)[:500]}")
+        # Log the real error server-side only — BigQuery BadRequest messages
+        # often echo back SQL/schema fragments, which would otherwise leak
+        # to the client (and, combined with any injection bug, act as a
+        # feedback channel for refining an attack). The request_id (already
+        # in every log line via RequestIdFilter) lets support correlate a
+        # client report back to the full server-side detail.
+        req_id = request_id_var.get()
+        logger.error(f"{service_name} bad request [{req_id}]: {e}")
+        raise HTTPException(
+            400,
+            f"BigQuery rejected the request (invalid parameters or malformed query). "
+            f"Reference: {req_id} — check server logs for details."
+        )
     elif isinstance(e, gax_exc.GoogleAPIError):
         logger.error(f"{service_name} BigQuery error: {e}")
         raise HTTPException(

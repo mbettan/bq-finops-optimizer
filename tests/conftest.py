@@ -5,6 +5,15 @@ Provides mock BigQuery client fixtures that prevent any real GCP API calls
 during testing, enabling fast offline test execution.
 """
 
+import os
+
+# Tests never bind a port or accept real network traffic, so the production
+# "must run behind Cloud Run IAM/IAP" startup check in src.main doesn't apply
+# here. Set this before importing src.main, which enforces the check at
+# import time. Use setdefault so a real deployment env var (if ever present
+# in a test environment) still takes precedence.
+os.environ.setdefault("AUTH_ENFORCED_UPSTREAM", "true")
+
 import pytest
 import pandas as pd
 from unittest.mock import MagicMock, patch

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -41,10 +41,12 @@ router = APIRouter(prefix="/api/hbo", tags=["hbo"])
 
 # _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 
+MAX_LOOKBACK_DAYS = 90
+
 class HBOCommonParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
-    lookback_days: int = 7
+    lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
     max_bytes_billed_gb: Optional[int] = None
 
 class HBOAnalyzeParams(HBOCommonParams):
@@ -53,7 +55,7 @@ class HBOAnalyzeParams(HBOCommonParams):
 class HBOStatusParams(BaseModel):
     org_project_id: Optional[str] = None
     region: str = "region-us"
-    lookback_days: int = 7
+    lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
     max_bytes_billed_gb: Optional[int] = None
 
 class HBOResult(BaseModel):
@@ -72,8 +74,11 @@ class HBOSummary(BaseModel):
 
 class HBOStatus(BaseModel):
     project_id: str
-    enabled: bool
+    # None = the check itself failed (permission error, transient BigQuery
+    # error, etc.) — distinct from a real "enabled" reading. See `error`.
+    enabled: Optional[bool] = None
     ddl: Optional[str] = None
+    error: Optional[str] = None
 
 @router.post("/analyze", response_model=List[HBOResult])
 def analyze_hbo(params: HBOAnalyzeParams):
@@ -81,8 +86,9 @@ def analyze_hbo(params: HBOAnalyzeParams):
     t0 = log_endpoint_start("HBO Analyze", params, _logger=logger)
     try:
         bq_client, target_project = init_bq_client_and_resolve_project(params)
+        region = _safe_ident(_normalize_region(params.region), "region")
         focus_clause, focus_params = build_project_filter(params.focus_projects)
-        
+
         sql = f"""
         SELECT
           job_id,
@@ -93,7 +99,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
           TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS duration_ms,
           total_slot_ms,
           query_info.performance_insights.avg_previous_execution_ms AS prev_exec_ms
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
@@ -150,8 +156,9 @@ def get_hbo_summary(params: HBOCommonParams):
     t0 = log_endpoint_start("HBO Summary", params, _logger=logger)
     try:
         bq_client, target_project = init_bq_client_and_resolve_project(params)
+        region = _safe_ident(_normalize_region(params.region), "region")
         focus_clause, focus_params = build_project_filter(params.focus_projects)
-        
+
         sql = f"""
         WITH raw_data AS (
           SELECT
@@ -163,7 +170,7 @@ def get_hbo_summary(params: HBOCommonParams):
               SELECT 1 FROM UNNEST(query_info.performance_insights.stage_performance_change_insights)
               WHERE input_data_change.records_read_diff_percentage > 0
             ) AS has_data_increase
-          FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+          FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
           WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
             AND job_type = 'QUERY'
             AND state = 'DONE'
@@ -228,8 +235,9 @@ def get_performance_insights(params: HBOCommonParams):
     t0 = log_endpoint_start("HBO Performance Insights", params, _logger=logger)
     try:
         bq_client, target_project = init_bq_client_and_resolve_project(params)
+        region = _safe_ident(_normalize_region(params.region), "region")
         focus_clause, focus_params = build_project_filter(params.focus_projects)
-        
+
         sql = f"""
         SELECT
           project_id,
@@ -237,7 +245,7 @@ def get_performance_insights(params: HBOCommonParams):
           user_email,
           query_info.query_hashes.normalized_literals AS query_hash,
           TO_JSON_STRING(query_info.performance_insights) AS perf_insights
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
@@ -319,12 +327,13 @@ def check_hbo_status(params: HBOStatusParams):
     t0 = log_endpoint_start("HBO Status Check", params, _logger=logger)
     try:
         bq_client, target_project = init_bq_client_and_resolve_project(params)
-        
+        region = _safe_ident(_normalize_region(params.region), "region")
+
         # Step 1: Get distinct projects from jobs in the lookback period to find active projects
         # Added LIMIT 500 as per user request (item 4)
         sql_projects = f"""
-        SELECT DISTINCT project_id 
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        SELECT DISTINCT project_id
+        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         LIMIT 500
         """
@@ -342,11 +351,11 @@ def check_hbo_status(params: HBOStatusParams):
             local_client = bigquery.Client(project=prj)
             try:
                 sql_status = f"""
-                SELECT 
-                  option_value 
-                FROM 
-                  `{prj}`.`{params.region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS 
-                WHERE 
+                SELECT
+                  option_value
+                FROM
+                  `{prj}`.`{region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS
+                WHERE
                   option_name = 'default_query_optimizer_options'
                 """
                 
@@ -371,21 +380,31 @@ def check_hbo_status(params: HBOStatusParams):
         # Using ThreadPoolExecutor as this is now a sync def route
         with ThreadPoolExecutor(max_workers=10) as executor:
             results = list(executor.map(_check_project_status, projects))
-        
+
         for prj, enabled in results:
             if enabled is False:
-                ddl = f"ALTER PROJECT `{prj}` SET OPTIONS (`{params.region}.default_query_optimizer_options` = 'adaptive=on');"
+                ddl = f"ALTER PROJECT `{prj}` SET OPTIONS (`{region}.default_query_optimizer_options` = 'adaptive=on');"
                 output.append(HBOStatus(
                     project_id=prj,
                     enabled=False,
                     ddl=ddl
                 ))
-                
-        # If no disabled projects found, return the target project status (or all enabled)
+            elif enabled is None:
+                # The check itself failed (permission error, transient BigQuery
+                # error, etc.) — report this distinctly rather than silently
+                # dropping it, which previously made a failed check
+                # indistinguishable from "already enabled".
+                output.append(HBOStatus(
+                    project_id=prj,
+                    enabled=None,
+                    error="Could not determine HBO status for this project (permission or query error) — check server logs.",
+                ))
+
+        # If no disabled projects and no failed checks, return the target project status (or all enabled)
         if not output:
              # Just check target project to report something
              sql_status = f"""
-             SELECT option_value FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS 
+             SELECT option_value FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS
              WHERE option_name = 'default_query_optimizer_options'
              """
              results = _run_and_log(bq_client, sql_status, "HBO Status Fallback", params=params)
@@ -394,11 +413,11 @@ def check_hbo_status(params: HBOStatusParams):
                  if 'adaptive=off' in row.option_value:
                      enabled = False
                      break
-             
+
              output.append(HBOStatus(
                  project_id=target_project,
                  enabled=enabled,
-                 ddl=f"ALTER PROJECT `{target_project}` SET OPTIONS (`{params.region}.default_query_optimizer_options` = 'adaptive=on');" if not enabled else None
+                 ddl=f"ALTER PROJECT `{target_project}` SET OPTIONS (`{region}.default_query_optimizer_options` = 'adaptive=on');" if not enabled else None
              ))
             
         log_endpoint_end("HBO Status Check", t0, _logger=logger)

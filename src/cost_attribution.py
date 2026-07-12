@@ -3,7 +3,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
+from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
 from collections import defaultdict
 import json
 import os
@@ -76,15 +76,19 @@ class CostAttributionParams(FocusMixin):
             raise ValueError("Date parameters must be in YYYY-MM-DD format")
 
 def load_config() -> CostAttributionConfig:
+    """Load the saved config, or defaults if none has been saved yet.
+
+    A missing file is a legitimate initial state (returns defaults). A file
+    that exists but fails to parse/validate is a real problem — callers must
+    handle that explicitly rather than have it silently masked as defaults,
+    which would make every reservation appear "unconfigured" with no
+    indication that the stored config was actually lost/corrupted.
+    """
     if not os.path.exists(CONFIG_FILE):
         return CostAttributionConfig()
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            data = json.load(f)
-            return CostAttributionConfig(**data)
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return CostAttributionConfig()
+    with open(CONFIG_FILE, "r") as f:
+        data = json.load(f)
+    return CostAttributionConfig(**data)
 
 def save_config(config: CostAttributionConfig):
     try:
@@ -96,7 +100,11 @@ def save_config(config: CostAttributionConfig):
 
 @router.get("/config", response_model=CostAttributionConfig)
 def get_config():
-    return load_config()
+    try:
+        return load_config()
+    except Exception as e:
+        logger.error(f"Failed to load cost attribution config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load cost attribution configuration; check server logs.")
 
 @router.post("/config")
 def update_config(config: CostAttributionConfig):
@@ -106,22 +114,23 @@ def update_config(config: CostAttributionConfig):
 @router.post("/calculate")
 def calculate_cost_attribution(params: CostAttributionParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
-    config = load_config()
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
+        config = load_config()
         scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
         # Determine table name based on admin_project_id
         target_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
         target_project = _safe_ident(target_project_raw, "admin_project_id")
         reject_dummy_project(target_project)
+        region = _safe_ident(_normalize_region(params.region), "region")
         focus_clause, focus_params = build_project_filter(params.focus_projects)
-        
+
         if target_project:
-            table_name = f"`{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
+            table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
         else:
             # Fallback to region-scoped view as in example
-            table_name = f"`{params.region}`.INFORMATION_SCHEMA.JOBS"
+            table_name = f"`{region}`.INFORMATION_SCHEMA.JOBS"
             
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)
@@ -239,7 +248,3 @@ def calculate_cost_attribution(params: CostAttributionParams):
         
     except Exception as e:
         handle_endpoint_exception(e, "Cost attribution")
-
-@router.post("/test-hbo")
-def test_hbo():
-    return {"message": "HBO test works"}

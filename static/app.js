@@ -56,7 +56,14 @@
             const sanitized = {};
             for (const key in data) {
                 if (Object.prototype.hasOwnProperty.call(data, key)) {
-                    if (key === 'query' || key === 'sql' || key === 'gemini_optimization_advice' || key === 'ddl' || key === 'referenced_schemas') {
+                    // `ddl` is synthesized server-side from already-validated
+                    // identifiers and fixed templates (never raw user input),
+                    // and is written into <textarea>.value / clipboard as literal
+                    // text, so escaping it would corrupt copy/paste. Every other
+                    // field — including raw SQL query text and AI-generated
+                    // advice, both of which can contain attacker-influenced
+                    // content — is escaped like everything else by default.
+                    if (key === 'ddl') {
                         sanitized[key] = data[key];
                     } else {
                         sanitized[key] = sanitizeData(data[key]);
@@ -67,7 +74,23 @@
         }
         return data;
     }
+
+    // Exposed so other code paths that bypass fetch() (e.g. Snapshot import,
+    // which loads data from a file straight into localStorage) can apply the
+    // same escaping before that data ever reaches the DOM.
+    window.sanitizeData = sanitizeData;
 })();
+
+// Guards against a corrupted/malicious localStorage value (e.g. from a bad
+// Snapshot import) breaking script execution for the rest of this file.
+function safeParseJSON(raw, fallback) {
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
+        return fallback;
+    }
+}
 
 // State
 const state = {
@@ -75,13 +98,16 @@ const state = {
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
     maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
-    focusProjects: JSON.parse(localStorage.getItem('bq_focus_projects') || '[]'),
+    focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
     storageData: [],
     slotsData: [],
     slotsChart: null,
     actualProvisioningChart: null,
     jobsScatterChart: null,
-    debugMode: true
+    // Logs fetch params (project IDs, region, focus_projects) to the console
+    // when true. Keep this off by default — screenshots/screen-shares/HAR
+    // exports of the console can leak org topology otherwise.
+    debugMode: false
 };
 
 // Quota-safe localStorage helper available globally
@@ -244,6 +270,24 @@ const Snapshot = (() => {
     showNotification(`Exported ${keyCount} result set(s).`, 'success');
   }
 
+  // Data imported from a snapshot file bypasses the fetch() response
+  // sanitizer entirely (it's loaded straight from a file, never through
+  // window.fetch), so it must be re-escaped here before it ever reaches
+  // localStorage / the DOM — otherwise a crafted snapshot shared via the
+  // app's own "share with your team" export/import feature is a stored XSS
+  // vector requiring no BigQuery access at all. Falls back to the raw
+  // string for plain (non-JSON) scalar values, e.g. a bare project id.
+  function sanitizeImportedValue(raw) {
+    if (typeof raw !== 'string') return raw;
+    try {
+      const parsed = JSON.parse(raw);
+      const sanitize = window.sanitizeData || (v => v);
+      return JSON.stringify(sanitize(parsed));
+    } catch {
+      return raw;
+    }
+  }
+
   function importSnapshot(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -285,7 +329,7 @@ const Snapshot = (() => {
       let written = 0;
       keys.forEach(k => {
         if (k.startsWith(KEY_PREFIX)) {
-          const ok = safeSetLocalStorage(k, parsed.data[k]);
+          const ok = safeSetLocalStorage(k, sanitizeImportedValue(parsed.data[k]));
           if (ok) written++;
         }
       });
@@ -1886,8 +1930,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         (curr.performance_baseline_max || 0) > (prev.performance_baseline_max || 0) ? curr : prev
       );
 
-      console.log('Rendering tier cards for reservation:', mainRes.reservation_id, mainRes);
-
       setTierCardValues(
         mainRes.aggressive_baseline_p80,
         mainRes.balanced_baseline_p95,
@@ -2061,8 +2103,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         };
 
         data.forEach(row => {
-            console.log("[BIGQUERY-OPTIMIZER] Row data:", row);
-            
             const avgBytes = row.avg_bytes_processed || 0;
             const recommendation = row.recommendation || 'N/A';
             const isCandidate = recommendation !== 'N/A';
@@ -2578,7 +2618,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             .filter(proj => !proj.startsWith('res-') && !proj.includes(':') && !proj.includes('.'));
         
         state.top5Projects = sortedProjects.slice(0, 5);
-        console.log("Top 5 Spender Projects identified for HBO:", state.top5Projects);
     };
 
     if (elements.btnAnalyzeProfiler) {
@@ -2763,8 +2802,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(item => {
             const div = document.createElement('div');
             div.style.marginBottom = '0.5rem';
-            
-            if (item.enabled) {
+
+            if (item.error) {
+                div.innerHTML = `<i class="fa-solid fa-circle-question" style="color: #94a3b8; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: ${item.error}`;
+            } else if (item.enabled) {
                 div.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Enabled.`;
             } else {
                 div.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Disabled.`;
@@ -3894,13 +3935,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const renderMarkdown = (text) => {
                 if (!text) return '';
-                
-                // 1. HTML Escape the raw text first
-                let html = text
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
-                
+
+                // text is already HTML-escaped by the global sanitizeData()
+                // fetch wrapper — do not escape again here.
+                let html = text;
+
                 // 2. Extract and mask triple-backtick code blocks
                 const codeBlocks = [];
                 html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
@@ -3926,19 +3965,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 return html;
             };
 
-            const escapeHtml = (str) => {
-                if (!str) return '';
-                return str
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
-            };
-
+            // row.query is already HTML-escaped by the global sanitizeData()
+            // fetch wrapper — do not escape again here.
             const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
-            const escapedQuery = row.query ? escapeHtml(row.query) : '';
-            const escapedPreview = sqlPreview !== 'N/A' ? escapeHtml(sqlPreview) : 'N/A';
+            const escapedQuery = row.query || '';
+            const escapedPreview = sqlPreview;
 
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
@@ -4728,7 +4759,7 @@ const Dashboard = (() => {
     }
 
     container.innerHTML = items.slice(0, 5).map((item, i) => `
-      <a class="opportunity-row" href="${item.deepLink}">
+      <a class="opportunity-row" href="${safeDeepLinkHref(item.deepLink)}">
         <span class="opportunity-row__rank">${i + 1}</span>
         <span class="opportunity-row__label">${escapeHtml(item.label)}</span>
         <span class="opportunity-row__module">${escapeHtml(item.module)}</span>
@@ -4798,8 +4829,8 @@ const Dashboard = (() => {
       <div class="anomaly-row">
         <i class="fa-solid fa-triangle-exclamation anomaly-row__icon
            ${a.severity === 'critical' ? 'anomaly-row__icon--critical' : ''}"></i>
-        <span class="anomaly-row__text">${a.html /* pre-sanitized server-side */}</span>
-        <a class="anomaly-row__action" href="${a.deepLink}">
+        <span class="anomaly-row__text">${escapeHtml(a.message)}</span>
+        <a class="anomaly-row__action" href="${safeDeepLinkHref(a.deepLink)}">
           Investigate <i class="fa-solid fa-arrow-right" style="font-size:0.6rem;"></i>
         </a>
       </div>
@@ -4907,6 +4938,16 @@ const Dashboard = (() => {
       .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;').replaceAll('"', '&quot;')
       .replaceAll("'", '&#39;');
+  }
+
+  function safeDeepLinkHref(link) {
+    // deepLink values are always in-page hash-fragment navigation targets
+    // (e.g. "#capacity?reservation=..."). Reject anything else outright —
+    // an absolute/protocol-relative URL (including a javascript: URI) would
+    // execute if a compromised/malicious backend response ever supplied
+    // one, since HTML-escaping an href attribute does not neutralize a
+    // javascript: scheme.
+    return (typeof link === 'string' && link.startsWith('#')) ? link : '#';
   }
 
   return { init, load };

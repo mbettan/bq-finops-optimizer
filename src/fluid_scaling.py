@@ -162,9 +162,17 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
       FROM `{project}`.`{region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS
       WHERE option_name = 'preflight_fluid_autoscaling_reservations'
     """
+    # Tracks whether the *last completed* attempt was a failure. If every
+    # attempt raises, we genuinely don't know the configured state and must
+    # not report "no reservations configured" — that would generate a
+    # misleading "please enable fluid scaling" DDL suggestion for
+    # reservations that may already be enabled. A later successful query
+    # (even a confirmed 0-row result) supersedes an earlier failure.
+    last_error = None
     for label, sql in [("Fluid Options (EFFECTIVE)", effective_sql), ("Fluid Options (Fallback)", fallback_sql)]:
         try:
             results = list(_run_and_log(client, sql, label, params=params))
+            last_error = None
             for row in results:
                 vals = _parse_option_value(row.option_value)
                 if vals:
@@ -173,6 +181,9 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
             logger.info("Fluid option not found via %s on %s (0 rows)", label, project)
         except Exception as e:
             logger.warning("%s query failed on %s: %s", label, project, e)
+            last_error = e
+    if last_error is not None:
+        raise last_error
     return set()
 
 
@@ -229,37 +240,51 @@ def check_fluid_scaling_status(params: FluidScalingParams):
 # Estimate endpoint
 # ---------------------------------------------------------------------------
 
-_SQL_PER_SECOND_CAPACITY = """
+# Aggregates to the minute-grain inside BigQuery instead of returning every
+# per-second row to the client. A 90-day lookback would otherwise materialize
+# up to ~60x more rows per reservation (one per second) into a pandas
+# DataFrame — enough to OOM a memory-capped Cloud Run instance. Summing here
+# is mathematically identical to summing the same per-second rows client-side.
+_SQL_MINUTE_CAPACITY = """
 SELECT
   reservation_id,
   edition,
-  s.start_time AS period_start,
-  IFNULL(s.slots_assigned, 0) AS baseline_slots,
-  IFNULL(s.autoscale_current_slots, 0) AS autoscale_current_slots
-FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT,
-UNNEST(
-  IF(ARRAY_LENGTH(per_second_details) > 0,
-     ARRAY(
-       SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned
-       FROM UNNEST(per_second_details) AS d
-     ),
-     ARRAY(
-       SELECT AS STRUCT
-         ts AS start_time,
-         autoscale.current_slots AS autoscale_current_slots,
-         slots_assigned AS slots_assigned
-       FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
-         period_start,
-         TIMESTAMP_ADD(period_start, INTERVAL 59 SECOND),
-         INTERVAL 1 SECOND
-       )) AS ts
-     )
-  )
-) AS s
-WHERE period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND period_start <  CURRENT_TIMESTAMP()
-  AND reservation_id IS NOT NULL
-  AND reservation_id != ''
+  minute,
+  SUM(slots_assigned) AS baseline_slot_seconds,
+  SUM(autoscale_current_slots) AS autoscale_capacity_slot_seconds
+FROM (
+  SELECT
+    reservation_id,
+    edition,
+    TIMESTAMP_TRUNC(s.start_time, MINUTE) AS minute,
+    IFNULL(s.slots_assigned, 0) AS slots_assigned,
+    IFNULL(s.autoscale_current_slots, 0) AS autoscale_current_slots
+  FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT,
+  UNNEST(
+    IF(ARRAY_LENGTH(per_second_details) > 0,
+       ARRAY(
+         SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned
+         FROM UNNEST(per_second_details) AS d
+       ),
+       ARRAY(
+         SELECT AS STRUCT
+           ts AS start_time,
+           autoscale.current_slots AS autoscale_current_slots,
+           slots_assigned AS slots_assigned
+         FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
+           period_start,
+           TIMESTAMP_ADD(period_start, INTERVAL 59 SECOND),
+           INTERVAL 1 SECOND
+         )) AS ts
+       )
+    )
+  ) AS s
+  WHERE period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
+    AND period_start <  CURRENT_TIMESTAMP()
+    AND reservation_id IS NOT NULL
+    AND reservation_id != ''
+)
+GROUP BY reservation_id, edition, minute
 """
 
 _SQL_PER_SECOND_USAGE = """
@@ -307,12 +332,15 @@ def _rollup_to_summaries(
     if not usage_df.empty:
         usage_df["edition"] = usage_df["edition"].fillna("").astype(str)
 
+    # Capacity arrives pre-aggregated to the minute-grain from _SQL_MINUTE_CAPACITY
+    # (BigQuery sums the per-second detail server-side; see that query's comment).
     if capacity_df.empty:
-        capacity_df = pd.DataFrame(columns=["reservation_id", "edition", "period_start", "baseline_slots", "autoscale_current_slots"])
-        capacity_df["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
+        cap_per_min = pd.DataFrame(columns=["reservation_id", "edition", "minute", "baseline_slot_seconds", "autoscale_capacity_slot_seconds"])
+        cap_per_min["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
     else:
-        capacity_df["period_start"] = pd.to_datetime(capacity_df["period_start"], utc=True)
-        capacity_df["minute"] = capacity_df["period_start"].dt.floor("min")
+        capacity_df["minute"] = pd.to_datetime(capacity_df["minute"], utc=True)
+        cap_per_min = capacity_df[["reservation_id", "edition", "minute", "baseline_slot_seconds", "autoscale_capacity_slot_seconds"]].copy()
+    cap_per_min["_from_capacity"] = 1.0
 
     if usage_df.empty:
         usage_df = pd.DataFrame(columns=["reservation_id", "edition", "period_start", "used_slots"])
@@ -320,15 +348,6 @@ def _rollup_to_summaries(
     else:
         usage_df["period_start"] = pd.to_datetime(usage_df["period_start"], utc=True)
         usage_df["minute"] = usage_df["period_start"].dt.floor("min")
-
-    # Aggregate capacity to the minute-grain (Gap A)
-    cap_per_min = capacity_df.groupby(
-        ["reservation_id", "edition", "minute"], as_index=False
-    ).agg(
-        baseline_slot_seconds=("baseline_slots", "sum"),              # Sum baseline over the 60s
-        autoscale_capacity_slot_seconds=("autoscale_current_slots", "sum"),  # Sum current over the 60s
-    )
-    cap_per_min["_from_capacity"] = 1.0
 
     # Aggregate usage to the minute-grain (Gap A)
     usage_per_min = usage_df.groupby(
@@ -530,7 +549,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         region = _safe_ident(_normalize_region(params.region), "region")
 
         focus_clause, focus_params = build_project_filter(params.focus_projects)
-        capacity_sql = _render_sql(_SQL_PER_SECOND_CAPACITY, admin_project=admin_project, region=region)
+        capacity_sql = _render_sql(_SQL_MINUTE_CAPACITY, admin_project=admin_project, region=region)
         usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region, focus_clause=focus_clause)
 
         capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
@@ -540,9 +559,9 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
             "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)
         )
 
-        logger.info("capacity period_start dtype: %s, sample: %r",
-                    capacity_df["period_start"].dtype if not capacity_df.empty else "empty",
-                    capacity_df["period_start"].iloc[0] if not capacity_df.empty else None)
+        logger.info("capacity minute dtype: %s, sample: %r",
+                    capacity_df["minute"].dtype if not capacity_df.empty else "empty",
+                    capacity_df["minute"].iloc[0] if not capacity_df.empty else None)
         logger.info("usage period_start dtype: %s, sample: %r",
                     usage_df["period_start"].dtype if not usage_df.empty else "empty",
                     usage_df["period_start"].iloc[0] if not usage_df.empty else None)

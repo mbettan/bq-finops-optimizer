@@ -6,21 +6,54 @@
     <title>BQ FinOps optimizer</title>
     <meta name="description" content="Optimize BigQuery storage and compute costs with actionable insights and glassmorphic UI.">
     <link rel="icon" type="image/png" href="./static/favicon.png">
-    
+
+    <!-- Content-Security-Policy: restricts script/style/font/image origins to
+         this app plus the specific CDNs used below. Note: <meta> delivery
+         cannot enforce frame-ancestors/report-uri — those require the HTTP
+         header form if added later. 'unsafe-inline' is required in style-src
+         because the app renders many inline style="..." attributes; it is
+         deliberately NOT present in script-src, which is the directive that
+         actually blocks <script>/onerror=/javascript: XSS payloads. -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.datatables.net;
+        font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:;
+        img-src 'self' data:;
+        connect-src 'self';
+        object-src 'none';
+        base-uri 'self';
+    ">
+
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- FontAwesome for icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
+
+    <!-- FontAwesome for icons (SRI hash verified against cdnjs's own published
+         integrity metadata for this exact library+version). -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw=="
+          crossorigin="anonymous" referrerpolicy="no-referrer">
+
+    <!-- Chart.js: pinned to an explicit version (was unpinned "@latest", which
+         can silently change served code with no warning — a supply-chain
+         risk independent of SRI). No integrity hash: this exact file's hash
+         could not be verified against jsdelivr's registry from this
+         environment; add one when that can be confirmed. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+
     <!-- DataTables.net (Vanilla JS version or standard jQuery if needed, let's use standard with lightweight jQuery for DataTables as per PRD recommendation if required, or simple tables if preferred. PRD says DataTables.net. Let's use standard table with sorting if possible, or DataTables CDN) -->
+    <!-- No integrity hash: cdn.datatables.net does not publish machine-readable
+         SRI metadata for this version, and a wrong hash would hard-fail the
+         entire table UI, so none is guessed here. -->
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <!-- jQuery: served from cdnjs (rather than code.jquery.com) specifically
+         so the SRI hash below — sourced from cdnjs's own published integrity
+         metadata for this exact library+version — is guaranteed to match. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.0/jquery.min.js"
+            integrity="sha512-3gJwYpMe3QewGELv8k/BX9vcqhryRdzRMxVfq6ngyWXwo03GFEzjsUm8Q7RZcHPHksttq7/GFoxjCVUjkjvPdw=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
     <link rel="stylesheet" href="static/style.css">

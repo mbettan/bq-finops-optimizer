@@ -144,9 +144,17 @@ pip install -r requirements-dev.txt   # pytest, pytest-cov
 ```
 
 ### 2. Run the Server
+This service has no application-level authentication — every endpoint can
+return org-wide BigQuery job text, user emails, and project identifiers. It
+refuses to start unless `AUTH_ENFORCED_UPSTREAM=true` is set, as a reminder
+that it **must** run behind Cloud Run IAM (`--no-allow-unauthenticated`) or
+Identity-Aware Proxy (IAP) in any shared/deployed environment. For local,
+single-user development behind your own machine's network boundary:
 ```bash
-uvicorn src.main:app --reload --port 8080
+AUTH_ENFORCED_UPSTREAM=true uvicorn src.main:app --reload --port 8080
 ```
+(or add `AUTH_ENFORCED_UPSTREAM=true` to your `.env` file, which is loaded automatically).
+
 Open your browser to [http://127.0.0.1:8080](http://127.0.0.1:8080) to view the interface.
 
 ### 3. Configure Settings

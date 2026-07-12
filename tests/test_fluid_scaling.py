@@ -39,13 +39,17 @@ def _make_capacity(
     autoscale_current: float,
     edition: str = "enterprise",
 ) -> pd.DataFrame:
-    """Build a per-second capacity DataFrame for one reservation."""
+    """Build a minute-grain capacity DataFrame for one reservation, matching
+    the shape _SQL_MINUTE_CAPACITY returns — already summed over `seconds`
+    seconds within the minute bucket, mirroring BigQuery's server-side SUM
+    (see fluid_scaling._SQL_MINUTE_CAPACITY)."""
+    minute = pd.Timestamp(start, tz="UTC").floor("min")
     return pd.DataFrame({
-        "reservation_id": [reservation_id] * seconds,
-        "edition": [edition] * seconds,
-        "period_start": pd.date_range(start, periods=seconds, freq="s", tz="UTC"),
-        "baseline_slots": [baseline] * seconds,
-        "autoscale_current_slots": [autoscale_current] * seconds,
+        "reservation_id": [reservation_id],
+        "edition": [edition],
+        "minute": [minute],
+        "baseline_slot_seconds": [baseline * seconds],
+        "autoscale_capacity_slot_seconds": [autoscale_current * seconds],
     })
 
 
@@ -66,7 +70,7 @@ def _make_usage(
 
 
 def _empty_capacity() -> pd.DataFrame:
-    return pd.DataFrame(columns=["reservation_id", "edition", "period_start", "baseline_slots", "autoscale_current_slots"])
+    return pd.DataFrame(columns=["reservation_id", "edition", "minute", "baseline_slot_seconds", "autoscale_capacity_slot_seconds"])
 
 
 def _empty_usage() -> pd.DataFrame:
@@ -78,7 +82,10 @@ def _empty_usage() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 class TestRollupToSummaries:
-    """End-to-end validation of the per-second → rollup to summaries."""
+    """End-to-end validation of the minute-grain capacity → rollup to summaries.
+    Capacity fixtures represent BigQuery's pre-aggregated per-minute output
+    (see _SQL_MINUTE_CAPACITY); usage fixtures stay per-second/period_start
+    since usage aggregation still happens inside _rollup_to_summaries."""
 
     def test_empty_inputs_return_empty(self):
         result = _rollup_to_summaries(_empty_capacity(), _empty_usage())
