@@ -2,6 +2,53 @@
 
 ---
 
+## v1.1.5 — 2026-07-11
+
+Data correctness and defense-in-depth release addressing **8 net-new findings** from a 5th independent code review (re-verified against live v1.1.4 source).
+
+### 🐛 Bug Fixes
+
+#### fix(mv-auditor): join key used job's project_id instead of destination_table.project_id
+*   **Root Cause:** The MV jobs query selected `project_id` (the job's execution project) but the MV inventory was keyed by `(project_id, dataset, table)`. A refresh job running in project A against an MV in project B would fail to match — silently undercounting that MV's refresh costs.
+*   **Fix:** Changed to `destination_table.project_id AS project_id` in the SELECT clause.
+*   **Impact:** MV cost attribution is now correct for cross-project refresh patterns.
+
+#### fix(bi-engine): false savings computed for Editions workloads
+*   **Root Cause:** The BI Engine estimator computed `(bytes_processed - bytes_billed) × $6.25/TB` for ALL jobs without filtering for `bi_engine_mode` or `reservation_id`. For reservation-backed jobs, `total_bytes_billed = 0`, causing the formula to attribute the entire processed volume as "BI Engine savings" — producing dramatic but completely false numbers.
+*   **Fix:** Added `AND reservation_id IS NULL` (on-demand only) and `AND bi_engine_statistics.bi_engine_mode IN ('FULL', 'PARTIAL', 'DISABLED')` filters to restrict to relevant jobs.
+*   **Impact:** BI Engine savings estimates are now only computed for on-demand jobs where the metric is meaningful.
+
+#### fix(cost-attribution): NULL statement_type rows silently excluded, inflating waste
+*   **Root Cause:** `AND statement_type != 'SCRIPT'` filters out rows where `statement_type IS NULL` (because `NULL != 'SCRIPT'` evaluates to NULL → excluded). Every other endpoint uses the correct `(statement_type IS NULL OR statement_type <> 'SCRIPT')` pattern. The silent exclusion undercounted direct usage, inflating `waste_cost = max(0, bill − direct)`.
+*   **Fix:** Aligned predicate to `AND (statement_type IS NULL OR statement_type <> 'SCRIPT')`.
+
+#### fix(dml-auditor): in-flight jobs contributed partial slot_ms to "wasted" hours
+*   **Root Cause:** DML abuse query had no `state = 'DONE'` filter — running jobs with incomplete `total_slot_ms` inflated the "wasted_slot_hours" metric.
+*   **Fix:** Added `AND state = 'DONE'`.
+
+#### fix(skew): SCRIPT parent+child double-counting stages
+*   **Root Cause:** Data skew analysis unnested `job_stages` without filtering out SCRIPT parents or children. A scripted query's parent and each child both contributed stages, double-counting skew attribution.
+*   **Fix:** Added `AND parent_job_id IS NULL` to filter to top-level jobs only.
+
+### 🛡️ Hardening
+
+#### hardening(ai-doctor): BQ-sourced project IDs now validated before SQL interpolation
+*   **Root Cause:** In the AI Doctor and Linter endpoints, `project_id` values from BQ query results were interpolated directly into `INFORMATION_SCHEMA.JOBS_BY_PROJECT` paths without `_safe_ident()` validation. While BQ project IDs are constrained by GCP, this violated the codebase's defense-in-depth convention.
+*   **Fix:** Added `_safe_ident(pid, "ai_doctor_project_id")` and `_safe_ident(p, "linter_project_id")`.
+
+#### hardening(ai-doctor): removed dead SQL filter clause
+*   `AND (statement_type IS NULL OR statement_type <> 'SCRIPT')` was dead code after `AND statement_type = 'SELECT'`. Removed for clarity.
+
+#### hardening(hbo-summary): population filter aligned with /analyze + time base labeled
+*   **Root Cause:** HBO summary SQL omitted the `normalized_literals IS NOT NULL` filter that `/analyze` applies, causing population mismatch between the summary KPIs and the detail table. Also, `total_optimized_jobs` was a raw window count while saved hours/USD were monthly-projected — mixed time bases in one response.
+*   **Fix:** Added `AND query_info.query_hashes.normalized_literals IS NOT NULL` to summary SQL. Added `time_base: str = "monthly_projected"` field to `HBOSummary` model.
+
+#### hardening(fluid-status): catch-all exception handler added
+*   **Root Cause:** `check_fluid_scaling_status` had typed `except` blocks for `Forbidden`/`NotFound`/`GoogleAPIError` but no catch-all — non-Google errors (KeyError, TypeError) escaped as raw 500s without request-scoped logging.
+*   **Fix:** Added `except Exception` with `logger.exception()` and structured HTTP 500.
+
+---
+
 ## v1.1.4 — 2026-07-11
 
 Data correctness and deployment hardening release addressing **14 findings** from a 4th independent code review (Cloud SWE / DB Architect / AppSec perspective).

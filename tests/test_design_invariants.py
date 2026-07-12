@@ -64,13 +64,17 @@ def _make_capacity_df(
     autoscale_current: float,
     edition: str = "enterprise",
 ) -> pd.DataFrame:
-    """Build a per-second capacity DataFrame for one reservation."""
+    """Build a minute-grain capacity DataFrame for one reservation, matching
+    the shape _SQL_MINUTE_CAPACITY returns — already summed over `seconds`
+    seconds within the minute bucket, mirroring BigQuery's server-side SUM
+    (see fluid_scaling._SQL_MINUTE_CAPACITY)."""
+    minute = pd.Timestamp(start, tz="UTC").floor("min")
     return pd.DataFrame({
-        "reservation_id": [reservation_id] * seconds,
-        "edition": [edition] * seconds,
-        "period_start": pd.date_range(start, periods=seconds, freq="s", tz="UTC"),
-        "baseline_slots": [baseline] * seconds,
-        "autoscale_current_slots": [autoscale_current] * seconds,
+        "reservation_id": [reservation_id],
+        "edition": [edition],
+        "minute": [minute],
+        "baseline_slot_seconds": [baseline * seconds],
+        "autoscale_capacity_slot_seconds": [autoscale_current * seconds],
     })
 
 
@@ -305,56 +309,6 @@ class TestFabricatedCapacityEquivalence:
             "Constant capacity: per-second and fabricated must produce identical legacy slot-seconds"
         assert sum_per_sec[0].fluid_slot_seconds == sum_fabricated[0].fluid_slot_seconds, \
             "Constant capacity: per-second and fabricated must produce identical fluid slot-seconds"
-
-    def test_varying_capacity_diverges_from_fabricated(self):
-        """
-        HYPOTHETICAL: If autoscale capacity varied within a minute but
-        per_second_details were empty, the fabricated path would diverge.
-
-        BigQuery docs say this CANNOT happen — if capacity varies, per_second_details
-        is populated. This test documents the expected divergence to show WHY
-        the fabrication assumption matters.
-        """
-        # "Real" per-second data: 400 slots for 5 seconds, then 0 for 55 seconds
-        burst_data = {
-            "reservation_id": ["res-A"] * 60,
-            "edition": ["enterprise"] * 60,
-            "period_start": pd.date_range("2024-01-01T00:00:00", periods=60, freq="s", tz="UTC"),
-            "baseline_slots": [100.0] * 60,
-            "autoscale_current_slots": [400.0] * 5 + [0.0] * 55,
-        }
-        real_per_second = pd.DataFrame(burst_data)
-
-        # "Fabricated" path: minute-level average would be (400*5 + 0*55)/60 ≈ 33.3
-        # But fabrication uses the outer row's value, not average. The point is:
-        # this scenario can't happen with empty per_second_details.
-        avg_minute_value = (400 * 5 + 0 * 55) / 60
-        fabricated = _make_capacity_df("res-A", "2024-01-01T00:00:00", 60,
-                                        baseline=100, autoscale_current=avg_minute_value)
-
-        usage = _make_usage_df("res-A", "2024-01-01T00:00:00", 60, used=250)
-
-        real_result = _rollup_to_summaries(real_per_second, usage)
-        fabricated_result = _rollup_to_summaries(fabricated, usage)
-
-        # These ARE the same because the sum works out:
-        # Real: sum of [400]*5 + [0]*55 = 2000 slot-seconds
-        # Fabricated: sum of [33.3]*60 = ~2000 slot-seconds
-        # The totals match because sum is associative — but individual second values differ.
-        assert real_result[0].legacy_slot_seconds == pytest.approx(
-            fabricated_result[0].legacy_slot_seconds, rel=1e-3
-        ), "Even with varying data, the SUM (legacy) is equivalent when the average is preserved"
-
-        # But fluid_slot_seconds will differ because the per-second clamp
-        # min(used-baseline, autoscale) operates on different autoscale values per second:
-        # Real:       min(150, 400)*5 + min(150, 0)*55 = 150*5 + 0*55 = 750
-        # Fabricated: min(150, 33.3)*60 = 33.3*60 = 2000
-        # These DIVERGE — but this scenario can't actually occur in BigQuery.
-        # per_second_details would be populated for a burst like this.
-        if real_result[0].fluid_slot_seconds != pytest.approx(
-            fabricated_result[0].fluid_slot_seconds, rel=0.1
-        ):
-            pass  # Expected divergence — documents why the assumption matters
 
     def test_zero_autoscale_fabricated_produces_zero_legacy(self):
         """

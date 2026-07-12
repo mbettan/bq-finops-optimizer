@@ -168,7 +168,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
               creation_time >= TIMESTAMP(@start_date)
               AND creation_time < TIMESTAMP(@end_date)
               AND job_type = 'QUERY'
-              AND statement_type != 'SCRIPT'
+              AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
               AND reservation_id IS NOT NULL
               {focus_clause}
             GROUP BY

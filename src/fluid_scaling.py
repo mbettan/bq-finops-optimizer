@@ -233,6 +233,11 @@ def check_fluid_scaling_status(params: FluidScalingParams):
     except gax_exc.GoogleAPIError:
         logger.exception("BigQuery error checking fluid scaling status")
         raise HTTPException(500, "Query failed; check server logs")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unexpected error checking fluid scaling status")
+        raise HTTPException(500, "Unexpected error; check server logs")
 
 
 # ---------------------------------------------------------------------------

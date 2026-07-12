@@ -33,7 +33,7 @@ import time
 import uuid
 
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -1095,6 +1095,7 @@ def analyze_dml_abuse(params: DMLAbuseParams):
           `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE
           statement_type = 'INSERT'
+          AND state = 'DONE'
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           {focus_clause}
         GROUP BY
@@ -1181,7 +1182,7 @@ def analyze_mv_costs(params: DMLAbuseParams):
         # 2. Get all query jobs with destination tables
         jobs_sql = f"""
         SELECT
-          project_id,
+          destination_table.project_id AS project_id,
           destination_table.dataset_id AS dataset_id,
           destination_table.table_id AS table_id,
           total_slot_ms
@@ -1271,13 +1272,14 @@ def analyze_query_linter(params: AntiPatternParams):
         
         # 2. Loop through projects and lint queries
         for p in projects:
+            safe_p = _safe_ident(p, "linter_project_id")
             sql = f"""
             SELECT
               job_id,
               user_email,
               query,
               total_bytes_billed / POW(1024, 3) AS billed_gb
-            FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+            FROM `{safe_p}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
               AND job_type = 'QUERY'
               AND state = 'DONE'
@@ -1344,6 +1346,7 @@ def analyze_data_skew(params: AntiPatternParams):
             creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
             AND job_type = 'QUERY'
             AND state = 'DONE'
+            AND parent_job_id IS NULL
             {focus_clause}
         )
         SELECT
@@ -1524,7 +1527,6 @@ def analyze_ai_query(params: AIParams):
         WHERE
           job_type = 'QUERY'
           AND statement_type = 'SELECT'
-          AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           {focus_clause}
         ORDER BY
@@ -1545,11 +1547,12 @@ def analyze_ai_query(params: AIParams):
         for pid, jobs in project_to_jobs.items():
             pid = _safe_ident(pid, "project_id")
             job_ids = [j.job_id for j in jobs]
+            safe_pid = _safe_ident(pid, "ai_doctor_project_id")
             sql = f"""
-            SELECT job_id, query
-            FROM `{pid}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+            SELECT job_id, query 
+            FROM `{safe_pid}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-              AND job_id IN UNNEST(@job_ids)
+            """
             try:
                 q_results = run_query_and_log(
                     scoped_client, sql, f"Fetch queries for {pid}", params=params,
@@ -1834,6 +1837,8 @@ def analyze_bi_engine(params: BIParams):
         WHERE 
           job_type = 'QUERY'
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+          AND reservation_id IS NULL
+          AND bi_engine_statistics.bi_engine_mode IN ('FULL', 'PARTIAL', 'DISABLED')
           {focus_clause}
         ORDER BY total_bytes_processed DESC
         LIMIT {params.limit}

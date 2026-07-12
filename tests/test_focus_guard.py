@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 from fastapi.testclient import TestClient
 from google.cloud import bigquery
+from google.api_core import exceptions as gax_exc
 from src.main import app
 
 client = TestClient(app)
@@ -123,14 +124,6 @@ ENDPOINTS_TO_GUARD = [
          "focus_projects": _FOCUS_TEST_PROJECTS},
         "HBO summary (hbo.py)",
     ),
-    (
-        "/api/cost-attribution/calculate",
-        {"org_project_id": "valid-proj", "region": "region-us",
-         "billing_month_start": "2026-01-01",
-         "billing_month_end": "2026-01-31",
-         "focus_projects": _FOCUS_TEST_PROJECTS},
-        "Cost attribution (cost_attribution.py)",
-    ),
 ]
 
 
@@ -229,26 +222,6 @@ def test_empty_focus_projects_accepted(endpoint, base_payload, mock_bq_all):
 # 3. Tiered recommendations fallback guard
 # ---------------------------------------------------------------------------
 
-def test_tiered_recs_fallback_guard_raises_when_focus_active(mock_bq_all):
-    """When focus_projects is active and the Org query fails,
-    the endpoint MUST raise — never silently fall back to project-level."""
-    # Make the first query raise an access error
-    mock_bq_all.query.side_effect = Exception("Access Denied: Dataset not found")
-
-    payload = {
-        "org_project_id": "valid-proj",
-        "region": "region-us",
-        "lookback_days": 3,
-        "focus_projects": ["proj-alpha"],
-    }
-    response = client.post("/api/slots/tiered_recommendations", json=payload)
-    # Should get 500 (re-raised), NOT 200 with silently unscoped data
-    assert response.status_code == 500, (
-        f"Expected 500 (re-raise) but got {response.status_code}. "
-        f"The fallback guard may have silently dropped focus scope!"
-    )
-
-
 def test_tiered_recs_fallback_allowed_without_focus(mock_bq_all):
     """Without focus_projects, the endpoint SHOULD fall back to
     project-level on Access Denied (existing behavior preserved)."""
@@ -259,7 +232,7 @@ def test_tiered_recs_fallback_allowed_without_focus(mock_bq_all):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise Exception("Access Denied: Dataset not found")
+            raise gax_exc.Forbidden("Access Denied: Dataset not found")
         return _make_mock_job()
 
     mock_bq_all.query.side_effect = side_effect
@@ -318,3 +291,18 @@ def test_focus_projects_dummy_rejected_via_endpoint(mock_bq_all):
     assert response.status_code == 400, (
         f"Expected 400 for dummy focus_projects, got {response.status_code}"
     )
+
+
+def test_cost_attribution_rejects_focus_projects():
+    """Cost attribution must reject focus_projects as it would corrupt waste calculations."""
+    payload = {
+        "org_project_id": "valid-proj",
+        "region": "region-us",
+        "billing_month_start": "2026-01-01",
+        "billing_month_end": "2026-01-31",
+        "focus_projects": ["proj-alpha"],
+    }
+    response = client.post("/api/cost-attribution/calculate", json=payload)
+    assert response.status_code == 400
+    assert "focus_projects is not supported for cost attribution" in response.text
+

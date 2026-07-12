@@ -10,6 +10,7 @@ def test_ai_doctor_schema_aware_analysis():
     # It contains the query details along with our new DDL count metrics and LLM advice.
     mock_ai_row = MagicMock(
         job_id="expensive_select_job_123",
+        project_id="acme-sandbox",
         user_email="data_engineer@acme.com",
         total_slot_ms=125000,
         query="SELECT * FROM `acme-sandbox.dataset.table` LIMIT 10",

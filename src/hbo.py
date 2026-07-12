@@ -71,6 +71,7 @@ class HBOSummary(BaseModel):
     total_saved_slot_hours: float
     total_estimated_savings_usd: float
     avg_percent_time_saved: float
+    time_base: str = "monthly_projected"  # slot_hours and USD are monthly-projected; job count is raw lookback window
 
 class HBOStatus(BaseModel):
     project_id: str
@@ -175,6 +176,7 @@ def get_hbo_summary(params: HBOCommonParams):
             AND job_type = 'QUERY'
             AND state = 'DONE'
             AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
+            AND query_info.query_hashes.normalized_literals IS NOT NULL
             {focus_clause}
         )
         SELECT
