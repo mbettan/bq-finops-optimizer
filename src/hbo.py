@@ -381,8 +381,13 @@ def check_hbo_status(params: HBOStatusParams):
 
         # Step 2: Check options for each active project concurrently
         # Using ThreadPoolExecutor as this is now a sync def route
+        import contextvars
+        ctx = contextvars.copy_context()
+        def check_with_ctx(prj):
+            return ctx.run(_check_project_status, prj)
+            
         with ThreadPoolExecutor(max_workers=10) as executor:
-            results = list(executor.map(_check_project_status, projects))
+            results = list(executor.map(check_with_ctx, projects))
 
         for prj, enabled in results:
             if enabled is False:

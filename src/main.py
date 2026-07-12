@@ -1599,9 +1599,14 @@ def analyze_ai_query(params: AIParams):
                 return table_ref, None
                 
         # Concurrently fetch schemas using a ThreadPoolExecutor
+        import contextvars
+        ctx = contextvars.copy_context()
+        def fetch_with_ctx(table_ref):
+            return ctx.run(fetch_table_schema, table_ref)
+
         logger.info(f"Concurrently fetching schemas for {len(all_tables)} unique referenced tables")
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_results = executor.map(fetch_table_schema, all_tables)
+            future_results = executor.map(fetch_with_ctx, all_tables)
             for table_ref, table_obj in future_results:
                 schema_cache[table_ref] = table_obj
                 
@@ -2377,6 +2382,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     # NOTE: focus_projects intentionally NOT applied to capacity planning.
     focus_clause, focus_params = "", []
+    focus_params.append(bigquery.ScalarQueryParameter("tz", "STRING", params.timezone))
     resolution = params.resolution
     duration_ms = 60000
     if resolution == "HOUR":
@@ -2401,9 +2407,10 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
       GROUP BY period_start
     )
     SELECT
-      TIMESTAMP_TRUNC(period_start, {resolution}) AS period_min,
+      TIMESTAMP_TRUNC(period_start, {resolution}, @tz) AS period_min,
       SUM(CAST(total_slot_ms AS NUMERIC)) / {duration_ms} AS time_average,
       MAX(total_slot_ms / 1000) AS max_slots,
+      APPROX_QUANTILES(total_slot_ms / 1000, 100)[OFFSET(50)] AS p50_slots,
       APPROX_QUANTILES(total_slot_ms / 1000, 100)[OFFSET(90)] AS p90_slots,
       APPROX_QUANTILES(total_slot_ms / 1000, 100)[OFFSET(99)] AS p99_slots,
       SUM(total_bytes_billed) / COUNT(*) AS bytes_billed_avg,
@@ -2432,7 +2439,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
             processed_results.append({
                 "timestamp": ts_tz.isoformat(),
                 "max_slots": round(row['max_slots'] or 0, 2),
-                "median_slots": 0,
+                "median_slots": round(row['p50_slots'] or 0, 3),
                 "p90_slots": round(row['p90_slots'] or 0, 3),
                 "p99_slots": round(row['p99_slots'] or 0, 3),
                 "time_average": round(row['time_average'] or 0, 4),
@@ -2529,6 +2536,7 @@ def simulate_slots(params: SlotSimulationParams):
             used_under_baseline = np.minimum(avg_slots_array, baseline)
             used_baseline_hours_raw = float(used_under_baseline.sum()) / 60.0
             idle_slot_hours_raw = max(0, max_baseline_hours_raw - used_baseline_hours_raw)
+            idle_slot_hours_mo = idle_slot_hours_raw * monthly_multiplier
             
             utilization_pct = (used_baseline_hours_raw / max_baseline_hours_raw) if max_baseline_hours_raw > 0 else 0.0
             
@@ -2544,6 +2552,7 @@ def simulate_slots(params: SlotSimulationParams):
                 "minutes": bucket_mins,
                 "slots": baseline,
                 "utilization_pct": round(utilization_pct * 100, 2),
+                "idle_slot_hours": round(idle_slot_hours_mo, 0),
                 "autoscale_slot_hours": round(autoscale_slot_hours_mo, 0),
                 "autoscale_slot_months": round(autoscale_slot_months, 0),
                 "cost_autoscale_payg": round(autoscale_cost_payg, 2),
@@ -3178,7 +3187,7 @@ ORDER BY 1 ASC
         timeline_data = []
         for row in timeline_results:
             timeline_data.append({
-                "ts": row['change_timestamp'].isoformat() if hasattr(row['change_timestamp'], 'isoformat') else str(row['change_timestamp']),
+                "ts": row['change_timestamp'].astimezone(tz).isoformat() if hasattr(row['change_timestamp'], 'isoformat') else str(row['change_timestamp']),
                 "current_slots": row['current_slots'],
                 "baseline_slots": row['baseline_slots'],
                 "capacity_slots": row['capacity_slots']
