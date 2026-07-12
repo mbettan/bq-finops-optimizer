@@ -679,20 +679,20 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
         time_travel_physical_gib_rescaled = time_travel_physical_gib * params.time_travel_rescale
 
         # Derived metrics        # Formula: Physical Cost = (Active + Failsafe)*rate + (LongTerm)*rate
-        # Since active_physical ALREADY includes TT, we subtract it out first so we can 
-        # add back our RESCALED TT cost based on user parameters.
-        active_no_tt_physical_gib = max(0, active_physical_gib - time_travel_physical_gib)
+        # Since active_physical ALREADY includes TT AND Failsafe, we subtract them out first so we can 
+        # add back our RESCALED TT cost based on user parameters, and treat failsafe distinctly.
+        active_core_physical_gib = max(0, active_physical_gib - time_travel_physical_gib - fail_safe_physical_gib)
         
         forecast_logical_active_cost = active_logical_gib * params.active_logical_price
         forecast_logical_long_term_cost = long_term_logical_gib * params.long_term_logical_price
         forecast_logical = forecast_logical_active_cost + forecast_logical_long_term_cost
         
-        forecast_active_no_tt_physical_cost = active_no_tt_physical_gib * params.active_physical_price
+        forecast_active_core_physical_cost = active_core_physical_gib * params.active_physical_price
         forecast_travel_physical_cost = time_travel_physical_gib_rescaled * params.active_physical_price
         forecast_failsafe_physical_cost = fail_safe_physical_gib * params.active_physical_price
         forecast_long_term_physical_cost = long_term_physical_gib * params.long_term_physical_price
         
-        forecast_physical = (forecast_active_no_tt_physical_cost + 
+        forecast_physical = (forecast_active_core_physical_cost + 
                              forecast_travel_physical_cost + 
                              forecast_failsafe_physical_cost + 
                              forecast_long_term_physical_cost)
@@ -700,10 +700,10 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
         # Build total physical volume from the SAME components used in forecast_physical,
         # so the blended pricing ratio (cost / volume) is internally consistent.
         #
-        # active_physical_bytes INCLUDES raw time travel, so we strip it out and add back
+        # active_physical_bytes INCLUDES raw time travel AND failsafe, so we strip them out and add back
         # the RESCALED time travel — mirroring the forecast logic above exactly.
         total_physical_gib = (
-            active_no_tt_physical_gib              # active minus raw TT
+            active_core_physical_gib              # active minus raw TT and failsafe
             + time_travel_physical_gib_rescaled   # rescaled TT (matches forecast)
             + fail_safe_physical_gib
             + long_term_physical_gib
@@ -1890,6 +1890,9 @@ def analyze_governance(params: GovernanceParams):
     t0 = log_endpoint_start("Governance Auditor", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
     focus_clause, focus_params = build_project_filter(params.focus_projects)
+    exp_focus_clause, exp_focus_params = build_project_filter(
+        params.focus_projects, column="catalog_name", table_alias="s"
+    )
     try:
         
         # 1. Audit Dataset Expiration
@@ -1904,9 +1907,10 @@ def analyze_governance(params: GovernanceParams):
           AND s.schema_name = o.schema_name
           AND o.option_name = 'default_table_expiration_days'
         WHERE o.option_name IS NULL
+          {exp_focus_clause}
         """
 
-        exp_results = run_query_and_log(scoped_client, exp_sql, "Expiration Audit", params=params)
+        exp_results = run_query_and_log(scoped_client, exp_sql, "Expiration Audit", params=params, query_parameters=exp_focus_params)
         
         expiration_issues = []
         for row in exp_results:
@@ -2157,7 +2161,7 @@ def analyze_slots(params: SlotsParams):
             d = dict(row)
             for key in ['recommended_baseline', 'recommended_max_p90', 'recommended_max_p99', 'recommended_max_peak']:
                 if key in d and d[key] is not None:
-                    d[key] = int(round(d[key] / 50.0) * 50)
+                    d[key] = int(math.ceil(d[key] / 50.0) * 50)
             recommendations_data.append(d)
         
         current_reservations_data = []

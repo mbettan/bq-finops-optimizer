@@ -104,7 +104,7 @@ def validate_focus_projects(projects: Optional[List[str]]) -> Optional[List[str]
 
 
 # Column allow-list — never interpolate caller-provided column names freely
-_ALLOWED_FILTER_COLUMNS = {"project_id", "project_name"}
+_ALLOWED_FILTER_COLUMNS = {"project_id", "project_name", "catalog_name"}
 
 
 def build_project_filter(

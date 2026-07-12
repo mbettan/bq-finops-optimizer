@@ -213,7 +213,8 @@ def check_fluid_scaling_status(params: FluidScalingParams):
             ddl = None
             if not is_enabled:
                 new_list = sorted(list(enabled_norm | {short}))
-                list_str = ", ".join(f'"{r}"' for r in new_list)
+                new_list_safe = [_safe_ident(r, "reservation_name") for r in new_list]
+                list_str = ", ".join(f'"{r}"' for r in new_list_safe)
                 ddl = (
                     f"ALTER PROJECT `{admin_project}`\n"
                     f"SET OPTIONS (\n"
@@ -520,7 +521,8 @@ def _build_config_status(
         is_fully_enabled = False
         # Union with already-enabled names so the DDL doesn't drop existing entries.
         new_list = sorted(list(enabled_norm | actionable_res_names))
-        list_str = ", ".join(f'"{r}"' for r in new_list)
+        new_list_safe = [_safe_ident(r, "reservation_name") for r in new_list]
+        list_str = ", ".join(f'"{r}"' for r in new_list_safe)
         ddl = (
             f"ALTER PROJECT `{admin_project}`\n"
             f"SET OPTIONS (\n"
@@ -547,7 +549,11 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         reject_dummy_project(admin_project)
         region = _safe_ident(_normalize_region(params.region), "region")
 
-        focus_clause, focus_params = build_project_filter(params.focus_projects)
+        if params.focus_projects:
+            raise HTTPException(400, "focus_projects is not supported for fluid scaling estimation; capacity planning is inherently org-wide.")
+        
+        # focus_projects intentionally NOT applied to capacity planning (see slots/*).
+        focus_clause, focus_params = "", []
         capacity_sql = _render_sql(_SQL_MINUTE_CAPACITY, admin_project=admin_project, region=region)
         usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region, focus_clause=focus_clause)
 

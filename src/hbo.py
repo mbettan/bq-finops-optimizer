@@ -343,8 +343,9 @@ def check_hbo_status(params: HBOStatusParams):
         projects_results = _run_and_log(bq_client, sql_projects, "HBO Active Projects", params=params)
         
         projects = [row.project_id for row in projects_results]
+        projects = [_safe_ident(p, "hbo_active_project_id") for p in projects if p]
         if not projects:
-            projects = [target_project] # Fallback to target project
+            projects = [_safe_ident(target_project, "hbo_target_project")] # Fallback to target project
             
         output = []
         
