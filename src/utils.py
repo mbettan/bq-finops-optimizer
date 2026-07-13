@@ -5,7 +5,7 @@ import contextvars
 from typing import Optional, List
 from fastapi import HTTPException
 from google.cloud import bigquery
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,26 @@ class FocusMixin(BaseModel):
     """Mixin providing the optional focus_projects field.
     Inherit alongside existing param classes to add project-scoping support."""
     focus_projects: Optional[List[str]] = None
+
+
+class OrgParams(BaseModel):
+    """Base class for org-only endpoints that do NOT support focus_projects.
+    extra='forbid' causes Pydantic to auto-reject any unknown fields (including
+    focus_projects) with a 422, making the contract self-enforcing via the
+    type system rather than imperative checks."""
+    model_config = ConfigDict(extra="forbid")
+
+    org_project_id: Optional[str] = None
+    region: str = "region-us"
+    max_bytes_billed_gb: Optional[int] = None
+
+
+class AppliedScope(BaseModel):
+    """Attached to analysis responses to make scope self-describing.
+    Ensures exported/screenshotted numbers carry their scope context."""
+    mode: str  # "focused" | "org"
+    projects: Optional[List[str]] = None  # present when mode == "focused"
+    total_org_projects: Optional[int] = None  # for Tier 1.5 context
 
 
 def validate_focus_projects(projects: Optional[List[str]]) -> Optional[List[str]]:

@@ -3,7 +3,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
+from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
 from collections import defaultdict
 import json
 import os
@@ -126,14 +126,6 @@ def update_config(config: CostAttributionConfig):
 @router.post("/calculate")
 def calculate_cost_attribution(params: CostAttributionParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
-    # Cost attribution requires full-reservation usage to compute waste correctly.
-    # focus_projects would shrink the denominator, inflating waste allocation.
-    if params.focus_projects:
-        raise HTTPException(
-            status_code=400,
-            detail="focus_projects is not supported for cost attribution. "
-                   "Waste allocation requires full-reservation usage data to compute correctly."
-        )
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
         config = load_config()
@@ -144,7 +136,8 @@ def calculate_cost_attribution(params: CostAttributionParams):
         target_project = _safe_ident(target_project_raw, "admin_project_id")
         reject_dummy_project(target_project)
         region = _safe_ident(_normalize_region(params.region), "region")
-        focus_clause, focus_params = build_project_filter(params.focus_projects)
+        # Always query all projects — waste computation needs the full denominator.
+        # Focus is applied to the DISPLAY, not the computation.
 
         if target_project:
             table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
@@ -169,7 +162,6 @@ def calculate_cost_attribution(params: CostAttributionParams):
               AND job_type = 'QUERY'
               AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
               AND reservation_id IS NOT NULL
-              {focus_clause}
             GROUP BY
               project_id,
               reservation_id
@@ -178,7 +170,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
         all_params = [
             bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
             bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
-        ] + (focus_params or [])
+        ]
         job_results = _run_and_log(scoped_client, query, "Cost Attribution", params=params, query_parameters=all_params)
         
         project_usage = []
@@ -269,9 +261,21 @@ def calculate_cost_attribution(params: CostAttributionParams):
                         "slot_hours": 0.0
                     })
             
-        logger.info("Returning %d attribution records.", len(final_attributions))
+        # Tier 1.5: compute org-wide, filter display to focused projects
+        total_org_projects = len(set(a["project_id"] for a in final_attributions))
+        if params.focus_projects:
+            focus_set = set(params.focus_projects)
+            final_attributions = [a for a in final_attributions if a["project_id"] in focus_set]
+
+        scope = AppliedScope(
+            mode="focused" if params.focus_projects else "org",
+            projects=params.focus_projects,
+            total_org_projects=total_org_projects if params.focus_projects else None,
+        )
+
+        logger.info("Returning %d attribution records (scope: %s).", len(final_attributions), scope.mode)
         log_endpoint_end("Cost Attribution", t0, _logger=logger)
-        return final_attributions
+        return {"scope": scope.model_dump(), "attributions": final_attributions}
         
     except Exception as e:
         handle_endpoint_exception(e, "Cost attribution")

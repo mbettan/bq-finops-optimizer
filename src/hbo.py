@@ -52,11 +52,8 @@ class HBOCommonParams(FocusMixin):
 class HBOAnalyzeParams(HBOCommonParams):
     limit: int = 10
 
-class HBOStatusParams(BaseModel):
-    org_project_id: Optional[str] = None
-    region: str = "region-us"
-    lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
-    max_bytes_billed_gb: Optional[int] = None
+class HBOStatusParams(HBOCommonParams):
+    pass
 
 class HBOResult(BaseModel):
     job_id: str
@@ -326,26 +323,28 @@ def get_performance_insights(params: HBOCommonParams):
 
 @router.post("/status", response_model=List[HBOStatus])
 def check_hbo_status(params: HBOStatusParams):
+    params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("HBO Status Check", params, _logger=logger)
     try:
         bq_client, target_project = init_bq_client_and_resolve_project(params)
         region = _safe_ident(_normalize_region(params.region), "region")
 
-        # Step 1: Get distinct projects from jobs in the lookback period to find active projects
-        # Added LIMIT 500 as per user request (item 4)
-        sql_projects = f"""
-        SELECT DISTINCT project_id
-        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-        WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-        LIMIT 500
-        """
-        
-        projects_results = _run_and_log(bq_client, sql_projects, "HBO Active Projects", params=params)
-        
-        projects = [row.project_id for row in projects_results]
-        projects = [_safe_ident(p, "hbo_active_project_id") for p in projects if p]
+        if params.focus_projects:
+            # Focus mode: use the explicitly provided projects
+            projects = [_safe_ident(p, "hbo_focus_project_id") for p in params.focus_projects]
+        else:
+            # Org mode: discover active projects from jobs in the lookback period
+            sql_projects = f"""
+            SELECT DISTINCT project_id
+            FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+            WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+            LIMIT 500
+            """
+            projects_results = _run_and_log(bq_client, sql_projects, "HBO Active Projects", params=params)
+            projects = [row.project_id for row in projects_results]
+            projects = [_safe_ident(p, "hbo_active_project_id") for p in projects if p]
         if not projects:
-            projects = [_safe_ident(target_project, "hbo_target_project")] # Fallback to target project
+            projects = [_safe_ident(target_project, "hbo_target_project")]
             
         output = []
         

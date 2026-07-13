@@ -11,24 +11,12 @@ An enterprise-grade BigQuery FinOps diagnostic suite and interactive simulation 
 
 ---
 
-## 📖 Table of Contents
-1. [Core Optimization Pillars](#-core-optimization-pillars)
-2. [FinOps Methodologies & Technical Innovations](#%EF%B8%8F-finops-methodologies--technical-innovations)
-3. [Modules & Capabilities](#-modules--capabilities)
-4. [Tech Stack](#-tech-stack)
-5. [Getting Started (Local Development)](#-getting-started-local-development)
-6. [Testing](#-testing)
-7. [Authentication & GCP Configuration](#-authentication--gcp-configuration)
-8. [IAM Roles & Permissions](#-iam-roles--permissions)
-9. [Security & Scale Considerations](#-security--scale-considerations)
-10. [Disclaimer](#-disclaimer)
 
----
 
 ## 🎯 Core Optimization Pillars
 
 *   **Storage Optimization**: Identifies and automates transitions between logical and physical billing models.
-*   **Compute Right-Sizing**: Evaluates On-Demand vs. Editions pricing, simulates optimal baseline capacities, and analyzes autoscaler performance.
+*   **Compute Right-Sizing**: Evaluates On-Demand vs. Editions pricing, performs **Edition matrix simulation** to find optimal baseline capacities, and analyzes autoscaler performance.
 *   **Architectural Diagnostics**: Identifies anti-patterns such as DML abuse, redundant materialized views, and slot-inefficient query designs.
 *   **Cost Attribution**: Overcomes GCP billing limitations to proportionally distribute unallocated reservation waste back to business units.
 *   **Project-Focus Scoping**: Isolates analytics to specific project boundaries without corrupting org-wide mathematical invariants (like capacity planning or attribution denominators).
@@ -68,7 +56,7 @@ Uses BigQuery's native `AI.GENERATE` scalar function to perform semantic SQL rev
 *   **No additional APIs to enable** beyond the Vertex AI API on your project.
 *   Retrieves the most expensive queries by slot consumption from `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION`, scanning the entire organization.
 *   Sends each SQL statement to Gemini with a structured prompt that checks for 7 common anti-patterns (e.g., `SELECT *`, missing `WHERE` before `JOIN`, `CROSS JOIN`, `COUNT(DISTINCT)` vs. `APPROX_COUNT_DISTINCT`).
-*   **Required IAM permissions:** `roles/aiplatform.user` (Vertex AI User) on the execution project — see [AI Doctor Permissions](#5-ai-doctor-permissions-required-for-genai-query-analysis) below.
+*   **Required IAM permissions:** `roles/aiplatform.user` (Vertex AI User) on the execution project — see AI Doctor Permissions below.
 
 #### AI Doctor Model Configuration
 The `AI.GENERATE` call is configured with the following production-tuned `model_params`:
@@ -245,7 +233,7 @@ gcloud auth login
 
 ### Step 2: Configure the Target Project
 ```bash
-gcloud config set project YOUR_PROJECT_ID
+gcloud config set project example-project
 ```
 
 ### Step 3: Configure Application Default Credentials
@@ -255,7 +243,7 @@ gcloud auth application-default login
 
 ### Step 4: Set API Quota Project (Crucial for organization-level INFORMATION_SCHEMA access)
 ```bash
-gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+gcloud auth application-default set-quota-project example-project
 ```
 
 ---
@@ -291,8 +279,8 @@ The AI Doctor is the **only module that uses AI**. It calls BigQuery's `AI.GENER
 
 *   **Cloud Resource Connection (optional, for service accounts / Cloud Run)**: If you specify a Connection Name in Settings (e.g., `us.vertexai`), the connection's service account is used instead of your ADC credentials. Grant the SA the required role:
     ```bash
-    gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-      --member="serviceAccount:CONNECTION_SA_EMAIL" \
+    gcloud projects add-iam-policy-binding example-project \
+      --member="serviceAccount:example-sa@example-project.iam.gserviceaccount.com" \
       --role="roles/aiplatform.user"
     ```
 
@@ -317,7 +305,7 @@ Every API endpoint and BigQuery query produces structured logs designed for real
 
 | Icon | Meaning | Example |
 |:----:|:--------|:--------|
-| `▶` | **Endpoint started** — project, region, scope, lookback, safety cap | `▶ Job Analysis — project=my-org \| scope=1 projects (my-proj) \| safety_cap=200 GiB` |
+| `▶` | **Endpoint started** — project, region, scope, lookback, safety cap | `▶ Job Analysis — project=example-org \| scope=1 projects (example-project) \| safety_cap=200 GiB` |
 | `⏳` | **Query submitted** — which query is running and the active safety cap | `⏳ Storage Metrics — submitting query (safety cap: 200 GiB)…` |
 | `✅` | **Query completed** — elapsed time, bytes processed/billed, cache hit, BQ Console URL | `✅ Storage Metrics — 2.1s \| Processed: 0.42 GiB \| Cache: False \| https://…` |
 | `◼` | **Endpoint completed** — total elapsed time for the full request | `◼ Job Analysis — completed in 4.3s` |
@@ -337,9 +325,9 @@ Each log line follows this format:
 
 Example output with interleaved requests:
 ```
-2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ▶ Storage Analysis — project=my-org | region=us | scope=full organization | safety_cap=200 GiB
+2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ▶ Storage Analysis — project=example-org | region=us | scope=full organization | safety_cap=200 GiB
 2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ⏳ Storage Metrics — submitting query (safety cap: 200 GiB)…
-2026-07-08 04:14:02 - src.main - INFO - [b7e9d0f1] ▶ HBO Analyze — project=my-org | region=us | ...
+2026-07-08 04:14:02 - src.main - INFO - [b7e9d0f1] ▶ HBO Analyze — project=example-org | region=us | ...
 2026-07-08 04:14:03 - src.main - INFO - [a3f1b2c4] ✅ Storage Metrics — 3.2s | Job: bqjob_r123 | Processed: 0.42 GiB | Billed: 0.42 GiB | Cache: False | https://...
 2026-07-08 04:14:03 - src.main - INFO - [a3f1b2c4] ◼ Storage Analysis — completed in 3.4s
 ```
@@ -363,3 +351,5 @@ LOG_LEVEL=DEBUG uvicorn src.main:app --reload
 This tool performs simulations based on historical BigQuery metadata. Simulated pricing estimates and recommended metrics may not fully capture enterprise-specific Google Cloud pricing structures, custom discounts, or blended flat-rate allocations. 
 
 Always review proposed DDL and reservation alterations manually before applying updates to production environments.
+
+This application is a companion diagnostic tool. It is **not a replacement for the official Google Cloud Billing Console** or official invoicing reports.

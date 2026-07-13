@@ -122,20 +122,87 @@ function safeSetLocalStorage(key, value) {
     }
 }
 
-// Update scope badge visibility based on focusProjects state
-function updateScopeBadge() {
+// ---------------------------------------------------------------------------
+// Scope classification — derived from backend, not hand-maintained
+// ---------------------------------------------------------------------------
+
+/** Populated at startup from GET /api/meta/scope-map.
+ *  Keys are real route paths (e.g. '/api/cost-attribution/calculate'),
+ *  values are 'focus' or 'org'. */
+let FOCUS_SCOPE_MAP = {};
+
+/** Fetch the scope map once at startup so buildPayload and the badge work. */
+async function loadScopeMap() {
+    try {
+        const res = await fetch('/api/meta/scope-map');
+        if (res.ok) {
+            FOCUS_SCOPE_MAP = await res.json();
+        } else {
+            console.error('[ScopeMap] Non-OK response:', res.status);
+        }
+    } catch (e) {
+        console.error('[ScopeMap] Failed to load — falling back to pass-through', e);
+    }
+}
+
+/**
+ * Strip focus_projects from the payload for org-only endpoints.
+ * Warns on unmapped endpoints so missing entries surface during dev.
+ */
+function buildPayload(endpoint, basePayload) {
+    const scope = FOCUS_SCOPE_MAP[endpoint];
+    if (!scope) {
+        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — focus_projects passed unchanged`);
+    }
+    if (scope === 'org') {
+        const { focus_projects, ...rest } = basePayload;
+        return rest;
+    }
+    return basePayload;
+}
+
+/** Maps navigation view names to their primary POST endpoint for badge display. */
+const VIEW_TO_ENDPOINT = {
+    'storage': '/api/storage/analyze',
+    'schema-optimizer': '/api/storage/static_audit',
+    'jobs': '/api/jobs/analyze',
+    'slots': '/api/slots/analyze',
+    'fluid-scaling': '/api/fluid-scaling/estimate',
+    'slots-simulator': '/api/slots/simulate',
+    'cost-attribution': '/api/cost-attribution/calculate',
+    'profiler': '/api/slots/profiler',
+    'users': '/api/users/top_spenders',
+    'hbo': '/api/hbo/analyze',
+    'storage-hygiene': '/api/storage/hygiene',
+    'antipatterns': '/api/antipatterns/dml',
+    'performance-insights': '/api/hbo/performance_insights',
+    'bi-optimizer': '/api/bi/analyze',
+    'ai-reviewer': '/api/ai/analyze',
+};
+
+// Update scope badge based on active view and focusProjects state
+function updateScopeBadge(viewName) {
     const container = document.getElementById('scope-badge-container');
     const badge = document.getElementById('scope-badge');
     if (!container || !badge) return;
+
+    const endpoint = VIEW_TO_ENDPOINT[viewName];
+    const scope = endpoint ? FOCUS_SCOPE_MAP[endpoint] : undefined;
     const projects = state.focusProjects || [];
-    if (projects.length > 0) {
-        container.style.display = '';
-        badge.textContent = `${projects.length} project${projects.length > 1 ? 's' : ''}`;
+
+    container.style.display = '';
+    if (scope === 'org') {
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
+    } else if (projects.length > 0) {
+        badge.textContent = `🎯 Focused: ${projects.length} project${projects.length > 1 ? 's' : ''}`;
+        badge.style.color = 'var(--accent-primary)';
     } else {
-        container.style.display = 'none';
-        badge.textContent = '';
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
     }
 }
+
 
 /**
  * Clear stale module data instantly when a user clicks a fetch button.
@@ -521,7 +588,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgRegion.value = state.region;
         if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
         if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
-        updateScopeBadge();
+        updateScopeBadge(Router.getCurrentViewId());
         
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -627,7 +694,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
         elements.currentRegion.textContent = state.region;
-        updateScopeBadge();
+        updateScopeBadge(Router.getCurrentViewId());
 
         showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
         Router.navigate('storage');
@@ -702,7 +769,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/analyze', params))
             });
 
             if (!response.ok) {
@@ -787,7 +854,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/api/jobs/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/jobs/analyze', params))
                 });
 
                 if (!response.ok) {
@@ -1172,6 +1239,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const params = {
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
             max_bytes_billed_gb: state.maxBytesBilledGb
         };
@@ -1181,7 +1249,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/active_assist', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/active_assist', params))
             });
 
             if (!response.ok) {
@@ -1321,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/static_audit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/static_audit', params))
             });
 
             if (!response.ok) {
@@ -2543,7 +2611,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/cost-attribution/calculate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/cost-attribution/calculate', params))
                 });
 
                 if (!response.ok) {
@@ -2552,8 +2620,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
 
                 const data = await response.json();
-                renderCostAttributionResults(data);
-                showNotification('Cost attribution calculated successfully.', 'success');
+                const attributions = data.attributions || data; // backward compat
+                const scope = data.scope;
+                renderCostAttributionResults(attributions);
+                if (scope && scope.mode === 'focused' && scope.total_org_projects) {
+                    showNotification(`Cost attribution calculated — showing ${scope.projects.length} of ${scope.total_org_projects} projects (waste computed over full org).`, 'success');
+                } else {
+                    showNotification('Cost attribution calculated successfully.', 'success');
+                }
             } catch (error) {
                 console.error("Cost Attribution Error:", error);
                 showNotification(error.message, 'error');
@@ -2663,7 +2737,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/slots/profiler', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/slots/profiler', params))
                 });
 
                 if (!response.ok) {
@@ -2681,7 +2755,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const queriesResponse = await fetch('/api/slots/profiler/queries', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/slots/profiler/queries', params))
                 });
                 
                 if (queriesResponse.ok) {
@@ -2725,7 +2799,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/users/top_spenders', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/users/top_spenders', params))
                 });
 
                 if (!response.ok) {
@@ -2875,17 +2949,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     fetch('/api/hbo/analyze', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/analyze', params))
                     }),
                     fetch('/api/hbo/status', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/status', params))
                     }),
                     fetch('/api/hbo/summary', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/summary', params))
                     })
                 ]);
 
@@ -2947,7 +3021,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/hbo/performance_insights', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/hbo/performance_insights', params))
                 });
 
                 if (!response.ok) {
@@ -3129,7 +3203,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/storage/hygiene', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/storage/hygiene', params))
                 });
 
                 if (!response.ok) {
@@ -3439,7 +3513,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/linter', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/linter', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3475,7 +3549,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/dml', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/dml', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3510,7 +3584,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/mv', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/mv', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3546,7 +3620,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/skew', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/skew', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3582,7 +3656,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/batch_candidates', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/batch_candidates', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3617,7 +3691,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/governance/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3659,7 +3733,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/governance/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3700,7 +3774,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/mv/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/mv/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3734,7 +3808,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/resource_warnings/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/resource_warnings/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3877,7 +3951,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/bi/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/bi/analyze', params))
                 });
 
                 if (!response.ok) {
@@ -4081,7 +4155,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/ai/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params),
+                    body: JSON.stringify(buildPayload('/api/ai/analyze', params)),
                     signal: abortController.signal
                 });
 
@@ -5582,6 +5656,7 @@ const Router = (() => {
     }
 
     document.title = `${capitalize(targetView)} · FinOps Optimizer`;
+    updateScopeBadge(targetView);
 
     const viewport = document.querySelector('.dashboard-viewport');
     if (viewport) viewport.scrollTop = 0;
@@ -5613,7 +5688,8 @@ const Router = (() => {
 })();
 
 // Boot
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadScopeMap();
   Router.init();
 });
 

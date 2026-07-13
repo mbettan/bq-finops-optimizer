@@ -28,7 +28,7 @@ from .fluid_scaling import (
     router as fluid_scaling_router,
     _strip_qualifier,
 )
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, request_id_var, RequestIdFilter
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, OrgParams, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, request_id_var, RequestIdFilter
 import time
 import uuid
 
@@ -198,6 +198,39 @@ def get_about():
     """
     return _about_cache
 
+@app.get("/api/meta/scope-map")
+def get_scope_map():
+    """Derive scope classification from Pydantic model schemas.
+
+    An endpoint supports focus iff its request model declares a
+    ``focus_projects`` field (via FocusMixin).  Org-only models use
+    ``OrgParams`` which lacks the field, so they classify as ``'org'``.
+
+    Returns {"/api/path": "focus"|"org"} for every POST route.
+    The frontend fetches this once at startup — no hand-maintained JS map.
+    """
+    import inspect
+    from fastapi.routing import APIRoute
+
+    scope_map: dict[str, str] = {}
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.methods or "POST" not in route.methods:
+            continue
+        sig = inspect.signature(route.endpoint)
+        for _pname, param in sig.parameters.items():
+            annotation = param.annotation
+            if annotation and annotation != inspect.Parameter.empty:
+                has_focus = (
+                    hasattr(annotation, "model_fields")
+                    and "focus_projects" in annotation.model_fields
+                )
+                scope_map[route.path] = "focus" if has_focus else "org"
+                break
+    return scope_map
+
+
 def _parse_release_notes() -> dict:
     """Parse RELEASE_NOTES.md once at startup to build the About payload.
 
@@ -365,12 +398,16 @@ class StaticAuditResult(BaseModel):
 @app.post("/api/storage/static_audit", response_model=List[StaticAuditResult])
 def run_static_schema_audit(params: StaticAuditParams):
     _validate_safe_params(params)
+    params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("Static Schema Audit", params, _logger=logger)
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
     
     try:
-        if params.scope == 'organization':
+        if params.focus_projects:
+            # Focus takes priority over scope
+            target_projects = [_safe_ident(p, "project_id") for p in params.focus_projects]
+        elif params.scope == 'organization':
             logger.info(f"▶ Static Schema Audit — project={resolved_project} | region={region_val} | scope=full organization | safety_cap=200 GiB (default)")
             proj_sql = f"""
             SELECT DISTINCT project_id 
@@ -460,28 +497,26 @@ class ActiveAssistResult(BaseModel):
 @app.post("/api/storage/active_assist", response_model=List[ActiveAssistResult])
 def fetch_active_assist_recommendations(params: StorageParams):
     _validate_safe_params(params)
+    params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("Active Assist", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
     
     try:
-        # Check if the params has scope (Active Assist uses StorageParams which doesn't have scope by default, but UI might send it)
-        # We will check if it's an organization scope request. If the UI didn't send it, fallback to project.
-        scope_val = getattr(params, 'scope', 'organization' if hasattr(params, 'scope') else 'project')
-        # However, to be consistent with Static Audit, we will check if it's explicitly set to organization.
-        # Actually, let's just make it check if the model has a scope field or check the payload dictionary
-        
-        # We'll just extract all org projects using TABLE_STORAGE_BY_ORGANIZATION
-        # since we want Active Assist to scan the full org when possible.
-        logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
-        proj_sql = f"""
-        SELECT DISTINCT project_id 
-        FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
-        WHERE deleted = false
-        """
-        proj_results = run_query_and_log(scoped_client, proj_sql, "Get Org Projects for Active Assist", params=params)
-        target_projects = [row['project_id'] for row in proj_results]
+        if params.focus_projects:
+            # Focus mode: use the explicitly provided projects
+            target_projects = [_safe_ident(p, "project_id") for p in params.focus_projects]
+        else:
+            # Org mode: discover projects from TABLE_STORAGE_BY_ORGANIZATION
+            logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
+            proj_sql = f"""
+            SELECT DISTINCT project_id 
+            FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
+            WHERE deleted = false
+            """
+            proj_results = run_query_and_log(scoped_client, proj_sql, "Get Org Projects for Active Assist", params=params)
+            target_projects = [row['project_id'] for row in proj_results]
         
         if not target_projects:
             log_endpoint_end("Active Assist", t0, _logger=logger)
@@ -2192,7 +2227,7 @@ def analyze_resource_warnings(params: GovernanceParams):
         handle_endpoint_exception(e, "Resource warnings")
 
 
-class SlotsParams(FocusMixin):
+class SlotsParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2207,9 +2242,6 @@ def analyze_slots(params: SlotsParams):
     t0 = log_endpoint_start("Slots Analysis (Capacity Planner)", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
-    # NOTE: focus_projects intentionally NOT applied to capacity planning.
-    # JOBS_TIMELINE_BY_ORGANIZATION must reflect full org demand to size reservations correctly.
-    focus_clause, focus_params = "", []
     window_seconds = params.window_minutes * 60
     
     recommendations_sql = f"""
@@ -2224,7 +2256,6 @@ def analyze_slots(params: SlotsParams):
      period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
      AND reservation_id IS NOT NULL
      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-     {focus_clause}
     -- GROUPING SETS computes BOTH the per-reservation per-second total AND the
     -- org-wide per-second total (reservation_id = NULL) in a single base-table scan.
     -- The NULL-keyed rows ARE the merged series, summed within each second BEFORE
@@ -2279,7 +2310,7 @@ def analyze_slots(params: SlotsParams):
 
     try:
         
-        recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations", params=params, query_parameters=focus_params)
+        recommendations_results = run_query_and_log(scoped_client, recommendations_sql, "Slots Recommendations", params=params)
         recommendations_data = []
         for row in recommendations_results:
             d = dict(row)
@@ -2372,7 +2403,7 @@ def analyze_slots(params: SlotsParams):
         handle_endpoint_exception(e, "Slots analysis")
 
 
-class TieredRecParams(FocusMixin):
+class TieredRecParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2392,9 +2423,7 @@ def get_tiered_recommendations(params: TieredRecParams):
     t0 = log_endpoint_start("Tiered Recommendations", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
-    # NOTE: focus_projects intentionally NOT applied to capacity planning.
-    # Tiered recommendations must reflect full org demand to size reservations correctly.
-    focus_clause, focus_params = "", []
+
     
     def get_sql(table_name: str) -> str:
         """
@@ -2419,7 +2448,6 @@ def get_tiered_recommendations(params: TieredRecParams):
             `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{table_name}
           WHERE
             period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-            {focus_clause}
           GROUP BY
             period_start, reservation_id
         ),
@@ -2452,7 +2480,7 @@ def get_tiered_recommendations(params: TieredRecParams):
         sql = get_sql("JOBS_TIMELINE_BY_ORGANIZATION")
 
         try:
-            results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Org)", params=params, query_parameters=focus_params)
+            results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Org)", params=params)
         except (gax_exc.Forbidden, gax_exc.NotFound) as e:
             # focus_projects is intentionally not applied to capacity planning,
             # so the project-level fallback is always safe.
@@ -2478,7 +2506,7 @@ def get_tiered_recommendations(params: TieredRecParams):
         handle_endpoint_exception(e, "Tiered recommendations")
 
 
-class SlotUtilizationParams(FocusMixin):
+class SlotUtilizationParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2499,9 +2527,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
     t0 = log_endpoint_start("Slot Utilization", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
-    # NOTE: focus_projects intentionally NOT applied to capacity planning.
-    focus_clause, focus_params = "", []
-    focus_params.append(bigquery.ScalarQueryParameter("tz", "STRING", params.timezone))
+    query_params = [bigquery.ScalarQueryParameter("tz", "STRING", params.timezone)]
     resolution = params.resolution
     duration_ms = 60000
     if resolution == "HOUR":
@@ -2522,7 +2548,6 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
         period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
         AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-        {focus_clause}
       GROUP BY period_start
     )
     SELECT
@@ -2548,7 +2573,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {params.timezone}")
 
-        results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data", params=params, query_parameters=focus_params)
+        results = run_query_and_log(scoped_client, sql, "Slot Utilization Raw Data", params=params, query_parameters=query_params)
         
         processed_results = []
         for row in results:
@@ -2576,7 +2601,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
     except Exception as e:
         handle_endpoint_exception(e, "Slot utilization analysis")
 
-class SlotSimulationParams(FocusMixin):
+class SlotSimulationParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2594,8 +2619,7 @@ def simulate_slots(params: SlotSimulationParams):
     t0 = log_endpoint_start("Slot Simulation", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
-    # NOTE: focus_projects intentionally NOT applied to capacity planning.
-    focus_clause, focus_params = "", []
+
     
     sql = f"""
     SELECT
@@ -2606,7 +2630,6 @@ def simulate_slots(params: SlotSimulationParams):
       period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
       AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-      {focus_clause}
     GROUP BY 1
     ORDER BY 1 ASC
     """
@@ -2614,7 +2637,7 @@ def simulate_slots(params: SlotSimulationParams):
 
     
     try:
-        results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data", params=params, query_parameters=focus_params)
+        results = run_query_and_log(scoped_client, sql, "Slot Simulation Raw Data", params=params)
         
         avg_slots_list = [float(row['avg_slots'] or 0.0) for row in results]
         avg_slots_array = np.array(avg_slots_list)
@@ -2738,7 +2761,7 @@ _PATTERN_DISCLAIMER = (
 )
 
 
-class FluidSimParams(FocusMixin):
+class FluidSimParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -2967,14 +2990,11 @@ def simulate_fluid_scaling(params: FluidSimParams):
     t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
-        # NOTE: focus_projects intentionally NOT applied to capacity planning.
-        focus_clause, focus_params = "", []
-        region = params.region
-        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=region, focus_clause=focus_clause)
+        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=params.region, focus_clause="")
         all_params = [
             bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
             bigquery.ScalarQueryParameter("cooldown_window", "INT64", params.cooldown_window),
-        ] + (focus_params or [])
+        ]
         logger.info(
             "Running fluid_simulation (lookback=%d days, cooldown=%ds)",
             params.lookback_days, params.cooldown_window,
@@ -3120,7 +3140,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
         raise HTTPException(500, "Internal server error")
 
 
-class SlotActualParams(FocusMixin):
+class SlotActualParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
@@ -3324,7 +3344,7 @@ ORDER BY 1 ASC
         handle_endpoint_exception(e, "Actual provisioning")
 
 
-class PeakSlotsParams(FocusMixin):
+class PeakSlotsParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=30, ge=1, le=90)
@@ -3336,8 +3356,6 @@ def get_peak_slots(params: PeakSlotsParams):
     t0 = log_endpoint_start("Peak Slots", params, _logger=logger)
     
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
-    # NOTE: focus_projects intentionally NOT applied to capacity planning.
-    focus_clause, focus_params = "", []
     sql = f"""
     WITH concurrent_usage AS (
         SELECT period_start, SUM(period_slot_ms) / 1000 AS concurrent_slots
@@ -3346,14 +3364,13 @@ def get_peak_slots(params: PeakSlotsParams):
           period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-          {focus_clause}
         GROUP BY 1
     )
     SELECT MAX(concurrent_slots) AS peak_slots FROM concurrent_usage
     """
     
     try:
-        results = run_query_and_log(scoped_client, sql, "Get Peak Slots", params=params, query_parameters=focus_params)
+        results = run_query_and_log(scoped_client, sql, "Get Peak Slots", params=params)
         
         peak_slots = 0
         for row in results:

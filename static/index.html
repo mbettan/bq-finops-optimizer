@@ -406,7 +406,7 @@
                 </section>
 
                 <!-- Storage Optimizer View -->
-                <section id="view-storage" class="view" data-view="storage" data-scope="focus">
+                <section id="view-storage" class="view" data-view="storage">
                     <h1 class="view-title">Storage cost optimizer <span class="scope-indicator"></span></h1>
                     <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Note: This analysis evaluates physical vs logical billing specifically for <strong>BASE TABLE</strong> storage (excluding materialized views and external tables).</p>
                     <div class="glass-card params-panel">
@@ -523,7 +523,7 @@
                 </section>
 
                 <!-- Schema Optimizer View -->
-                <section id="view-schema-optimizer" class="view" data-view="schema-optimizer" data-scope="none">
+                <section id="view-schema-optimizer" class="view" data-view="schema-optimizer">
                     <h1 class="view-title">Schema Optimizer <span class="scope-indicator"></span></h1>
                     <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Partitioning and clustering recommendations from two complementary engines: Google Active Assist (compute-optimized) and our Static Schema Auditor (bytes-scanned-optimized).</p>
 
@@ -623,7 +623,7 @@
                 </section>
 
                 <!-- Compute / Jobs View -->
-                <section id="view-jobs" class="view" data-view="jobs" data-scope="focus">
+                <section id="view-jobs" class="view" data-view="jobs">
                     <h1 class="view-title">Query cost & routing optimization <span class="scope-indicator"></span></h1>
                     
                     <details class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); cursor: pointer;" open>
@@ -796,7 +796,7 @@
                 </section>
 
                 <!-- Slots Optimizer View -->
-                <section id="view-slots" class="view" data-view="slots" data-scope="org">
+                <section id="view-slots" class="view" data-view="slots">
                     <h1 class="view-title">Slots autoscaler optimizer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card" style="margin-bottom: 1.5rem; padding: 1.5rem;">
@@ -1095,7 +1095,7 @@
                 </section>
 
 <!-- Fluid Scaling Estimate View -->
-<section id="view-fluid-scaling" class="view" data-view="fluid-scaling" data-scope="org">
+<section id="view-fluid-scaling" class="view" data-view="fluid-scaling">
   <h1 class="view-title">Fluid scaling <span class="scope-indicator"></span></h1>
   <p class="view-subtitle">Estimate savings from enabling Fluid Scaling (per-second billing).</p>
 
@@ -1281,7 +1281,7 @@
 </section>
 
                 <!-- Slots Simulator View -->
-                <section id="view-slots-simulator" class="view" data-view="slots-simulator" data-scope="org">
+                <section id="view-slots-simulator" class="view" data-view="slots-simulator">
                     <h1 class="view-title">Edition Matrix Simulation <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card params-panel">
@@ -1454,7 +1454,7 @@
                 </section>
 
                 <!-- Cost Attribution View -->
-                <section id="view-cost-attribution" class="view" data-view="cost-attribution" data-scope="focus">
+                <section id="view-cost-attribution" class="view" data-view="cost-attribution">
                     <h1 class="view-title">Cost attribution <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -1571,7 +1571,7 @@
                 </section>
 
                 <!-- Workload Profiler View -->
-                <section id="view-profiler" class="view" data-view="profiler" data-scope="focus">
+                <section id="view-profiler" class="view" data-view="profiler">
                     <h1 class="view-title">Workload profiler <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -1724,7 +1724,7 @@
                 </section>
 
                 <!-- Top Spenders View -->
-                <section id="view-users" class="view" data-view="users" data-scope="focus">
+                <section id="view-users" class="view" data-view="users">
                     <h1 class="view-title">Top Spenders <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -1779,7 +1779,7 @@
                 </section>
 
                 <!-- HBO Analyzer View -->
-                <section id="view-hbo" class="view" data-view="hbo" data-scope="focus">
+                <section id="view-hbo" class="view" data-view="hbo">
                     <h1 class="view-title">History-Based Optimization (HBO) Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -1880,7 +1880,7 @@
                 </section>
 
                 <!-- Storage Hygiene View -->
-                <section id="view-storage-hygiene" class="view" data-view="storage-hygiene" data-scope="focus">
+                <section id="view-storage-hygiene" class="view" data-view="storage-hygiene">
                     <h1 class="view-title">Storage Hygiene & Time Travel Auditor <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -1980,7 +1980,7 @@
                 </section>
 
                 <!-- Anti-Patterns View -->
-                <section id="view-antipatterns" class="view" data-view="antipatterns" data-scope="focus">
+                <section id="view-antipatterns" class="view" data-view="antipatterns">
                     <h1 class="view-title">Architectural Anti-Pattern Scanner <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); padding: 1.5rem;">
@@ -2264,7 +2264,7 @@
                 </section>
 
                 <!-- Performance Insights View -->
-                <section id="view-performance-insights" class="view" data-view="performance-insights" data-scope="focus">
+                <section id="view-performance-insights" class="view" data-view="performance-insights">
                     <h1 class="view-title">BigQuery Execution Insights <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -2379,7 +2379,7 @@
                 </section>
 
                 <!-- BI Optimizer View -->
-                <section id="view-bi-optimizer" class="view" data-view="bi-optimizer" data-scope="focus">
+                <section id="view-bi-optimizer" class="view" data-view="bi-optimizer">
                     <h1 class="view-title">BI Engine ROI & Cache Miss Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
@@ -2451,7 +2451,7 @@
                 </section>
 
                 <!-- AI Doctor View -->
-                <section id="view-ai-reviewer" class="view" data-view="ai-reviewer" data-scope="focus">
+                <section id="view-ai-reviewer" class="view" data-view="ai-reviewer">
                     <h1 class="view-title">AI Doctor <span class="scope-indicator"></span></h1>
                     <!-- Collapsible Detailed Learn More Drawer -->
                     <div id="ddl-learn-more-drawer" class="glass-card" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(255, 255, 255, 0.08); padding: 1.5rem; background: rgba(15, 23, 42, 0.3);">

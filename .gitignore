@@ -1,6 +1,5 @@
 # Logs
 *.log
-app.log
 
 # Environment / Secrets
 venv/
@@ -13,7 +12,6 @@ myenv/
 # Scratch / Diagnostic scripts
 scratch/
 scratch_*
-test_jobs.py
 
 # Python
 __pycache__/
@@ -35,8 +33,4 @@ Thumbs.db
 *.tar
 
 # Internal docs (not for public repo)
-PRD.MD
-cost_attribution_plan.md
-context_handover_ai_generate.md
-heavy_job_ids_ref.md
-ROADMAP.MD
+# Move any internal docs into scratch/ or use generic wildcards if applicable.

@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, DAYS_PER_MONTH
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, OrgParams, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, DAYS_PER_MONTH
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +40,14 @@ class FluidScalingStatus(BaseModel):
     ddl: Optional[str] = None
 
 
-class FluidScalingParams(BaseModel):
+class FluidScalingParams(OrgParams):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
 
 
-class FluidEstimateParams(FocusMixin):
+class FluidEstimateParams(OrgParams):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
@@ -513,12 +513,8 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         reject_dummy_project(admin_project)
         region = _safe_ident(_normalize_region(params.region), "region")
 
-        if params.focus_projects:
-            raise HTTPException(400, "focus_projects is not supported for fluid scaling estimation; capacity planning is inherently org-wide.")
-        
-        # focus_projects intentionally NOT applied to capacity planning (see slots/*).
-        focus_clause, focus_params = "", []
-        unified_sql = _render_sql(_SQL_UNIFIED_FLUID_SCALING, admin_project=admin_project, org_project=org_project, region=region, focus_clause=focus_clause)
+
+        unified_sql = _render_sql(_SQL_UNIFIED_FLUID_SCALING, admin_project=admin_project, org_project=org_project, region=region, focus_clause="")
         df = _run_query_to_df(client, unified_sql, params.lookback_days, "fluid_scaling_unified", params=params)
 
         logger.info("Fetched %d unified rows", len(df))
