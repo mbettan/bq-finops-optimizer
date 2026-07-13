@@ -25,7 +25,6 @@ router = APIRouter(prefix="/api/fluid-scaling", tags=["fluid-scaling"])
 
 DAYS_PER_YEAR = 365.25
 SECONDS_PER_HOUR = 3600
-SECONDS_PER_MINUTE = 60
 
 # MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 MAX_LOOKBACK_DAYS = 90
@@ -250,64 +249,90 @@ def check_fluid_scaling_status(params: FluidScalingParams):
 # up to ~60x more rows per reservation (one per second) into a pandas
 # DataFrame — enough to OOM a memory-capped Cloud Run instance. Summing here
 # is mathematically identical to summing the same per-second rows client-side.
-_SQL_MINUTE_CAPACITY = """
-SELECT
-  reservation_id,
-  edition,
-  minute,
-  SUM(slots_assigned) AS baseline_slot_seconds,
-  SUM(autoscale_current_slots) AS autoscale_capacity_slot_seconds
-FROM (
+_SQL_UNIFIED_FLUID_SCALING = """
+WITH capacity_per_sec AS (
   SELECT
     reservation_id,
     edition,
-    TIMESTAMP_TRUNC(s.start_time, MINUTE) AS minute,
-    IFNULL(s.slots_assigned, 0) AS slots_assigned,
-    IFNULL(s.autoscale_current_slots, 0) AS autoscale_current_slots
-  FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT,
+    s.start_time AS period_start,
+    IFNULL(s.slots_assigned, 0) AS baseline_slots,
+    IFNULL(s.autoscale_current_slots, 0) AS current_slots,
+    IFNULL(s.borrowed_slots, 0) AS borrowed_slots
+  FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT AS rt,
   UNNEST(
     IF(ARRAY_LENGTH(per_second_details) > 0,
        ARRAY(
-         SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned
+         SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned, d.borrowed_slots
          FROM UNNEST(per_second_details) AS d
        ),
        ARRAY(
          SELECT AS STRUCT
            ts AS start_time,
            autoscale.current_slots AS autoscale_current_slots,
-           slots_assigned AS slots_assigned
+           slots_assigned AS slots_assigned,
+           0 AS borrowed_slots
          FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
-           period_start,
-           TIMESTAMP_ADD(period_start, INTERVAL 59 SECOND),
+           rt.period_start,
+           TIMESTAMP_ADD(rt.period_start, INTERVAL 59 SECOND),
            INTERVAL 1 SECOND
          )) AS ts
        )
     )
   ) AS s
-  WHERE period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-    AND period_start <  CURRENT_TIMESTAMP()
+  WHERE rt.period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
+    AND rt.period_start <  CURRENT_TIMESTAMP()
     AND reservation_id IS NOT NULL
     AND reservation_id != ''
+),
+usage_per_sec AS (
+  SELECT
+    reservation_id,
+    period_start,
+    SUM(period_slot_ms) / 1000.0 AS used_slots
+  FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+  -- job_creation_time must have a wide slack (7 days) to ensure jobs that started BEFORE the
+  -- lookback window but continued running INTO the window are not dropped by partition pruning.
+  WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days + 7 DAY)
+    AND job_creation_time <  CURRENT_TIMESTAMP()
+  -- period_start must be tight and strictly aligned with capacity_per_sec to prevent orphaned
+  -- rows in the FULL OUTER JOIN. (Included at @start, excluded exactly at CURRENT_TIMESTAMP).
+    AND period_start      >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
+    AND period_start      <  CURRENT_TIMESTAMP()
+    AND reservation_id IS NOT NULL
+    AND reservation_id != ''
+    AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+    {focus_clause}
+  GROUP BY reservation_id, period_start
+),
+joined_per_sec AS (
+  SELECT
+    COALESCE(c.reservation_id, u.reservation_id) AS reservation_id,
+    c.edition,
+    c.current_slots,
+    c.baseline_slots,
+    c.borrowed_slots,
+    u.used_slots,
+    IF(c.period_start IS NOT NULL, 1, 0) AS _from_capacity
+  FROM capacity_per_sec c
+  FULL OUTER JOIN usage_per_sec u
+    ON c.reservation_id = u.reservation_id
+   AND c.period_start = u.period_start
 )
-GROUP BY reservation_id, edition, minute
-"""
-
-_SQL_PER_SECOND_USAGE = """
 SELECT
   reservation_id,
-  edition,
-  period_start,
-  SUM(period_slot_ms) / 1000.0 AS used_slots
-FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
-WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND job_creation_time <  CURRENT_TIMESTAMP()
-  AND period_start      >  TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND period_start      <= CURRENT_TIMESTAMP()
-  AND reservation_id IS NOT NULL
-  AND reservation_id != ''
-  AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-  {focus_clause}
-GROUP BY reservation_id, edition, period_start
+  MAX(edition) AS edition,
+  SUM(IFNULL(current_slots, 0)) AS legacy_slot_seconds,
+  -- Core FinOps Mathematical Engine for Fluid Scaling:
+  -- 1. `used_slots - borrowed_slots - baseline_slots` isolates the pure autoscaling usage.
+  -- 2. `GREATEST(..., 0)` safely floors negative values (e.g. if usage is entirely within the baseline).
+  -- 3. `LEAST(..., current_slots)` imposes a strict cap, ensuring billed usage never mathematically 
+  --    exceeds the provisioned capacity ceiling for that exact second.
+  -- Summing these bounded seconds accurately reconstructs the exact billable autoscaler capacity.
+  SUM(LEAST(GREATEST(IFNULL(used_slots, 0) - IFNULL(borrowed_slots, 0) - IFNULL(baseline_slots, 0), 0), IFNULL(current_slots, 0))) AS fluid_slot_seconds,
+  SUM(IFNULL(used_slots, 0)) AS total_pure_used_seconds,
+  MAX(_from_capacity) AS has_capacity
+FROM joined_per_sec
+GROUP BY reservation_id
 """
 
 
@@ -321,83 +346,20 @@ class _ReservationSummary:
     status: str
 
 
-def _rollup_to_summaries(
-    capacity_df: pd.DataFrame,
-    usage_df: pd.DataFrame,
-) -> List[_ReservationSummary]:
-    if capacity_df.empty and usage_df.empty:
+def _process_unified_results(df: pd.DataFrame) -> List[_ReservationSummary]:
+    if df.empty:
         return []
 
-    capacity_df = capacity_df.copy()
-    usage_df = usage_df.copy()
-
-    # Normalize edition on both sides to prevent split rows on NULL/skew (Gap B)
-    if not capacity_df.empty:
-        capacity_df["edition"] = capacity_df["edition"].fillna("").astype(str)
-    if not usage_df.empty:
-        usage_df["edition"] = usage_df["edition"].fillna("").astype(str)
-
-    # Capacity arrives pre-aggregated to the minute-grain from _SQL_MINUTE_CAPACITY
-    # (BigQuery sums the per-second detail server-side; see that query's comment).
-    if capacity_df.empty:
-        cap_per_min = pd.DataFrame(columns=["reservation_id", "edition", "minute", "baseline_slot_seconds", "autoscale_capacity_slot_seconds"])
-        cap_per_min["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
-    else:
-        capacity_df["minute"] = pd.to_datetime(capacity_df["minute"], utc=True)
-        cap_per_min = capacity_df[["reservation_id", "edition", "minute", "baseline_slot_seconds", "autoscale_capacity_slot_seconds"]].copy()
-    cap_per_min["_from_capacity"] = 1.0
-
-    if usage_df.empty:
-        usage_df = pd.DataFrame(columns=["reservation_id", "edition", "period_start", "used_slots"])
-        usage_df["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
-    else:
-        usage_df["period_start"] = pd.to_datetime(usage_df["period_start"], utc=True)
-        usage_df["minute"] = usage_df["period_start"].dt.floor("min")
-
-    # Aggregate usage to the minute-grain (Gap A)
-    usage_per_min = usage_df.groupby(
-        ["reservation_id", "edition", "minute"], as_index=False
-    ).agg(
-        used_slots=("used_slots", "sum"),
-    )
-
-    # Merge on reservation_id, edition, and minute (Gap B - one-to-one)
-    merged = cap_per_min.merge(
-        usage_per_min,
-        on=["reservation_id", "edition", "minute"],
-        how="outer",
-    )
-
-    merged["baseline_slot_seconds"] = merged["baseline_slot_seconds"].astype(float).fillna(0.0)
-    merged["autoscale_capacity_slot_seconds"] = merged["autoscale_capacity_slot_seconds"].astype(float).fillna(0.0)
-    merged["used_slots"] = merged["used_slots"].astype(float).fillna(0.0)
-    merged["_from_capacity"] = merged["_from_capacity"].astype(float).fillna(0.0)
-
-    # Fluid clamp on minute-aggregated slot-seconds (Gap A)
-    used_above_baseline = (merged["used_slots"] - merged["baseline_slot_seconds"]).clip(lower=0)
-    merged["fluid_slot_seconds_min"] = pd.concat(
-        [used_above_baseline, merged["autoscale_capacity_slot_seconds"]], axis=1
-    ).min(axis=1).clip(lower=0)
-
-    # Per-res sums (single groupby for all aggregates)
-    per_res = merged.groupby("reservation_id", as_index=False).agg(
-        legacy_slot_seconds=("autoscale_capacity_slot_seconds", "sum"),
-        fluid_slot_seconds=("fluid_slot_seconds_min", "sum"),
-        total_pure_used_seconds=("used_slots", "sum"),
-        has_capacity=("_from_capacity", "max"),
-        sum_used=("used_slots", "sum"),
-    )
-
     output = []
-    for row in per_res.itertuples():
-        has_capacity = float(row.has_capacity)
-        sum_used = float(row.sum_used)
+    for row in df.itertuples():
+        has_capacity = float(row.has_capacity) if pd.notnull(row.has_capacity) else 0.0
+        used_secs = float(row.total_pure_used_seconds) if pd.notnull(row.total_pure_used_seconds) else 0.0
 
-        if has_capacity == 0 and sum_used > 0:
+        if has_capacity == 0 and used_secs > 0:
             status = "External Admin"
-        elif sum_used == 0 and has_capacity > 0:
+        elif used_secs == 0 and has_capacity > 0:
             status = "Idle"
-        elif has_capacity == 0 and sum_used == 0:
+        elif has_capacity == 0 and used_secs == 0:
             status = "Inactive"
         else:
             status = "Active"
@@ -405,9 +367,9 @@ def _rollup_to_summaries(
         output.append(
             _ReservationSummary(
                 reservation_id=row.reservation_id,
-                legacy_slot_seconds=float(row.legacy_slot_seconds),
-                fluid_slot_seconds=float(row.fluid_slot_seconds),
-                total_pure_used_seconds=float(row.total_pure_used_seconds),
+                legacy_slot_seconds=float(row.legacy_slot_seconds) if pd.notnull(row.legacy_slot_seconds) else 0.0,
+                fluid_slot_seconds=float(row.fluid_slot_seconds) if pd.notnull(row.fluid_slot_seconds) else 0.0,
+                total_pure_used_seconds=float(row.total_pure_used_seconds) if pd.notnull(row.total_pure_used_seconds) else 0.0,
                 status=status
             )
         )
@@ -422,10 +384,10 @@ def _to_metric(
     today_hours = summary.legacy_slot_seconds / SECONDS_PER_HOUR
     fluid_hours = summary.fluid_slot_seconds / SECONDS_PER_HOUR
     total_pure_used_hours = summary.total_pure_used_seconds / SECONDS_PER_HOUR
-    saved_hours = today_hours - fluid_hours
+    saved_hours = max(0.0, today_hours - fluid_hours)
 
     # Clamped True cooldown savings (always >= 0%)
-    clamped_savings = (saved_hours / today_hours * 100.0) if today_hours > 0 else 0.0
+    clamped_savings = min(max((saved_hours / today_hours * 100.0), 0.0), 100.0) if today_hours > 0 else 0.0
 
     usd_window = saved_hours * price_per_slot_hr
     usd_monthly = usd_window * (DAYS_PER_MONTH / lookback_days)
@@ -466,9 +428,11 @@ def _run_query_to_df(
     logger.debug("%s SQL:\n%s", label.upper(), sql)
     t0 = time.time()
     query_job = client.query(sql, job_config=job_config)
-    df = query_job.result().to_dataframe(
-        create_bqstorage_client=True,
-    )
+    try:
+        df = query_job.result().to_dataframe(create_bqstorage_client=True)
+    except Exception:
+        logger.warning("BigQuery Storage API failed or unavailable. Falling back to REST API for to_dataframe().")
+        df = query_job.result().to_dataframe()
     elapsed = time.time() - t0
     # Log profile with clickable BQ Console URL
     job_project = query_job.project
@@ -554,33 +518,15 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         
         # focus_projects intentionally NOT applied to capacity planning (see slots/*).
         focus_clause, focus_params = "", []
-        capacity_sql = _render_sql(_SQL_MINUTE_CAPACITY, admin_project=admin_project, region=region)
-        usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region, focus_clause=focus_clause)
+        unified_sql = _render_sql(_SQL_UNIFIED_FLUID_SCALING, admin_project=admin_project, org_project=org_project, region=region, focus_clause=focus_clause)
+        df = _run_query_to_df(client, unified_sql, params.lookback_days, "fluid_scaling_unified", params=params)
 
-        capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
-        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params)
+        logger.info("Fetched %d unified rows", len(df))
 
-        logger.info(
-            "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)
-        )
+        if df.empty:
+            logger.warning("Unified query returned 0 rows. Likely cause: admin_project_id (%s) does not own any reservations.", admin_project)
 
-        logger.info("capacity minute dtype: %s, sample: %r",
-                    capacity_df["minute"].dtype if not capacity_df.empty else "empty",
-                    capacity_df["minute"].iloc[0] if not capacity_df.empty else None)
-        logger.info("usage period_start dtype: %s, sample: %r",
-                    usage_df["period_start"].dtype if not usage_df.empty else "empty",
-                    usage_df["period_start"].iloc[0] if not usage_df.empty else None)
-        if capacity_df.empty and not usage_df.empty:
-            logger.warning(
-                "Capacity query returned 0 rows but usage has %d rows. "
-                "Likely cause: admin_project_id (%s) does not own any reservations. "
-                "Reservations seen in usage data: %s",
-                len(usage_df),
-                admin_project,
-                usage_df["reservation_id"].unique().tolist()[:10],
-            )
-
-        summaries = _rollup_to_summaries(capacity_df, usage_df)
+        summaries = _process_unified_results(df)
 
         metrics = [
             _to_metric(s, params.price_per_slot_hr, params.lookback_days)

@@ -1094,6 +1094,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render Active Assist Results
     const renderActiveAssistResults = (data) => {
+        // Must destroy DataTable BEFORE clearing innerHTML or appending rows
+        if ($.fn.DataTable.isDataTable('#active-assist-table')) {
+            $('#active-assist-table').DataTable().destroy();
+        }
+
         const tbody = document.querySelector('#active-assist-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -1113,10 +1118,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
             </td></tr>`;
-            
-            if ($.fn.DataTable.isDataTable('#active-assist-table')) {
-                $('#active-assist-table').DataTable().destroy();
-            }
             return;
         }
 
@@ -1155,9 +1156,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#active-assist-table')) {
-            $('#active-assist-table').DataTable().destroy();
-        }
+
         $('#active-assist-table').DataTable({
             pageLength: 10,
             order: [[6, 'desc']], // Sort by On-Demand Savings descending
@@ -1205,6 +1204,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render Static Audit Results
     const renderStaticAuditResults = (data) => {
+        // Destroy existing DataTables before modifying the DOM to prevent it from wiping our new rows
+        if ($.fn.DataTable.isDataTable('#static-audit-table')) {
+            $('#static-audit-table').DataTable().destroy();
+        }
+
         const tbody = document.querySelector('#static-audit-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -1292,9 +1296,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#static-audit-table')) {
-            $('#static-audit-table').DataTable().destroy();
-        }
         $('#static-audit-table').DataTable({
             pageLength: 10,
             order: [[4, 'desc']], // Sort by Logical Size descending
@@ -3609,7 +3610,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                audit_type: 'expiration'
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
@@ -3650,7 +3652,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                audit_type: 'filter'
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
@@ -5374,7 +5377,6 @@ const FluidScaling = (() => {
         }
     }
 
-    console.debug('[FluidScaling] job simulation patterns:', rows.length);
 
     if (rows.length === 0) {
       tbody.innerHTML = `

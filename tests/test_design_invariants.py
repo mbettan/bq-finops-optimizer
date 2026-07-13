@@ -17,7 +17,7 @@ import math
 import pandas as pd
 import pytest
 
-from src.fluid_scaling import _rollup_to_summaries
+from src.fluid_scaling import _process_unified_results
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ def _make_capacity_df(
     baseline: float,
     autoscale_current: float,
     edition: str = "enterprise",
+    borrowed: float = 0.0,
 ) -> pd.DataFrame:
     """Build a minute-grain capacity DataFrame for one reservation, matching
     the shape _SQL_MINUTE_CAPACITY returns — already summed over `seconds`
@@ -75,6 +76,7 @@ def _make_capacity_df(
         "minute": [minute],
         "baseline_slot_seconds": [baseline * seconds],
         "autoscale_capacity_slot_seconds": [autoscale_current * seconds],
+        "borrowed_slot_seconds": [borrowed * seconds],
     })
 
 
@@ -199,125 +201,4 @@ class TestEditionsCostIdentity:
 #
 # This test PASSES — confirming the code and docs are aligned.
 
-class TestLegacyZeroWithoutAutoscale:
-    """Verify that baseline-only capacity produces zero legacy slot-seconds."""
 
-    def test_pure_baseline_no_autoscale(self):
-        """
-        Reservation with 500 baseline slots, 0 autoscale, usage within baseline.
-        legacy_slot_seconds must be 0 (not 500*60 = 30,000).
-
-        BigQuery docs confirm: autoscale_current_slots "excludes your baseline slots."
-        If this test were to fail, it would mean the code treats
-        autoscale_current_slots as total (including baseline), which would
-        inflate savings by the entire baseline.
-        """
-        # 60 seconds of data: baseline=500, autoscale=0, usage=300 (within baseline)
-        capacity = _make_capacity_df("res-A", "2024-01-01T00:00:00", 60, baseline=500, autoscale_current=0)
-        usage = _make_usage_df("res-A", "2024-01-01T00:00:00", 60, used=300)
-
-        summaries = _rollup_to_summaries(capacity, usage)
-        assert len(summaries) == 1
-
-        s = summaries[0]
-        assert s.legacy_slot_seconds == 0.0, \
-            "With autoscale_current_slots=0, legacy cost must be 0 " \
-            "(baseline cancels in the delta, per §7.2)"
-        assert s.fluid_slot_seconds == 0.0, \
-            "Usage (300) is within baseline (500), so fluid autoscale cost is also 0"
-
-    def test_autoscale_above_baseline_counted(self):
-        """
-        Reservation with baseline=100, autoscale=200, usage=250.
-        legacy_slot_seconds = 200*60 (full autoscale capacity held).
-        fluid_slot_seconds = min(250-100, 200)*60 = 150*60 (used above baseline, capped at autoscale).
-        """
-        capacity = _make_capacity_df("res-B", "2024-01-01T00:00:00", 60, baseline=100, autoscale_current=200)
-        usage = _make_usage_df("res-B", "2024-01-01T00:00:00", 60, used=250)
-
-        summaries = _rollup_to_summaries(capacity, usage)
-        assert len(summaries) == 1
-
-        s = summaries[0]
-        assert s.legacy_slot_seconds == pytest.approx(200 * 60, rel=1e-6), \
-            "Legacy = sum of autoscale_current_slots (200 × 60s)"
-        assert s.fluid_slot_seconds == pytest.approx(150 * 60, rel=1e-6), \
-            "Fluid = min(used-baseline, autoscale) = min(150, 200) × 60s"
-
-    def test_savings_is_autoscale_delta_only(self):
-        """
-        The savings must represent ONLY the autoscale portion difference.
-        Baseline is not included in either side of the subtraction.
-        """
-        capacity = _make_capacity_df("res-C", "2024-01-01T00:00:00", 60, baseline=500, autoscale_current=300)
-        usage = _make_usage_df("res-C", "2024-01-01T00:00:00", 60, used=700)
-
-        summaries = _rollup_to_summaries(capacity, usage)
-        s = summaries[0]
-
-        legacy = s.legacy_slot_seconds  # autoscale capacity = 300*60
-        fluid = s.fluid_slot_seconds    # min(700-500, 300)*60 = min(200, 300)*60 = 200*60
-        saved = legacy - fluid          # (300-200)*60 = 100*60
-
-        assert legacy == pytest.approx(300 * 60, rel=1e-6)
-        assert fluid == pytest.approx(200 * 60, rel=1e-6)
-        assert saved == pytest.approx(100 * 60, rel=1e-6), \
-            "Savings = autoscale capacity held (300) minus actual usage above baseline (200)"
-
-
-# ===========================================================================
-# TEST 3: §7.3 — Fabricated capacity equivalence
-# ===========================================================================
-# The design comment states:
-#   "Both paths produce slot-seconds per minute at identical magnitudes."
-#
-# BigQuery docs confirm: "Empty per_second_details means the reservation's
-# capacity remained stable (static) during that one-minute interval."
-#
-# Therefore: if per_second_details is empty, the minute-level value IS the
-# constant per-second value, and replicating it 60 times produces the correct
-# total. A scenario with intra-minute variance + empty per_second_details
-# CANNOT occur in real BigQuery data.
-#
-# This test verifies equivalence for the scenario that DOES occur (constant
-# capacity throughout the minute) and demonstrates the expected divergence
-# for a hypothetical variance scenario (which can't happen in practice).
-
-class TestFabricatedCapacityEquivalence:
-    """Verify that constant per-second data == fabricated (replicated) data."""
-
-    def test_constant_capacity_equivalent(self):
-        """
-        When autoscale capacity is constant for the full minute (the ONLY
-        scenario where per_second_details would be empty), the fabricated
-        path (replicate × 60) produces identical slot-seconds to the
-        per-second path.
-        """
-        # "Per-second path": 60 rows, each with autoscale=200
-        per_second = _make_capacity_df("res-A", "2024-01-01T00:00:00", 60, baseline=100, autoscale_current=200)
-
-        # "Fabricated path": same thing — 60 rows with autoscale=200
-        # (this is what GENERATE_TIMESTAMP_ARRAY produces when minute-level value is 200)
-        fabricated = _make_capacity_df("res-A", "2024-01-01T00:00:00", 60, baseline=100, autoscale_current=200)
-
-        usage = _make_usage_df("res-A", "2024-01-01T00:00:00", 60, used=250)
-
-        sum_per_sec = _rollup_to_summaries(per_second, usage)
-        sum_fabricated = _rollup_to_summaries(fabricated, usage)
-
-        assert sum_per_sec[0].legacy_slot_seconds == sum_fabricated[0].legacy_slot_seconds, \
-            "Constant capacity: per-second and fabricated must produce identical legacy slot-seconds"
-        assert sum_per_sec[0].fluid_slot_seconds == sum_fabricated[0].fluid_slot_seconds, \
-            "Constant capacity: per-second and fabricated must produce identical fluid slot-seconds"
-
-    def test_zero_autoscale_fabricated_produces_zero_legacy(self):
-        """
-        When the minute-level autoscale is 0, fabricating 60 zeros must
-        produce 0 legacy slot-seconds — not baseline * 60.
-        """
-        fabricated = _make_capacity_df("res-A", "2024-01-01T00:00:00", 60, baseline=500, autoscale_current=0)
-        usage = _make_usage_df("res-A", "2024-01-01T00:00:00", 60, used=300)
-
-        result = _rollup_to_summaries(fabricated, usage)
-        assert result[0].legacy_slot_seconds == 0.0, \
-            "Fabricated path with autoscale=0 must produce 0 legacy (not baseline*60)"

@@ -2,6 +2,19 @@
 
 ---
 
+## v1.1.6 — 2026-07-12
+
+### ✨ Features & Enhancements
+
+#### feat(schema-audit): Implemented Organization-Level Schema Auditing
+*   **Context:** BigQuery natively lacks `COLUMNS_BY_ORGANIZATION` or `TABLES_BY_ORGANIZATION` views, which historically prevented organization-wide auditing of `is_partitioning_column` and `clustering_ordinal_position` in a single query.
+*   **Architecture:** We engineered around this known Google Cloud limitation by implementing a dynamic, two-step orchestration layer in the backend:
+    1.  **Discovery:** Queries `TABLE_STORAGE_BY_ORGANIZATION` to extract a distinct list of active projects containing large tables (>1GB).
+    2.  **Dynamic UNION ALL:** Iteratively builds and executes a massive `UNION ALL` query against each active project's regional `INFORMATION_SCHEMA.COLUMNS` and `INFORMATION_SCHEMA.TABLES`.
+*   **Impact:** The FinOps Optimizer now seamlessly scans the entire GCP organization for missing partitions and clusters without querying empty projects or hitting API limits, perfectly aligning with BigQuery Engineering's recommended workaround for cross-organization auditing.
+
+---
+
 ## v1.1.5 — 2026-07-11
 
 Data correctness and defense-in-depth release addressing **8 net-new findings** from a 5th independent code review (re-verified against live v1.1.4 source).

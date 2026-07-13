@@ -270,6 +270,7 @@ To query organization-wide metadata (`INFORMATION_SCHEMA` tables scoped with `*_
 
 ### 2. Organization-level Permissions (Required for Organisation-scoped Views)
 *   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Required to retrieve slot metrics from `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, and `TABLE_STORAGE_BY_ORGANIZATION`. Also enables viewing reservation hierarchies.
+*   **BigQuery Data Viewer** (`roles/bigquery.dataViewer`) or **Metadata Viewer** (`roles/bigquery.metadataViewer`): Required at the organization level to query `INFORMATION_SCHEMA.SCHEMATA_OPTIONS` across all projects. Without this, the Storage Analysis fast-path (`UNION ALL`) will fail with a 403 Access Denied and fall back to a slower, project-by-project loop.
 
 ### 3. Dataset-level Permissions (Optional - for inline execution)
 *   **BigQuery Data Owner** (`roles/bigquery.dataOwner`): Required if executing the DDL commands to change storage models directly from the dashboard.

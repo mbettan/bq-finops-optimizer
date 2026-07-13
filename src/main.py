@@ -349,7 +349,7 @@ class StorageParams(FocusMixin):
 
 
 class StaticAuditParams(StorageParams):
-    pass
+    scope: str = 'organization'
 
 class StaticAuditResult(BaseModel):
     project_id: str
@@ -369,72 +369,62 @@ def run_static_schema_audit(params: StaticAuditParams):
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
     
-    # We query the project-level INFORMATION_SCHEMA views.
-    # TABLE_STORAGE provides total_rows directly (no need for PARTITIONS).
-    sql = f"""
-    WITH table_sizes AS (
-      SELECT
-        project_id,
-        table_schema,
-        table_name,
-        total_logical_bytes AS size_bytes,
-        total_rows,
-        total_partitions
-      FROM
-        `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE
-      WHERE
-        deleted = false
-    ),
-    table_cols AS (
-      SELECT
-        table_catalog,
-        table_schema,
-        table_name,
-        MAX(CASE WHEN is_partitioning_column = 'YES' THEN column_name END) AS partition_column,
-        STRING_AGG(CASE WHEN clustering_ordinal_position IS NOT NULL THEN column_name END, ', ' ORDER BY clustering_ordinal_position) AS clustering_fields
-      FROM
-        `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.COLUMNS
-      GROUP BY 1,2,3
-    )
-    SELECT
-      t.table_catalog AS project_id,
-      t.table_schema AS dataset_id,
-      t.table_name AS table_id,
-      COALESCE(s.total_rows, 0) AS row_count,
-      COALESCE(s.size_bytes, 0) AS size_bytes,
-      COALESCE(s.total_partitions > 0, false) AS is_partitioned,
-      c.partition_column AS partition_column,
-      COALESCE(c.clustering_fields IS NOT NULL, false) AS is_clustered,
-      c.clustering_fields AS clustering_fields
-    FROM
-      `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLES t
-    LEFT JOIN
-      table_sizes s
-    ON
-      t.table_catalog = s.project_id
-      AND t.table_schema = s.table_schema
-      AND t.table_name = s.table_name
-    LEFT JOIN
-      table_cols c
-    ON
-      t.table_catalog = c.table_catalog
-      AND t.table_schema = c.table_schema
-      AND t.table_name = c.table_name
-    WHERE
-      t.table_type = 'BASE TABLE'
-      AND COALESCE(s.size_bytes, 0) > 1073741824 -- > 1 GB
-      AND (COALESCE(s.total_partitions, 0) = 0 OR c.clustering_fields IS NULL)
-      -- Exclude system/tooling datasets that are never optimization candidates
-      AND NOT STARTS_WITH(t.table_schema, 'assessment_')  -- BigQuery Migration Assessment exports
-      AND NOT STARTS_WITH(t.table_schema, '_script')       -- Temporary script datasets
-      AND NOT STARTS_WITH(t.table_schema, '_c0')           -- Temporary query result datasets
-      AND t.table_schema != 'dataform'                     -- BQ transfer service staging
-    ORDER BY
-      size_bytes DESC
-    LIMIT 50
-    """
-    
     try:
+        if params.scope == 'organization':
+            logger.info(f"▶ Static Schema Audit — project={resolved_project} | region={region_val} | scope=full organization | safety_cap=200 GiB (default)")
+            proj_sql = f"""
+            SELECT DISTINCT project_id 
+            FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
+            WHERE total_logical_bytes > 1073741824 AND deleted = false
+            """
+            proj_results = run_query_and_log(scoped_client, proj_sql, "Get Org Projects for Schema Audit", params=params)
+            target_projects = [row['project_id'] for row in proj_results]
+        else:
+            target_projects = [resolved_project]
+            
+        if not target_projects:
+            log_endpoint_end("Static Schema Audit", t0, _logger=logger)
+            return []
+
+        union_blocks = []
+        for p in target_projects:
+            block = f"""
+            SELECT
+              t.table_catalog AS project_id,
+              t.table_schema AS dataset_id,
+              t.table_name AS table_id,
+              COALESCE(s.total_rows, 0) AS row_count,
+              COALESCE(s.size_bytes, 0) AS size_bytes,
+              COALESCE(s.total_partitions > 0, false) AS is_partitioned,
+              c.partition_column AS partition_column,
+              COALESCE(c.clustering_fields IS NOT NULL, false) AS is_clustered,
+              c.clustering_fields AS clustering_fields
+            FROM
+              `{p}`.`{region_val}`.INFORMATION_SCHEMA.TABLES t
+            LEFT JOIN
+              (SELECT table_schema, table_name, total_logical_bytes AS size_bytes, total_rows, total_partitions 
+               FROM `{p}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE WHERE deleted = false) s
+            ON t.table_schema = s.table_schema AND t.table_name = s.table_name
+            LEFT JOIN
+              (SELECT table_schema, table_name, 
+               MAX(CASE WHEN is_partitioning_column = 'YES' THEN column_name END) AS partition_column,
+               STRING_AGG(CASE WHEN clustering_ordinal_position IS NOT NULL THEN column_name END, ', ' ORDER BY clustering_ordinal_position) AS clustering_fields
+               FROM `{p}`.`{region_val}`.INFORMATION_SCHEMA.COLUMNS GROUP BY 1,2) c
+            ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+            WHERE
+              t.table_type = 'BASE TABLE'
+              AND COALESCE(s.size_bytes, 0) > 1073741824 -- > 1 GB
+              AND (COALESCE(s.total_partitions, 0) = 0 OR c.clustering_fields IS NULL)
+              -- Exclude system/tooling datasets that are never optimization candidates
+              AND NOT STARTS_WITH(t.table_schema, 'assessment_')  -- BigQuery Migration Assessment exports
+              AND NOT STARTS_WITH(t.table_schema, '_script')       -- Temporary script datasets
+              AND NOT STARTS_WITH(t.table_schema, '_c0')           -- Temporary query result datasets
+              AND t.table_schema != 'dataform'                     -- BQ transfer service staging
+            """
+            union_blocks.append(block)
+            
+        sql = "\nUNION ALL\n".join(union_blocks) + "\nORDER BY size_bytes DESC LIMIT 50"
+        
         results = run_query_and_log(scoped_client, sql, "Static Schema Audit", params=params)
         output = []
         for row in results:
@@ -449,8 +439,8 @@ def run_static_schema_audit(params: StaticAuditParams):
                 is_clustered=bool(row['is_clustered']),
                 clustering_fields=row['clustering_fields']
             ))
-        # No large unpartitioned/unclustered tables found — a genuinely empty
-        # result is a valid, informative answer; do not mask it with fake rows.
+            
+        logger.info(f"🔍 Static Schema Audit found {len(output)} unoptimized tables. Returning to UI.")
         log_endpoint_end("Static Schema Audit", t0, _logger=logger)
         return output
     except Exception as e:
@@ -475,24 +465,48 @@ def fetch_active_assist_recommendations(params: StorageParams):
     scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
     region_val = _normalize_region(params.region)
     
-    # Try querying the real RECOMMENDATIONS view if it exists and is accessible
-    sql = f"""
-    SELECT
-      project_id,
-      target_resources,
-      description,
-      primary_impact,
-      additional_details
-    FROM
-      `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS
-    WHERE
-      recommender = 'google.bigquery.table.PartitionClusterRecommender'
-    LIMIT 20
-    """
-    
-    logger.info(f"Querying Google Active Assist Recommendations...")
-    
     try:
+        # Check if the params has scope (Active Assist uses StorageParams which doesn't have scope by default, but UI might send it)
+        # We will check if it's an organization scope request. If the UI didn't send it, fallback to project.
+        scope_val = getattr(params, 'scope', 'organization' if hasattr(params, 'scope') else 'project')
+        # However, to be consistent with Static Audit, we will check if it's explicitly set to organization.
+        # Actually, let's just make it check if the model has a scope field or check the payload dictionary
+        
+        # We'll just extract all org projects using TABLE_STORAGE_BY_ORGANIZATION
+        # since we want Active Assist to scan the full org when possible.
+        logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
+        proj_sql = f"""
+        SELECT DISTINCT project_id 
+        FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
+        WHERE deleted = false
+        """
+        proj_results = run_query_and_log(scoped_client, proj_sql, "Get Org Projects for Active Assist", params=params)
+        target_projects = [row['project_id'] for row in proj_results]
+        
+        if not target_projects:
+            log_endpoint_end("Active Assist", t0, _logger=logger)
+            return []
+
+        union_blocks = []
+        for p in target_projects:
+            block = f"""
+            SELECT
+              '{p}' AS project_id,
+              target_resources,
+              description,
+              primary_impact,
+              additional_details
+            FROM
+              `{p}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS
+            WHERE
+              recommender = 'google.bigquery.table.PartitionClusterRecommender'
+            """
+            union_blocks.append(block)
+            
+        sql = "\nUNION ALL\n".join(union_blocks) + "\nLIMIT 20"
+        
+        logger.info(f"Querying Google Active Assist Recommendations across {len(target_projects)} projects...")
+        
         # We will attempt to run it
         results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
         output = []
@@ -501,7 +515,13 @@ def fetch_active_assist_recommendations(params: StorageParams):
         for row in results:
             # Parse resource to extract dataset and table
             # e.g. "projects/project_id/datasets/dataset_id/tables/table_id"
-            resources = row['target_resources'] or ""
+            resources_val = row.get('target_resources')
+            resources = ""
+            if resources_val and isinstance(resources_val, list) and len(resources_val) > 0:
+                resources = str(resources_val[0])
+            elif isinstance(resources_val, str):
+                resources = resources_val
+
             dataset_id = "UNKNOWN"
             table_id = "UNKNOWN"
             if "/datasets/" in resources and "/tables/" in resources:
@@ -525,18 +545,38 @@ def fetch_active_assist_recommendations(params: StorageParams):
                 if cost_proj and isinstance(cost_proj, dict):
                     savings = float(cost_proj.get('cost_in_local_currency') or cost_proj.get('cost_savings') or 0.0)
 
+            editions_savings = 0.0
+
             # Parse column suggestions from additional_details if available
             cluster_cols: List[str] = []
             part_col: Optional[str] = None
             additional_details = row.get('additional_details') or {}
             if isinstance(additional_details, dict):
-                # Best-effort extraction: real parsing depends on recommender payload shape
+                # BigQuery stores recommendations in an 'overview' JSON node
+                overview = additional_details.get('overview', {})
                 if rec_type == 'Partition':
-                    part_col = additional_details.get('recommended_partition_column') or None
+                    part_col = overview.get('partitionColumn') or additional_details.get('recommended_partition_column') or None
                 else:
-                    cols = additional_details.get('recommended_cluster_columns')
+                    cols = overview.get('clusterColumns') or additional_details.get('recommended_cluster_columns')
                     if isinstance(cols, list):
                         cluster_cols = [str(c) for c in cols]
+                    elif isinstance(cols, str):
+                        cluster_cols = [cols]
+                
+                # Estimate savings if not provided in primary_impact
+                # On-Demand: $6.25 per TB
+                tb_saved = overview.get('bytesSavedMonthlyTb')
+                if not tb_saved:
+                    b_saved = overview.get('bytesSavedMonthly') or 0.0
+                    tb_saved = float(b_saved) / (1024**4)
+                
+                if tb_saved and savings == 0.0:
+                    savings = float(tb_saved) * 6.25
+                
+                # Editions: $0.06 per slot-hour (1 hr = 3600000 ms)
+                slot_ms_saved = overview.get('slotMsSavedMonthly') or 0.0
+                if slot_ms_saved:
+                    editions_savings = (float(slot_ms_saved) / 3600000.0) * 0.06
 
             output.append(ActiveAssistResult(
                 project_id=row['project_id'] or resolved_project,
@@ -546,7 +586,7 @@ def fetch_active_assist_recommendations(params: StorageParams):
                 cluster_columns=cluster_cols,
                 partition_column=part_col,
                 on_demand_monthly_savings=savings,
-                editions_monthly_savings=None,
+                editions_monthly_savings=editions_savings,
             ))
             
         log_endpoint_end("Active Assist", t0, _logger=logger)
@@ -648,7 +688,7 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
        SUM(fail_safe_physical_bytes) AS fail_safe_physical_bytes,
        SUM(long_term_physical_bytes) AS long_term_physical_bytes
     FROM
-       `{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
+       `{scoped_client.project}`.`{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
     WHERE TRUE
        AND total_physical_bytes > 0
        AND deleted = false
@@ -678,10 +718,27 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
         # Rescale time travel
         time_travel_physical_gib_rescaled = time_travel_physical_gib * params.time_travel_rescale
 
-        # Derived metrics        # Formula: Physical Cost = (Active + Failsafe)*rate + (LongTerm)*rate
-        # Since active_physical ALREADY includes TT AND Failsafe, we subtract them out first so we can 
-        # add back our RESCALED TT cost based on user parameters, and treat failsafe distinctly.
-        active_core_physical_gib = max(0, active_physical_gib - time_travel_physical_gib - fail_safe_physical_gib)
+        # ┌──────────────────────────────────────────────────────────────────┐
+        # │  IMPORTANT: BigQuery physical bytes decomposition                │
+        # │                                                                  │
+        # │  Per the INFORMATION_SCHEMA.TABLE_STORAGE docs:                  │
+        # │    active_physical_bytes  = live data + time_travel              │
+        # │    fail_safe_physical_bytes is a SEPARATE column, NOT included   │
+        # │    in active_physical_bytes.                                     │
+        # │                                                                  │
+        # │  Correct decomposition:                                          │
+        # │    active_core = active_physical - time_travel     (= live data) │
+        # │    physical_cost = (core + tt_rescaled + fs) * active_price      │
+        # │                 + long_term * lt_price                           │
+        # │                                                                  │
+        # │  DO NOT subtract fail_safe from active_physical here.            │
+        # │  That was a past bug: it caused fs to cancel out when added      │
+        # │  back later, silently underestimating physical cost.             │
+        # │                                                                  │
+        # │  Ref: https://cloud.google.com/bigquery/docs/                    │
+        # │       information-schema-table-storage#schema                    │
+        # └──────────────────────────────────────────────────────────────────┘
+        active_core_physical_gib = max(0, active_physical_gib - time_travel_physical_gib)
         
         forecast_logical_active_cost = active_logical_gib * params.active_logical_price
         forecast_logical_long_term_cost = long_term_logical_gib * params.long_term_logical_price
@@ -699,11 +756,10 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
 
         # Build total physical volume from the SAME components used in forecast_physical,
         # so the blended pricing ratio (cost / volume) is internally consistent.
-        #
-        # active_physical_bytes INCLUDES raw time travel AND failsafe, so we strip them out and add back
-        # the RESCALED time travel — mirroring the forecast logic above exactly.
+        # active_physical_bytes includes TT only (not failsafe), so we strip raw TT
+        # and add back RESCALED TT — mirroring the forecast logic above exactly.
         total_physical_gib = (
-            active_core_physical_gib              # active minus raw TT and failsafe
+            active_core_physical_gib              # live data (active minus raw TT)
             + time_travel_physical_gib_rescaled   # rescaled TT (matches forecast)
             + fail_safe_physical_gib
             + long_term_physical_gib
@@ -756,7 +812,7 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
     return physical_datasets
 
 def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, params=None):
-    sql = f"SELECT option_value FROM `{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
+    sql = f"SELECT option_value FROM `{scoped_client.project}`.`{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
     logger.info(f"Checking Organization Default Storage Billing Model for {region}")
     try:
         results = run_query_and_log(scoped_client, sql, "Org Storage Billing Model", params=params)
@@ -1591,28 +1647,88 @@ def analyze_ai_query(params: AIParams):
             
         schema_cache = {}
         
-        def fetch_table_schema(table_ref):
-            try:
-                table_obj = scoped_client.get_table(table_ref)
-                return table_ref, table_obj
-            except (gax_exc.NotFound, gax_exc.Forbidden):
-                return table_ref, None
-                
-        # Concurrently fetch schemas using a ThreadPoolExecutor
-        req_id = request_id_var.get()
-        def fetch_with_ctx(table_ref):
-            token = request_id_var.set(req_id)
-            try:
-                return fetch_table_schema(table_ref)
-            finally:
-                request_id_var.reset(token)
+        # Group tables by project to run bulk INFORMATION_SCHEMA queries
+        tables_by_project = {}
+        for table_ref in all_tables:
+            parts = table_ref.split('.')
+            if len(parts) == 3:
+                p, d, t = parts
+                if p not in tables_by_project:
+                    tables_by_project[p] = []
+                tables_by_project[p].append(f"{d}.{t}")
 
-        logger.info(f"Concurrently fetching schemas for {len(all_tables)} unique referenced tables")
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_results = executor.map(fetch_with_ctx, all_tables)
-            for table_ref, table_obj in future_results:
-                schema_cache[table_ref] = table_obj
+        import re
+        logger.info(f"Fetching schemas for {len(all_tables)} unique referenced tables via INFORMATION_SCHEMA in bulk")
+        for p, d_t_list in tables_by_project.items():
+            try:
+                in_clause_items = [f"'{dt}'" for dt in d_t_list]
+                in_clause = ", ".join(in_clause_items)
+                if not in_clause: continue
                 
+                sql = f"""
+                SELECT
+                  t.table_schema,
+                  t.table_name,
+                  s.total_rows,
+                  s.total_logical_bytes AS size_bytes,
+                  c.partition_column,
+                  c.clustering_fields,
+                  o.option_value AS require_partition_filter,
+                  col_count.num_columns,
+                  t.ddl
+                FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.TABLES t
+                LEFT JOIN
+                  (SELECT table_schema, table_name, total_logical_bytes, total_rows 
+                   FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE WHERE deleted = false) s
+                ON t.table_schema = s.table_schema AND t.table_name = s.table_name
+                LEFT JOIN
+                  (SELECT table_schema, table_name, 
+                   MAX(CASE WHEN is_partitioning_column = 'YES' THEN column_name END) AS partition_column,
+                   STRING_AGG(CASE WHEN clustering_ordinal_position IS NOT NULL THEN column_name END, ', ' ORDER BY clustering_ordinal_position) AS clustering_fields
+                   FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.COLUMNS GROUP BY 1,2) c
+                ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                LEFT JOIN
+                  (SELECT table_schema, table_name, option_value 
+                   FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.TABLE_OPTIONS
+                   WHERE option_name = 'require_partition_filter') o
+                ON t.table_schema = o.table_schema AND t.table_name = o.table_name
+                LEFT JOIN
+                  (SELECT table_schema, table_name, COUNT(column_name) AS num_columns
+                   FROM `{p}`.`{params.region}`.INFORMATION_SCHEMA.COLUMNS GROUP BY 1,2) col_count
+                ON t.table_schema = col_count.table_schema AND t.table_name = col_count.table_name
+                WHERE CONCAT(t.table_schema, '.', t.table_name) IN ({in_clause})
+                """
+                
+                results = run_query_and_log(scoped_client, sql, f"Schema Cache {p}", params=params)
+                for row in results:
+                    full_ref = f"{p}.{row.table_schema}.{row.table_name}"
+                    
+                    part_info = "Not partitioned"
+                    if row.partition_column:
+                        req = " (REQUIRES partition filter)" if row.require_partition_filter in ['"true"', 'true'] else ""
+                        part_info = f"Partitioned by: {row.partition_column}{req}"
+                    elif row.ddl and "PARTITION BY " in row.ddl:
+                        match = re.search(r"PARTITION BY\s+(.*?)(?:\n|;|\s+OPTIONS)", row.ddl)
+                        if match:
+                            field = match.group(1).strip()
+                            req = " (REQUIRES partition filter)" if row.require_partition_filter in ['"true"', 'true'] else ""
+                            part_info = f"Partitioned by: {field}{req}"
+                            
+                    clust_info = f"Clustered by: {row.clustering_fields}" if row.clustering_fields else "Not clustered"
+                    if row.ddl and not row.clustering_fields and "CLUSTER BY " in row.ddl:
+                        match = re.search(r"CLUSTER BY\s+(.*?)(?:\n|;|\s+OPTIONS)", row.ddl)
+                        if match:
+                            clust_info = f"Clustered by: {match.group(1).strip()}"
+                            
+                    schema_cache[full_ref] = {
+                        "num_rows": row.total_rows or 0,
+                        "num_bytes": row.size_bytes or 0,
+                        "part_info": part_info,
+                        "clust_info": clust_info,
+                        "num_columns": row.num_columns or 0
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to fetch schemas for project {p} via INFORMATION_SCHEMA: {e}")
         # Build Audits Data
         endpoint_url = (
             f"https://aiplatform.googleapis.com/v1/projects/{target_project}"
@@ -1630,30 +1746,14 @@ def analyze_ai_query(params: AIParams):
             for table_ref in referenced_tables:
                 table_obj = schema_cache.get(table_ref)
                 if table_obj:
-                    # Surfacing range-partitioning and partition requirement (M2)
-                    if table_obj.time_partitioning:
-                        field = table_obj.time_partitioning.field or "_PARTITIONTIME (ingestion)"
-                        req = " (REQUIRES partition filter)" if table_obj.require_partition_filter else ""
-                        part_info = f"Partitioned by: {field}{req}"
-                    elif table_obj.range_partitioning:
-                        part_info = f"Range-partitioned by: {table_obj.range_partitioning.field}"
-                    else:
-                        part_info = "Not partitioned"
-                        
-                    clust_info = f"Clustered by: {', '.join(table_obj.clustering_fields)}" if table_obj.clustering_fields else "Not clustered"
-                    # Summarize DDL: We don't need all column names to detect structural anti-patterns.
-                    # This drastically reduces payload size, leaving more room for the SQL text.
-                    num_columns = len(table_obj.schema)
-                    
-                    num_rows = table_obj.num_rows if table_obj.num_rows is not None else 0
-                    num_bytes = table_obj.num_bytes if table_obj.num_bytes is not None else 0
-                    
+                    num_rows = table_obj["num_rows"]
+                    num_bytes = table_obj["num_bytes"]
                     schemas_context.append(
                         f"Table `{table_ref}`:\n"
-                        f"- Row count: {num_rows:,} | Size: {num_bytes / (1024**2):.2f} MB\n" # Rich size metadata (M3)
-                        f"- {part_info}\n"
-                        f"- {clust_info}\n"
-                        f"- Schema size: {num_columns} columns"
+                        f"- Row count: {num_rows:,} | Size: {num_bytes / (1024**2):.2f} MB\n"
+                        f"- {table_obj['part_info']}\n"
+                        f"- {table_obj['clust_info']}\n"
+                        f"- Schema size: {table_obj['num_columns']} columns"
                     )
                     tables_found_count += 1
                     
@@ -1948,33 +2048,49 @@ def analyze_governance(params: GovernanceParams):
         
         filter_issues = []
         
-        for row in top_datasets_results:
-            p = row.project_id
-            ds = row.dataset_id
+        if top_datasets_results:
+            partitioned_tables_clauses = []
+            table_options_clauses = []
             
-            logger.info(f"Scanning project {p} dataset {ds} for partition filters via API...")
-            try:
-                dataset_ref = bigquery.DatasetReference(p, ds)
-                tables = scoped_client.list_tables(dataset_ref, max_results=100) # Cap at 100 tables
+            for row in top_datasets_results:
+                p = row.project_id
+                ds = row.dataset_id
+                partitioned_tables_clauses.append(
+                    f"SELECT DISTINCT '{p}' AS p, '{ds}' AS d, table_name AS t FROM `{p}`.`{ds}`.INFORMATION_SCHEMA.PARTITIONS"
+                )
+                table_options_clauses.append(
+                    f"SELECT '{p}' AS p, '{ds}' AS d, table_name AS t, option_value FROM `{p}`.`{ds}`.INFORMATION_SCHEMA.TABLE_OPTIONS WHERE option_name = 'require_partition_filter'"
+                )
                 
-                for tbl_ref in tables:
-                    # list_tables returns TableListItem, we need full Table object to see partitioning
-                    tbl = scoped_client.get_table(tbl_ref.reference)
-                    
-                    if tbl.time_partitioning or tbl.range_partitioning:
-                        if not tbl.require_partition_filter:
-                            p_type = "RANGE"
-                            if tbl.time_partitioning:
-                                p_type = str(tbl.time_partitioning.type_)
-                                
-                            filter_issues.append(PartitionFilterResult(
-                                project_id=p,
-                                dataset_id=ds,
-                                table_name=tbl.table_id,
-                                partition_type=p_type
-                            ))
-            except Exception as e:
-                logger.warning(f"Failed to scan dataset {ds} in project {p} via API: {e}")
+            if partitioned_tables_clauses:
+                pt_sql = " UNION ALL ".join(partitioned_tables_clauses)
+                opt_sql = " UNION ALL ".join(table_options_clauses)
+                
+                audit_sql = f"""
+                WITH partitioned_tables AS (
+                  {pt_sql}
+                ),
+                table_options AS (
+                  {opt_sql}
+                )
+                SELECT pt.p, pt.d, pt.t, o.option_value
+                FROM partitioned_tables pt
+                LEFT JOIN table_options o ON pt.p = o.p AND pt.d = o.d AND pt.t = o.t
+                WHERE o.option_value IS NULL OR o.option_value = 'false'
+                """
+                
+                logger.info("Executing bulk missing partition filters audit via INFORMATION_SCHEMA...")
+                try:
+                    results = run_query_and_log(scoped_client, audit_sql, "Missing Partition Filters Audit", params=params, query_parameters=focus_params)
+                    for row in results:
+                        filter_issues.append(PartitionFilterResult(
+                            project_id=row.p,
+                            dataset_id=row.d,
+                            table_name=row.t,
+                            partition_type="UNKNOWN" # Exact type not strictly needed for UI presentation
+                        ))
+                except Exception as e:
+                    logger.warning(f"Bulk partition filter audit failed: {e}")
                 
         logger.info(f"Returning {len(expiration_issues)} expiration issues, {len(filter_issues)} filter issues")
         log_endpoint_end("Governance Auditor", t0, _logger=logger)
