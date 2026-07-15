@@ -4,170 +4,119 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization & Slot Simulation Suite</title>
+    <title>Open-Source BigQuery Cost Optimizer | BQ FinOps</title>
     <meta name="description"
-        content="Free, open-source BigQuery cost optimization suite. Automated query review, slot capacity simulation, dynamic billing guardrails, hybrid cost attribution, fluid scaling analysis, and migration risk detection — the complete FinOps toolkit for Google Cloud BigQuery.">
-    <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer, AI Doctor, Gemini, BigQuery Editions, Reservation Sizing, Capacity Planning, Cooldown Tax, Fluid Scaling, Migration Guardrails, Cost Attribution, Autoscaler, BigQuery Slots, GCP Cost Management, Cloud FinOps, BigQuery Storage Billing">
-    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
-    <meta name="author" content="mbettan">
-    <meta name="theme-color" content="#3b82f6">
+        content="Reduce BigQuery spend with open-source tools for query cost analysis, slot reservation planning, Editions capacity sizing, storage billing, and cost attribution.">
     <link rel="canonical" href="https://mbettan.github.io/bq-finops-optimizer/">
-    <link rel="apple-touch-icon" href="static/favicon.png">
 
-    <!-- Open Graph / Facebook -->
+    <!-- Open Graph -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="og:title" content="BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization Suite">
-    <meta property="og:description" content="Free, open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+    <meta property="og:title" content="Open-Source BigQuery Cost Optimizer">
+    <meta property="og:description"
+        content="Analyze BigQuery query spend, slot reservations, Editions capacity, storage billing, and shared-cost attribution.">
     <meta property="og:site_name" content="BQ FinOps Optimizer">
     <meta property="og:locale" content="en_US">
-    <meta property="og:image" content="https://mbettan.github.io/bq-finops-optimizer/static/favicon.png">
-    <meta property="og:image:width" content="512">
-    <meta property="og:image:height" content="512">
-    <meta property="og:image:alt" content="BQ FinOps Optimizer logo">
+    <meta property="og:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
 
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
     <meta property="twitter:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="twitter:title" content="BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization Suite">
-    <meta property="twitter:description" content="Free, open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
-    <meta property="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/favicon.png">
-    <meta property="twitter:image:alt" content="BQ FinOps Optimizer logo">
+    <meta property="twitter:title" content="Open-Source BigQuery Cost Optimizer">
+    <meta property="twitter:description"
+        content="Analyze BigQuery query spend, slot reservations, Editions capacity, storage billing, and shared-cost attribution.">
+    <meta property="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
 
-    <!-- Structured Data: SoftwareApplication -->
+    <!-- Structured Data -->
     <script type="application/ld+json">
     {
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "BQ FinOps Optimizer",
-        "description": "An enterprise-grade, open-source diagnostic, simulation, and governance suite designed to maximize cost efficiency and eliminate compute waste across Google Cloud BigQuery environments.",
+        "description": "Open-source BigQuery FinOps tools for query cost analysis, slot reservation planning, storage billing optimization, and cost attribution.",
         "applicationCategory": "DeveloperApplication",
-        "operatingSystem": "Cross-platform",
-        "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-        },
-        "softwareVersion": "1.2.0",
+        "applicationSubCategory": "Cloud Cost Optimization",
+        "operatingSystem": "Web",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "isAccessibleForFree": true,
+        "softwareVersion": "1.1.0",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
+        "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
+        "softwareHelp": "https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md",
         "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
         "programmingLanguage": ["Python", "JavaScript", "SQL"],
-        "author": {
-            "@type": "Person",
-            "name": "mbettan"
-        }
+        "author": { "@type": "Person", "name": "mbettan" }
     }
     </script>
 
-    <!-- Structured Data: BreadcrumbList -->
-    <script type="application/ld+json">
-    {
-        "@context": "https://schema.org",
-        "@type": "BreadcrumbList",
-        "itemListElement": [
-            {
-                "@type": "ListItem",
-                "position": 1,
-                "name": "Home",
-                "item": "https://mbettan.github.io/bq-finops-optimizer/"
-            },
-            {
-                "@type": "ListItem",
-                "position": 2,
-                "name": "Interactive Simulator",
-                "item": "https://mbettan.github.io/bq-finops-optimizer/simulator.html"
-            }
-        ]
-    }
-    </script>
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="author" content="mbettan">
+    <meta name="google-site-verification" content="">
 
-    <!-- Structured Data: FAQPage (targets featured snippet rich results) -->
-    <script type="application/ld+json">
-    {
-        "@context": "https://schema.org",
-        "@type": "FAQPage",
-        "mainEntity": [
-            {
-                "@type": "Question",
-                "name": "How do I optimize BigQuery costs?",
-                "acceptedAnswer": {
-                    "@type": "Answer",
-                    "text": "Use the BQ FinOps Optimizer to analyze storage billing models, right-size slot reservations, detect anti-patterns in SQL queries, and simulate capacity scenarios. It covers storage optimization, compute right-sizing, cost attribution, and AI-powered query review."
-                }
-            },
-            {
-                "@type": "Question",
-                "name": "What is the BigQuery cooldown tax and how does Fluid Scaling help?",
-                "acceptedAnswer": {
-                    "@type": "Answer",
-                    "text": "The cooldown tax occurs when BigQuery charges a 60-second minimum for autoscaled slots even for queries lasting fractions of a second. Fluid Scaling provides true per-second billing with zero minimum capacity, eliminating this overcharge for high-frequency short queries."
-                }
-            },
-            {
-                "@type": "Question",
-                "name": "Should I use physical or logical storage billing in BigQuery?",
-                "acceptedAnswer": {
-                    "@type": "Answer",
-                    "text": "It depends on your data modification patterns. Physical billing charges for compressed bytes including Time Travel and Fail-safe storage. Logical billing charges for uncompressed logical bytes. The BQ FinOps Optimizer automatically analyzes each dataset and recommends the cheaper model."
-                }
-            },
-            {
-                "@type": "Question",
-                "name": "How do I right-size BigQuery Editions reservations?",
-                "acceptedAnswer": {
-                    "@type": "Answer",
-                    "text": "Use the Slot Capacity Bucket Method to simulate slot consumption over a 730-hour billing month. The tool generates tiered recommendations (Aggressive p80, Balanced p95, and Max Performance) and calculates costs for PAYG, 1-Year, and 3-Year commitment tiers to find your optimal baseline."
-                }
-            },
-            {
-                "@type": "Question",
-                "name": "Is BQ FinOps Optimizer free to use?",
-                "acceptedAnswer": {
-                    "@type": "Answer",
-                    "text": "Yes, BQ FinOps Optimizer is 100% free and open-source under the Apache 2.0 license. It runs entirely within your own GCP environment — no data is sent to third-party servers."
-                }
-            }
-        ]
-    }
-    </script>
+
 
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Preconnect to all external font origins -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+
+    <!-- Preload critical font files to eliminate the CSS→woff2 waterfall -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://fonts.gstatic.com/s/sora/v17/xMQ9uFFYT72X5wkB_18qmnndmSdSnh2BAfO5mnuyOo1lfiQwV6-xo6eeIw.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2">
+
+    <!-- Google Fonts (render-blocking — needed for first paint) -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
+
+    <!-- Font Awesome — load non-render-blocking, swap in after paint -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+        media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"></noscript>
+
     <link rel="icon" type="image/png" href="static/favicon.png">
 </head>
 
 <body>
-    <!-- ░░ BACKGROUND ░░ -->
-    <div class="bg-canvas" aria-hidden="true">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
+    <!-- ░░ ATMOSPHERE ░░ -->
+    <div class="atmosphere" aria-hidden="true">
+        <div class="aurora aurora-1"></div>
+        <div class="aurora aurora-2"></div>
+        <div class="aurora aurora-3"></div>
+        <div class="stars"></div>
         <div class="grid-overlay"></div>
+        <div class="noise"></div>
     </div>
+
+    <div class="scroll-progress" id="scroll-progress" aria-hidden="true"></div>
 
     <!-- ░░ NAV ░░ -->
     <nav id="navbar" role="navigation" aria-label="Main navigation">
-        <div class="container nav-content">
-            <a href="#" class="logo" aria-label="BigQuery Optimizer home">
-                <span class="logo-icon" aria-hidden="true">
-                    <i class="fas fa-chart-pie"></i>
-                </span>
-                BQ FinOps <span class="gradient-text">Optimizer</span>
+        <div class="nav-shell container">
+            <a href="#top" class="logo" aria-label="BQ FinOps Optimizer home">
+                <span class="logo-mark" aria-hidden="true"><i class="fas fa-wave-square"></i></span>
+                <span class="logo-type">BQ&nbsp;FinOps<em>Optimizer</em></span>
             </a>
             <div class="nav-links" id="nav-links">
-                <a href="#features">Features</a>
-                <a href="#demo">Example</a>
+                <a href="#demo">Live Demo</a>
+                <a href="#features">Capabilities</a>
+                <a href="#trust">Security</a>
                 <a href="#workflow">Workflow</a>
                 <a href="simulator.html">Simulator</a>
             </div>
-            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-nav" target="_blank" rel="noopener">
-                    <i class="fab fa-github"></i>
-                    <span>GitHub</span>
+            <div class="nav-actions">
+                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-github" target="_blank" rel="noopener">
+                    <i class="fab fa-github"></i><span>Star on GitHub</span>
                 </a>
                 <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu">
                     <i class="fas fa-bars" id="hamburger-icon"></i>
@@ -176,520 +125,496 @@
         </div>
     </nav>
 
-    <!-- ░░ HERO ░░ -->
     <main id="main-content">
+
+    <!-- ░░ HERO ░░ -->
     <header class="hero" id="top">
-        <div class="hero-inner container">
-            <div class="hero-content">
+        <div class="container hero-inner">
+            <div class="hero-copy">
                 <div class="hero-badges">
-                    <div class="hero-badge">
-                        <span class="badge-dot" aria-hidden="true"></span>
-                        Open Source
-                    </div>
-                    <div class="hero-badge version-badge">
-                        <i class="fas fa-rocket" aria-hidden="true" style="font-size: 0.65rem;"></i>
-                        v1.2.0
-                    </div>
+                    <span class="chip chip-live"><span class="chip-dot"></span>Open Source · Apache 2.0</span>
+                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.1.0</span>
                 </div>
 
-                <h1>
-                    Advanced FinOps<br>
-                    <span class="gradient-text">Intelligence for BigQuery.</span>
+                <h1 class="hero-title">
+                    Stop Guessing.<br>
+                    <span class="text-aurora">Start Attributing</span><br>
+                    Every BigQuery Dollar.
                 </h1>
 
                 <p class="hero-sub">
-                    From storage billing to slot capacity planning, cost attribution to automated query review — the complete open-source FinOps toolkit for Google Cloud.
+                    An enterprise-grade diagnostic &amp; simulation suite that dissects slot consumption,
+                    hunts SQL anti-patterns with Gemini, and right-sizes your Editions capacity —
+                    <strong>deployed entirely inside your own cloud.</strong>
                 </p>
 
                 <div class="cta-group">
-                    <a href="#features" class="btn btn-primary">
-                        <i class="fas fa-bolt"></i>
-                        Explore Features
+                    <a href="simulator.html" class="btn btn-primary">
+                        <i class="fas fa-play"></i>Launch the Simulator
+                        <span class="btn-shine" aria-hidden="true"></span>
                     </a>
-                    <a href="simulator.html" class="btn btn-secondary">
-                        <i class="fas fa-play"></i>
-                        Try the Simulator
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-outline" target="_blank" rel="noopener">
+                        <i class="fab fa-github"></i>View Source
                     </a>
-                    <a href="#workflow" class="btn btn-ghost">
-                        See the Workflow
-                        <i class="fas fa-arrow-right" aria-hidden="true"></i>
-                    </a>
+                </div>
+                
+                <div class="hero-metrics" aria-label="Product statistics">
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-count="272" data-suffix="+">272+</span>
+                        <span class="hero-metric-label">Tests Passing</span>
+                    </div>
+                    <div class="hero-metric-divider" aria-hidden="true"></div>
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-count="20" data-suffix="+">20+</span>
+                        <span class="hero-metric-label">Diagnostic Modules</span>
+                    </div>
+                    <div class="hero-metric-divider" aria-hidden="true"></div>
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-prefix="$" data-count="0">$0</span>
+                        <span class="hero-metric-label">SaaS Fees. Ever.</span>
+                    </div>
                 </div>
             </div>
 
-            <!-- Animated Stats -->
-            <div class="hero-visual" aria-label="Product statistics">
-                <div class="hero-stats">
-                    <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-count="167" data-suffix="+">0</div>
-                        <div class="stat-label">Tests Passing</div>
+            <!-- Live dashboard mockup -->
+            <div class="hero-visual" aria-hidden="true">
+                <div class="dash-glow"></div>
+                <div class="dash-window">
+                    <div class="dash-chrome">
+                        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+                        <span class="dash-chrome-title"><i class="fas fa-satellite-dish"></i> org-wide · region-us · live</span>
                     </div>
-                    <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-count="16" data-suffix="">0</div>
-                        <div class="stat-label">Analysis Views</div>
-                    </div>
-                    <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-prefix="$" data-count="0" data-suffix="">$0</div>
-                        <div class="stat-label">SaaS Cost</div>
-                    </div>
-                    <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-count="100" data-suffix="%">0</div>
-                        <div class="stat-label">Open Source</div>
+                    <div class="dash-body">
+                        <div class="dash-kpis">
+                            <div class="dash-kpi">
+                                <span class="dash-kpi-label">Monthly Waste Found</span>
+                                <span class="dash-kpi-value good">$48,290</span>
+                                <span class="dash-kpi-delta up"><i class="fas fa-arrow-trend-down"></i> −31.4% spend</span>
+                            </div>
+                            <div class="dash-kpi">
+                                <span class="dash-kpi-label">Cooldown Tax</span>
+                                <span class="dash-kpi-value warn">$6,112</span>
+                                <span class="dash-kpi-delta"><i class="fas fa-stopwatch"></i> Fluid Scaling ready</span>
+                            </div>
+                        </div>
+<div class="dash-chart">
+    <div class="dash-chart-head">
+        <span>Slot Utilization · 24h</span>
+        <span class="dash-baseline-tag">p95 baseline · 100 slots</span>
+                            </div>
+                            <div class="dash-bars">
+                                <div class="dash-baseline"></div>
+                                <span style="--h:22%"></span><span style="--h:34%"></span><span style="--h:48%"></span>
+                                <span style="--h:71%"></span><span style="--h:92%" class="spike"></span><span style="--h:58%"></span>
+                                <span style="--h:41%"></span><span style="--h:30%"></span><span style="--h:52%"></span>
+                                <span style="--h:86%" class="spike"></span><span style="--h:44%"></span><span style="--h:27%"></span>
+                                <span style="--h:19%"></span><span style="--h:35%"></span><span style="--h:15%"></span>
+                                <span style="--h:24%"></span>
+                            </div>
+                            </div>
+
+                        <div class="dash-ticker">
+                            <span class="ticker-badge"><i class="fas fa-robot"></i> Query Doctor</span>
+                            <span class="ticker-text" id="ticker-text">Flagged SELECT * on 52 TB fact table — est. $312/run recoverable</span>
+                        </div>
+                        </div>
+                        </div>
+
+                <div class="float-card float-card-1">
+                    <i class="fas fa-database"></i>
+                    <div><strong>957 datasets</strong><span>audited in 42s</span></div>
+                </div>
+                <div class="float-card float-card-2">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                    <div><strong>Gemini Insight</strong><span>7 anti-patterns detected</span></div>
+                </div>
+                </div>
+                </div>
+                </header>
+                
+                <!-- ░░ MARQUEE ░░ -->
+                <div class="marquee" aria-hidden="true">
+                    <div class="marquee-track">
+                        <!-- duplicated for seamless loop -->
+                        <span><i class="fas fa-database"></i> BigQuery</span>
+                        <span><i class="fas fa-server"></i> FastAPI</span>
+                        <span><i class="fab fa-python"></i> Python</span>
+                        <span><i class="fas fa-brain"></i> Gemini</span>
+                        <span><i class="fas fa-square-root-variable"></i> NumPy</span>
+                        <span><i class="fab fa-google"></i> Cloud Run</span>
+                        <span><i class="fas fa-chart-line"></i> INFORMATION_SCHEMA</span>
+                        <span><i class="fas fa-database"></i> BigQuery</span>
+                        <span><i class="fas fa-server"></i> FastAPI</span>
+                        <span><i class="fab fa-python"></i> Python</span>
+                        <span><i class="fas fa-brain"></i> Gemini</span>
+                        <span><i class="fas fa-square-root-variable"></i> NumPy</span>
+                        <span><i class="fab fa-google"></i> Cloud Run</span>
+                        <span><i class="fas fa-chart-line"></i> INFORMATION_SCHEMA</span>
                     </div>
                 </div>
-            </div>
-        </div>
-    </header>
-
-    <!-- ░░ TECH STACK BAR ░░ -->
-    <div class="tech-bar">
-        <div class="container tech-bar-inner">
-            <span class="tech-bar-label">Powered by</span>
-            <div class="nav-links" style="display: flex;">
-                <span class="btn btn-nav"><i class="fas fa-database"></i> BigQuery</span>
-                <span class="btn btn-nav"><i class="fas fa-server"></i> FastAPI</span>
-                <span class="btn btn-nav"><i class="fab fa-python"></i> Python</span>
-                <span class="btn btn-nav"><i class="fas fa-brain"></i> Gemini</span>
-                <span class="btn btn-nav"><i class="fas fa-square-root-variable"></i> NumPy</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- ░░ RELEASE ANNOUNCEMENT BANNER ░░ -->
-    <a href="#features" class="release-banner" aria-label="View new features in v1.2.0">
-        <div class="container release-banner-inner">
-            <span class="release-banner-tag">New in v1.2.0</span>
-            <span class="release-banner-text">
-                🚀 Org-Wide Schema Auditing · Project Focus Scope · XSS Hardening · AI Doctor Enhancements · Fluid Scaling Guardrails
-            </span>
-            <i class="fas fa-arrow-right release-banner-arrow" aria-hidden="true"></i>
+                
+                <!-- ░░ RELEASE BANNER ░░ -->
+    <a href="#features" class="release-banner" aria-label="View new features in v1.1.0">
+        <div class="container release-inner">
+            <span class="release-tag">New in v1.1.0</span>
+            <span class="release-text"><strong>Query Doctor</strong> · Dynamic Billing Caps · Fluid Scaling · Migration
+                Guardrails · Cost Attribution</span>
+            <i class="fas fa-arrow-right release-arrow"></i>
         </div>
     </a>
 
-    <!-- ░░ INTERACTIVE DEMO ░░ -->
-    <section id="demo" aria-label="Interactive Demo">
+    <!-- ░░ INTERACTIVE DEMO CONSOLE ░░ -->
+    <section id="demo" aria-label="Interactive demo">
         <div class="container">
-            <div class="section-header fade-in-up">
-                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">
-                    <span class="badge-dot" aria-hidden="true"></span>
-                    Example
-                </span>
-                <h2>Behold the <span class="gradient-text">Scale of Savings</span></h2>
-                <p>Simulating an audit of <strong>957 Datasets</strong> across an enterprise organization.</p>
+            <div class="section-header reveal">
+                <span class="chip chip-section"><span class="chip-dot"></span>Interactive Console</span>
+                <h2>Behold the <span class="text-aurora">Scale of Savings</span></h2>
+                <p>A simulated audit across <strong>957 datasets</strong> and the <strong>top 500 queries</strong> of an enterprise
+                    organization. Switch engines below.</p>
             </div>
 
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem;">
-
-
-                <!-- Table Container -->
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        <table class="showcase-table">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr>
-                                    <th style="padding: 1rem; color: var(--light);">Project</th>
-                                    <th style="padding: 1rem; color: var(--light);">Dataset</th>
-                                    <th style="padding: 1rem; color: var(--light);">Logical Cost</th>
-                                    <th style="padding: 1rem; color: var(--light);">Physical Cost</th>
-                                    <th style="padding: 1rem; color: var(--light);">Rec</th>
-                                    <th style="padding: 1rem; color: var(--light);">Savings</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mock-table-body">
-                                <!-- Data injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
+            <div class="console reveal">
+                <div class="console-tabs" role="tablist" aria-label="Demo modules">
+                    <button class="console-tab is-active" role="tab" data-panel="panel-storage" aria-selected="true">
+                        <i class="fas fa-hard-drive"></i><span>Storage Optimizer</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-compute" aria-selected="false">
+                        <i class="fas fa-microchip"></i><span>Compute Analyzer</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-timeline" aria-selected="false">
+                        <i class="fas fa-chart-column"></i><span>Slot Timeline</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-profiler" aria-selected="false">
+                        <i class="fas fa-fingerprint"></i><span>Workload Profiler</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-spenders" aria-selected="false">
+                        <i class="fas fa-crown"></i><span>Top Spenders</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-matrix" aria-selected="false">
+                        <i class="fas fa-table-cells"></i><span>Edition Matrix</span>
+                    </button>
                 </div>
-            </div>
 
-            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
-                <p>Simulating an analysis of the <strong>Top 500 Queries</strong> to identify candidates for slot reservations (autoscaler) or on-demand.</p>
-            </div>
-
-            <!-- Compute Demo Card -->
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
-
-
-                <!-- Table Container -->
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        <table class="showcase-table">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr>
-                                    <th style="padding: 1rem; color: var(--light);">Job ID</th>
-                                    <th style="padding: 1rem; color: var(--light);">User</th>
-                                    <th style="padding: 1rem; color: var(--light);">On-Demand Cost</th>
-                                    <th style="padding: 1rem; color: var(--light);">Editions Cost</th>
-                                    <th style="padding: 1rem; color: var(--light);">Profile</th>
-                                    <th style="padding: 1rem; color: var(--light);">Savings</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mock-compute-table-body">
-                                <!-- Data injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Slot Optimizer Chart Demo Card -->
-            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
-                <p>Visualizing <strong>Slot Utilization</strong> at high-resolution to find the perfect baseline.</p>
-            </div>
-
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); padding: 2rem;">
-                    <h3 style="color: var(--light); margin-bottom: 1rem;">Slot Utilization Timeline</h3>
-                    
-                    <!-- Chart area -->
-                    <div style="height: 200px; position: relative; display: flex; align-items: flex-end; gap: 4px; padding-top: 2rem; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                        <!-- Baseline line -->
-                        <div style="position: absolute; top: 80px; left: 0; right: 0; border-top: 2px dashed #f59e0b; z-index: 2;">
-                            <span style="position: absolute; top: -25px; right: 0; color: #f59e0b; font-size: 0.75rem; font-weight: 600;">Recommended Baseline: 100 Slots</span>
+                <div class="console-stage">
+                    <!-- Storage -->
+                    <div class="console-panel is-active" id="panel-storage" role="tabpanel">
+                        <div class="panel-caption">
+                            <p>Physical vs. logical storage billing — with the exact <code>ALTER SCHEMA</code> DDL to capture every
+                                dollar.</p>
+                            <span class="panel-kpi" id="storage-total-kpi">—</span>
                         </div>
-                        
-                        <!-- Bars representing usage -->
-                        <div style="height: 20%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 35%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 50%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 75%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <!-- Peak above baseline -->
-                        <div style="height: 90%; width: 6%; background: #ef4444; border-radius: 4px 4px 0 0; position: relative;">
-                            <span style="position: absolute; top: -25px; left: 50%; transform: translateX(-50%); color: #ef4444; font-size: 0.75rem; font-weight: 600;">Peak</span>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Project</th>
+                                        <th>Dataset</th>
+                                        <th class="num">Logical Cost</th>
+                                        <th class="num">Physical Cost</th>
+                                        <th>Rec</th>
+                                        <th class="num">Savings / mo</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+                    <!-- Compute -->
+                    <div class="console-panel" id="panel-compute" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Job-level pricing arbitrage: which workloads belong on <strong>Editions slots</strong> and which belong
+                                <strong>On-Demand</strong>.</p>
                         </div>
-                        <div style="height: 60%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 40%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 30%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 55%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 85%; width: 6%; background: #ef4444; border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 45%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 25%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 20%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 15%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                        <div style="height: 10%; width: 6%; background: rgba(96, 165, 250, 0.3); border-radius: 4px 4px 0 0;"></div>
-                    </div>
-                    
-                    <!-- Legend -->
-                    <div style="display: flex; justify-content: center; gap: 2rem; margin-top: 1.5rem; font-size: 0.85rem;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <div style="width: 12px; height: 12px; background: rgba(96, 165, 250, 0.3); border-radius: 2px;"></div>
-                            <span style="color: var(--muted);">Baseline Coverage</span>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Job ID</th>
+                                        <th>User</th>
+                                        <th class="num">On-Demand</th>
+                                        <th class="num">Editions</th>
+                                        <th>Profile</th>
+                                        <th class="num">Delta</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-compute-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+                    <!-- Timeline -->
+                    <div class="console-panel" id="panel-timeline" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>High-resolution slot utilization to find the perfect baseline and expose <strong>autoscale
+                                    spillover</strong>.</p>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <div style="width: 12px; height: 12px; background: #ef4444; border-radius: 2px;"></div>
-                            <span style="color: var(--muted);">Autoscale Spillover</span>
+                        <div class="timeline-chart">
+                            <div class="timeline-baseline">
+                                <span class="timeline-baseline-label">Recommended p95 baseline · 100 slots</span>
+                            </div>
+                            <div class="timeline-bars">
+                                <span style="--h:20%"></span><span style="--h:35%"></span><span style="--h:50%"></span>
+                                <span style="--h:75%"></span><span style="--h:90%" class="spike" data-tip="Peak"></span>
+                                <span style="--h:60%"></span><span style="--h:40%"></span><span style="--h:30%"></span>
+                                <span style="--h:55%"></span><span style="--h:85%" class="spike"></span>
+                                <span style="--h:45%"></span><span style="--h:25%"></span><span style="--h:20%"></span>
+                                <span style="--h:15%"></span><span style="--h:10%"></span>
+                            </div>
+                            <div class="timeline-legend">
+                                <span><i class="legend-swatch swatch-base"></i>Baseline coverage</span>
+                                <span><i class="legend-swatch swatch-spill"></i>Autoscale spillover</span>
+                            </div>
+                            </div>
+                            </div>
+
+                    <!-- Profiler -->
+                    <div class="console-panel" id="panel-profiler" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Top offending query patterns causing inefficient autoscaler activations and the <strong>60-second cooldown
+                                    tax</strong>.</p>
                         </div>
-                    </div>
-                </div>
-            </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width:28%">Query Pattern</th>
+                                        <th>Project</th>
+                                        <th class="num">Frequency</th>
+                                        <th class="num">Avg Slot-hrs</th>
+                                        <th class="num">Avg Dur (s)</th>
+                                        <th class="num">Avg Bytes</th>
+                                        <th>Rec</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-profiler-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
 
-            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
-                <p>Identifying <strong>Top Offending Queries</strong> causing inefficient autoscaler activations.</p>
-            </div>
+                    <!-- Spenders -->
+                    <div class="console-panel" id="panel-spenders" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Who is actually spending? Attribute cost to principals and hold departments accountable.</p>
+                        </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th class="num">Queries</th>
+                                        <th class="num">Data Billed</th>
+                                        <th class="num">Slot Hours</th>
+                                        <th class="num">Est. Cost</th>
+                                        <th style="width:22%">Share</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-top-spenders-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
 
-            <!-- Workload Profiler Demo Card -->
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
-                <!-- Table Container -->
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        <table class="showcase-table">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr>
-                                    <th style="padding: 1rem; color: var(--light); width: 30%;">Query Text</th>
-                                    <th style="padding: 1rem; color: var(--light);">Project</th>
-                                    <th style="padding: 1rem; color: var(--light);">Job ID</th>
-                                    <th style="padding: 1rem; color: var(--light);">Frequency</th>
-                                    <th style="padding: 1rem; color: var(--light);">Avg Slot Hours</th>
-                                    <th style="padding: 1rem; color: var(--light);">Avg Duration (s)</th>
-                                    <th style="padding: 1rem; color: var(--light);">Avg Bytes</th>
-                                    <th style="padding: 1rem; color: var(--light);">Rec</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mock-profiler-table-body">
-                                <!-- Data injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
-                <p>Identifying <strong>Top Spenders</strong> to allocate costs and optimize usage.</p>
-            </div>
-
-            <!-- Top Spenders Demo Card -->
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
-                <!-- Table Container -->
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        <table class="showcase-table">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr>
-                                    <th style="padding: 1rem; color: var(--light);">User Email</th>
-                                    <th style="padding: 1rem; color: var(--light);">Query Count</th>
-                                    <th style="padding: 1rem; color: var(--light);">Total Data Billed</th>
-                                    <th style="padding: 1rem; color: var(--light);">Total Slot Hours</th>
-                                    <th style="padding: 1rem; color: var(--light);">Est. Cost</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mock-top-spenders-table-body">
-                                <!-- Data injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="fade-in-up" style="text-align: center; margin-top: 4rem; margin-bottom: 2rem;">
-                <p>Simulating an <strong>Edition Matrix Simulation</strong> to find the optimal baseline for Autoscale scenarios.</p>
-            </div>
-
-            <!-- Simulation Demo Card -->
-            <div class="bento-card fade-in-up" style="grid-column: span 6; padding: 3rem; margin-top: 2rem;">
-                <!-- Table Container -->
-                <div style="background: rgba(0,0,0,0.2); border-radius: var(--r-md); border: 1px solid var(--glass-border); overflow: hidden;">
-                    <div style="max-height: 400px; overflow-y: auto;">
-                        <table class="showcase-table">
-                            <thead style="position: sticky; top: 0; z-index: 1;">
-                                <tr style="background: rgba(255, 255, 255, 0.08); text-align: center;">
-                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">In Buckets</th>
-                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Below Baseline</th>
-                                    <th colspan="2" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale</th>
-                                    <th colspan="1" style="border-right: 1px solid rgba(255,255,255,0.1);">Autoscale Cost</th>
-                                    <th colspan="3" style="border-right: 1px solid rgba(255,255,255,0.1); background: rgba(245, 158, 11, 0.15);">Baseline Cost</th>
-                                    <th colspan="3" style="background: rgba(59, 130, 246, 0.15);">Total Monthly Cost</th>
-                                </tr>
-                                <tr style="background: rgba(255, 255, 255, 0.03);">
-                                    <th>Bucket</th>
-                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Minutes</th>
-                                    <th>Slots</th>
-                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Utilization %</th>
-                                    <th>Slot-Hours</th>
-                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">Slot-Month</th>
-                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE PAYG</th>
-                                    <th>EE PAYG</th>
-                                    <th>EE 1 Year</th>
-                                    <th style="border-right: 1px solid rgba(255,255,255,0.1);">EE 3 Years</th>
-                                    <th>EE PAYG</th>
-                                    <th>EE 1 Year</th>
-                                    <th>EE 3 Years</th>
-                                </tr>
-                            </thead>
-                            <tbody id="mock-simulation-table-body">
-                                <!-- Data injected by JS -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+                    <!-- Matrix -->
+                    <div class="console-panel" id="panel-matrix" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Vectorized <strong>Edition Matrix simulation</strong> — the optimal baseline vs. autoscale trade-off across
+                                PAYG, 1-year and 3-year commitments.</p>
+                        </div>
+                        <div class="table-shell matrix-shell">
+                            <table class="data-table matrix-table">
+                                <thead>
+                                    <tr class="matrix-groups">
+                                        <th colspan="2">In Buckets</th>
+                                        <th colspan="2">Below Baseline</th>
+                                        <th colspan="2">Autoscale</th>
+                                        <th colspan="1">AS Cost</th>
+                                        <th colspan="3" class="grp-amber">Baseline Cost</th>
+                                        <th colspan="3" class="grp-blue">Total Monthly</th>
+                                    </tr>
+                                    <tr>
+                                        <th>Bucket</th>
+                                        <th class="sep">Min</th>
+                                        <th>Slots</th>
+                                        <th class="sep">Util %</th>
+                                        <th>Slot-hrs</th>
+                                        <th class="sep">Slot-mo</th>
+                                        <th class="sep">EE PAYG</th>
+                                        <th>PAYG</th>
+                                        <th>1 Yr</th>
+                                        <th class="sep">3 Yr</th>
+                                        <th>PAYG</th>
+                                        <th>1 Yr</th>
+                                        <th>3 Yr</th>
+                                    </tr>
+                                    </thead>
+                                <tbody id="mock-simulation-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+                                </div>
+                                </div>
         </div>
     </section>
 
     <!-- ░░ FEATURES ░░ -->
-    <section id="features" aria-label="Features">
+    <section id="features" aria-label="Capabilities">
         <div class="container">
-            <div class="section-header fade-in-up">
-                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Capabilities</span>
-                <h2>Zero Friction <span class="gradient-text">Cost Optimization</span></h2>
-                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. 16 analysis views, one mission.</p>
+            <div class="section-header reveal">
+                <span class="chip chip-section">Capabilities</span>
+                <h2>Zero-Friction <span class="text-aurora">Cost Optimization</span></h2>
+                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. One mission: eliminate waste.</p>
             </div>
 
-            <div class="features-bento stagger-children">
+            <div class="bento reveal-group">
 
-                <!-- ★ AI Doctor — PREMIUM FULL-WIDTH CARD -->
-                <div class="bento-card bento-full bento-premium fade-in-up">
-                    <span class="feature-pill pill-new">✦ New</span>
-                    <div class="premium-inner">
+                <!-- ★ Query Doctor -->
+                <article class="card card-full card-premium spotlight reveal">
+                    <span class="pill pill-new">✦ New</span>
+                    <div class="premium-grid">
                         <div>
-                            <div class="bento-icon icon-ai"><i class="fas fa-robot"></i></div>
-                            <h3>AI Doctor — Semantic Query Review</h3>
-                            <p>Leverages BigQuery's native <code>AI.GENERATE</code> scalar function to run high-speed, cost-efficient SQL reviews directly inside the data warehouse. Scans your most expensive queries for 7 critical anti-patterns and generates actionable routing snippets.</p>
-                            <div class="gemini-tag">
-                                <i class="fas fa-sparkles"></i>
-                                Powered by Gemini 3.1 Flash Lite
-                            </div>
+                            <div class="card-icon icon-ai"><i class="fas fa-robot"></i></div>
+                            <h3>Automated Semantic Query Review</h3>
+                            <p>Leverages BigQuery's native <code>AI.GENERATE</code> scalar function to run high-speed,
+                                cost-efficient SQL reviews <em>inside</em> the warehouse. Scans your most expensive
+                                queries for 7 critical anti-patterns and produces actionable routing snippets.</p>
+                            <div class="gemini-tag"><i class="fas fa-wand-magic-sparkles"></i>Powered by Gemini · Vertex AI native</div>
                         </div>
                         <div>
-                            <p style="font-size: 0.8rem; color: var(--muted-mid); margin-bottom: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Detected Anti-Patterns</p>
-                            <div class="antipattern-pills">
-                                <span class="antipattern-pill">SELECT * Abuse</span>
-                                <span class="antipattern-pill">Unclustered Limits</span>
-                                <span class="antipattern-pill">Function-Wrapped Partition Keys</span>
-                                <span class="antipattern-pill">Missing Partition Filter</span>
-                                <span class="antipattern-pill">Cross-Join Patterns</span>
-                                <span class="antipattern-pill">Redundant Subqueries</span>
-                                <span class="antipattern-pill">Unqualified Columns</span>
+                            <p class="premium-label">Detected Anti-Patterns</p>
+                            <div class="pattern-pills">
+                                <span>SELECT * Abuse</span><span>Unclustered LIMITs</span>
+                                <span>Function-Wrapped Partition Keys</span><span>Missing Partition Filter</span>
+                                <span>Cross-Join Patterns</span><span>Redundant Subqueries</span>
+                                <span>Unqualified Columns</span>
                             </div>
-                            <p style="margin-top: 1rem; font-size: 0.82rem; color: var(--muted);">Generates copy-pasteable <code style="color: var(--primary-light);">SET @@reservation</code> DDL statements for optimized routing.</p>
-                        </div>
-                    </div>
-                </div>
+                            <div class="code-strip">
+                                <span class="code-strip-lang">SQL</span>
+                                <code>SET @@reservation = 'projects/…/reservations/batch-etl';</code>
+                            </div>
+                            </div>
+                            </div>
+                </article>
 
-                <!-- Dynamic Billing Limits -->
-                <div class="bento-card bento-large fade-in-up">
-                    <span class="feature-pill pill-new">New</span>
-                    <div class="bento-icon icon-shield"><i class="fas fa-shield-halved"></i></div>
-                    <div>
-                        <h3>Dynamic Billing Limits & Cost Safety Caps</h3>
-                        <p>Project-wide <code>max_bytes_billed_gb</code> safety cap dynamically passed to every BigQuery query. Smart clamping with min 1 GiB, max 10 TiB, and a safe 200 GiB fallback.</p>
-                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Budget Protection</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Smart Clamping</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> State Persistence</span>
-                        </div>
+                <!-- Billing Limits -->
+                <article class="card card-wide spotlight reveal">
+                    <span class="pill pill-new">New</span>
+                    <div class="card-icon icon-amber"><i class="fas fa-shield-halved"></i></div>
+                    <h3>Dynamic Billing Limits &amp; Cost Safety Caps</h3>
+                    <p>A project-wide <code>max_bytes_billed_gb</code> cap injected into every query job.
+                        Smart clamping: min 1 GiB, max 10 TiB, safe 200 GiB fallback.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Budget Protection</span>
+                        <span><i class="fas fa-check"></i>Smart Clamping</span>
+                        <span><i class="fas fa-check"></i>State Persistence</span>
                     </div>
-                </div>
+                </article>
 
-                <!-- Slot Capacity Bucket Method -->
-                <div class="bento-card fade-in-up">
-                    <span class="feature-pill pill-enhanced">Enhanced</span>
-                    <div class="bento-icon"><i class="fas fa-chart-bar"></i></div>
+                <!-- Bucket Method -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-enhanced">Enhanced</span>
+                    <div class="card-icon"><i class="fas fa-chart-bar"></i></div>
                     <h3>Slot Capacity Bucket Method</h3>
-                    <p>Vectorized simulation engine using NumPy to model slot consumption over a 730-hour billing month.</p>
-                    <div class="tier-badges">
-                        <span class="tier-badge tier-aggressive">🔴 p80 Aggressive</span>
-                        <span class="tier-badge tier-balanced">🟡 p95 Balanced</span>
-                        <span class="tier-badge tier-performance">🟢 Max Performance</span>
+                    <p>Vectorized NumPy engine modeling slot consumption across a full 730-hour billing month.</p>
+                    <div class="tier-row">
+                        <span class="tier tier-a">p80 Aggressive</span>
+                        <span class="tier tier-b">p95 Balanced</span>
+                        <span class="tier tier-p">Max Performance</span>
                     </div>
-                </div>
+                </article>
 
                 <!-- Fluid Scaling -->
-                <div class="bento-card fade-in-up">
-                    <span class="feature-pill pill-new">New</span>
-                    <div class="bento-icon icon-clock"><i class="fas fa-stopwatch"></i></div>
-                    <h3>Fluid Scaling & Cooldown Tax</h3>
-                    <p>Models the financial impact of transitioning to true per-second billing with zero minimum capacity. Identifies workloads suffering from the 60-second minimum charge.</p>
-                </div>
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">New</span>
+                    <div class="card-icon icon-teal"><i class="fas fa-stopwatch"></i></div>
+                    <h3>Fluid Scaling &amp; Cooldown Tax</h3>
+                    <p>Models true per-second, zero-minimum billing. Pinpoints workloads bleeding money on the legacy 60-second minimum
+                        charge.</p>
+                </article>
 
-                <!-- Hybrid Cost Attribution -->
-                <div class="bento-card bento-large fade-in-up">
-                    <span class="feature-pill pill-enhanced">Enhanced</span>
-                    <div class="bento-icon"><i class="fas fa-calculator"></i></div>
-                    <div>
-                        <h3>Hybrid Cost Attribution Engine</h3>
-                        <p>Accurately attribute BigQuery Editions costs to individual projects. Proportionally redistribute reservation waste and eliminate the "admin dump" mystery. Supports <strong>Lender Pays</strong> vs. <strong>Borrower Pays</strong> models for cross-reservation idle slot borrowing.</p>
-                    </div>
-                </div>
+                <!-- Cost Attribution -->
+                <article class="card card-wide spotlight reveal">
+                    <span class="pill pill-enhanced">Enhanced</span>
+                    <div class="card-icon"><i class="fas fa-calculator"></i></div>
+                    <h3>Hybrid Cost Attribution Engine</h3>
+                    <p>Attribute Editions costs to individual projects despite SKU blending. Proportionally
+                        redistribute reservation waste and kill the "admin dump" mystery — with
+                        <strong>Lender&nbsp;Pays</strong> vs. <strong>Borrower&nbsp;Pays</strong> idle-slot models.
+                    </p>
+                    </article>
 
                 <!-- Migration Guardrails -->
-                <div class="bento-card fade-in-up">
-                    <span class="feature-pill pill-new">New</span>
-                    <div class="bento-icon icon-warning"><i class="fas fa-triangle-exclamation"></i></div>
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">New</span>
+                    <div class="card-icon icon-rose"><i class="fas fa-triangle-exclamation"></i></div>
                     <h3>Migration Guardrails</h3>
-                    <p>Static schema auditor detects high-risk tables before they are queried. Generates clustering DDL stubs.</p>
-                    <div class="risk-badges">
-                        <div class="risk-badge"><span class="risk-dot critical"></span> Critical: >1 TB or >1B rows</div>
-                        <div class="risk-badge"><span class="risk-dot high"></span> High: >10 GB or >50M rows</div>
+                    <p>Static schema auditor flags high-risk tables before they're queried. Generates clustering DDL stubs.</p>
+                    <div class="risk-list">
+                        <span><i class="risk-dot dot-crit"></i>Critical: &gt;1 TB or &gt;1B rows</span>
+                        <span><i class="risk-dot dot-high"></i>High: &gt;10 GB or &gt;50M rows</span>
                     </div>
-                </div>
+                </article>
 
-                <!-- Physical vs Logical Storage -->
-                <div class="bento-card bento-large fade-in-up">
-                    <div class="bento-icon"><i class="fas fa-archive"></i></div>
-                    <div>
-                        <h3>Physical vs Logical Storage Billing</h3>
-                        <p>Identify datasets that are cheaper on physical or logical storage models. Evaluate Time Travel and Fail-safe storage impact automatically.</p>
-                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Automated DDL Generation</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> One-click Application</span>
-                        </div>
+                <!-- Storage billing -->
+                <article class="card card-wide spotlight reveal">
+                    <div class="card-icon"><i class="fas fa-hard-drive"></i></div>
+                    <h3>Physical vs. Logical Storage Billing</h3>
+                    <p>Detect datasets cheaper on the opposite billing model, weighing Time Travel and
+                        Fail-safe overhead automatically.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Automated DDL Generation</span>
+                        <span><i class="fas fa-check"></i>One-Click Application</span>
                     </div>
-                </div>
+                </article>
 
-                <!-- Organization-Wide Scoping -->
-                <div class="bento-card fade-in-up">
-                    <div class="bento-icon icon-green"><i class="fas fa-sitemap"></i></div>
+                <!-- Org scoping -->
+                <article class="card spotlight reveal">
+                    <div class="card-icon icon-green"><i class="fas fa-sitemap"></i></div>
                     <h3>Organization-Wide Scoping</h3>
-                    <p>Query <code>Table_Storage_By_Organization</code> to see the big picture across all billing accounts and projects.</p>
-                </div>
+                    <p>Queries <code>*_BY_ORGANIZATION</code> views to see the big picture across every billing account and project.</p>
+                    </article>
 
-                <!-- Actionable DDL -->
-                <div class="bento-card fade-in-up">
-                    <div class="bento-icon"><i class="fas fa-code"></i></div>
+                <!-- DDL -->
+                <article class="card spotlight reveal">
+                    <div class="card-icon"><i class="fas fa-code"></i></div>
                     <h3>Actionable DDL Statements</h3>
-                    <p>Generates the exact <code>ALTER SCHEMA</code> code you need. Run it directly or copy to your IAC pipeline.</p>
-                </div>
-
-                <!-- Workload Profiler -->
-                <div class="bento-card bento-large fade-in-up">
-                    <div class="bento-icon icon-clock"><i class="fas fa-gauge-high"></i></div>
-                    <div>
-                        <h3>Workload Profiler &amp; Trickle Detection</h3>
-                        <p>Detects high-frequency small queries causing wasteful autoscaler activations. Visualizes patterns with temporal heatmaps (hour × day-of-week) and ranks top offending queries by slot waste.</p>
-                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Temporal Heatmaps</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Top Offenders</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Batch Candidates</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Execution Insights -->
-                <div class="bento-card fade-in-up">
-                    <div class="bento-icon"><i class="fas fa-microscope"></i></div>
-                    <h3>Execution Insights</h3>
-                    <p>Surfaces queries impacted by slot contention, insufficient shuffle quota, and significant data volume changes from BigQuery's native performance telemetry.</p>
-                </div>
-
-                <!-- BI Optimizer -->
-                <div class="bento-card fade-in-up">
-                    <div class="bento-icon icon-green"><i class="fas fa-chart-line"></i></div>
-                    <h3>BI Engine Optimizer</h3>
-                    <p>Analyzes BI Engine acceleration eligibility and identifies dashboards that could benefit from in-memory caching to reduce latency and cost.</p>
-                </div>
-
-                <!-- Edition Matrix Simulation -->
-                <div class="bento-card bento-large fade-in-up">
-                    <span class="feature-pill pill-enhanced">Enhanced</span>
-                    <div class="bento-icon"><i class="fas fa-table-cells"></i></div>
-                    <div>
-                        <h3>Edition Matrix Simulation</h3>
-                        <p>Tests every possible baseline size against your actual workload and calculates the total monthly bill for PAYG, 1-Year, and 3-Year commitment tiers. Automatically highlights the optimal turning point.</p>
-                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> PAYG / 1-Year / 3-Year</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Utilization %</span>
-                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Optimal Baseline</span>
-                        </div>
-                    </div>
-                </div>
+                    <p>Emits the exact <code>ALTER SCHEMA</code> you need. Execute in-app or ship to your IaC pipeline.</p>
+                    </article>
 
             </div>
         </div>
     </section>
 
-    <!-- ░░ TRUST & SECURITY ░░ -->
-    <section class="trust-section" aria-label="Trust and Security">
+    <!-- ░░ TRUST ░░ -->
+    <section id="trust" class="trust" aria-label="Trust and security">
         <div class="container">
-            <div class="section-header fade-in-up">
-                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">
-                    <i class="fas fa-lock" style="font-size: 0.65rem;" aria-hidden="true"></i>
-                    Enterprise Ready
-                </span>
-                <h2 id="trust-heading">Built for <span class="gradient-text">Trust & Security</span></h2>
-                <p>Rigorously tested, sanitized, and hardened for production environments.</p>
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-shield-halved"></i>100% Data Sovereignty</span>
+                <h2>Trust Through <span class="text-aurora">Absolute Transparency</span></h2>
+                <p>Third-party FinOps SaaS vendors demand broad cross-account IAM roles, exposing your most
+                    sensitive billing metadata. <strong>BQ FinOps Optimizer is deployed entirely inside your local environment
+                        or private cloud infrastructure.</strong> Your data never leaves your perimeter.</p>
             </div>
 
-            <div class="trust-grid stagger-children">
-                <div class="trust-card fade-in-up">
-                    <div class="trust-icon"><i class="fas fa-vial"></i></div>
-                    <div class="trust-value">167+ Tests</div>
-                    <div class="trust-label">Unit & integration tests with mocked BigQuery endpoints</div>
-                </div>
-                <div class="trust-card fade-in-up">
-                    <div class="trust-icon"><i class="fas fa-key"></i></div>
-                    <div class="trust-value">Zero Leaks</div>
-                    <div class="trust-label">No credentials, keys, or tokens hardcoded anywhere</div>
-                </div>
-                <div class="trust-card fade-in-up">
-                    <div class="trust-icon"><i class="fas fa-scale-balanced"></i></div>
-                    <div class="trust-value">Apache 2.0</div>
-                    <div class="trust-label">Fully open-source, commercially friendly license</div>
-                </div>
-                <div class="trust-card fade-in-up">
+            <div class="trust-grid reveal-group">
+                <div class="trust-card spotlight reveal">
                     <div class="trust-icon"><i class="fas fa-server"></i></div>
-                    <div class="trust-value">Zero SaaS Hoarding</div>
-                    <div class="trust-label">Runs locally in your architecture — data is never sent to third-party servers</div>
+                    <h4>Zero Data Exfiltration</h4>
+                    <p>Deployed entirely inside your local environment or Cloud Run. No hidden telemetry, no phoning home, no third-party storage.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-user-shield"></i></div>
+                    <h4>Keep Your IAM Keys</h4>
+                    <p>Never grant cross-project Service Account access to external vendors. You own the runtime.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-code"></i></div>
+                    <h4>Open Source Clarity</h4>
+                    <p>Inspect every line. Apache 2.0 licensed — you know exactly what executes against your warehouse.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-vial"></i></div>
+                    <h4>272+ Security Tests</h4>
+                    <p>Rigorously tested, sanitized and hardened against credential leaks and SQL injection.</p>
                 </div>
             </div>
         </div>
@@ -698,46 +623,45 @@
     <!-- ░░ WORKFLOW ░░ -->
     <section id="workflow" aria-label="Workflow">
         <div class="container">
-            <div class="section-header fade-in-up">
-                <span class="hero-badge" style="margin-left:auto; margin-right:auto;">The Process</span>
-                <h2>From Audit to <span class="gradient-text">Execution</span></h2>
-                <p>A streamlined workflow designed for Cloud Administrators.</p>
+            <div class="section-header reveal">
+                <span class="chip chip-section">The Process</span>
+                <h2>From Audit to <span class="text-aurora">Execution</span></h2>
+                <p>A streamlined loop designed for FinOps practitioners and Cloud administrators.</p>
             </div>
 
-            <div class="pipeline-track">
-                <div class="pipeline-step fade-in-up">
-                    <div class="step-index">01</div>
-                    <div class="step-card">
-                        <div class="bento-icon"><i class="fas fa-link"></i></div>
-                        <h3>Connect your Project</h3>
-                        <p>Authenticate via ADC or Service Account. Specify your target Organization Project ID and Region.</p>
+            <div class="flow reveal-group">
+                <div class="flow-line" aria-hidden="true"></div>
+            
+                <div class="flow-step reveal">
+                    <div class="flow-node">01</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon"><i class="fas fa-link"></i></div>
+                        <h3>Connect</h3>
+                        <p>Authenticate via ADC or Service Account. Target your Organization Project ID and region.</p>
                     </div>
                 </div>
-
-                <div class="pipeline-step fade-in-up">
-                    <div class="step-index">02</div>
-                    <div class="step-card">
-                        <div class="bento-icon"><i class="fas fa-search-dollar"></i></div>
-                        <h3>Scan & Analyze</h3>
-                        <p>Run the optimizer. The tool pulls metadata and calculates costs based on your custom region pricing.</p>
+                <div class="flow-step reveal">
+                    <div class="flow-node">02</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon"><i class="fas fa-magnifying-glass-dollar"></i></div>
+                        <h3>Scan &amp; Analyze</h3>
+                        <p>Pull metadata and compute costs against your negotiated regional pricing — on demand, never auto-polled.</p>
                     </div>
                 </div>
-
-                <div class="pipeline-step fade-in-up">
-                    <div class="step-index">03</div>
-                    <div class="step-card">
-                        <div class="bento-icon"><i class="fas fa-play"></i></div>
-                        <h3>Apply & Save</h3>
-                        <p>Review recommendations and generated DDL. Apply changes directly from the UI to start saving immediately.</p>
+                <div class="flow-step reveal">
+                    <div class="flow-node">03</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon icon-green"><i class="fas fa-bolt"></i></div>
+                        <h3>Apply &amp; Save</h3>
+                        <p>Review recommendations and generated DDL. Apply directly from the UI and start saving immediately.</p>
                     </div>
                 </div>
-
-                <div class="pipeline-step fade-in-up">
-                    <div class="step-index">04</div>
-                    <div class="step-card">
-                        <div class="bento-icon icon-shield"><i class="fas fa-shield-halved"></i></div>
-                        <h3>Govern & Guard</h3>
-                        <p>Set dynamic billing limits to prevent runaway charges. Run migration guardrails to detect high-risk schemas before they cost you. Continuously monitor with the AI Doctor.</p>
+                <div class="flow-step reveal">
+                    <div class="flow-node">04</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon icon-amber"><i class="fas fa-shield-halved"></i></div>
+                        <h3>Govern &amp; Guard</h3>
+                        <p>Enforce billing caps, run migration guardrails, and keep the Query Doctor on continuous patrol.</p>
                     </div>
                 </div>
             </div>
@@ -745,20 +669,25 @@
     </section>
 
     <!-- ░░ CTA ░░ -->
-    <section class="cta-section" style="padding: 4rem 0;">
-        <div class="container" style="text-align: center;">
-            <div class="bento-card fade-in-up" style="max-width: 800px; margin: 0 auto; padding: 4rem; display: flex; flex-direction: column; align-items: center; gap: 2rem;">
-                <h2>Ready to Optimize your <br><span class="gradient-text">BigQuery Spend?</span></h2>
-                <p>Deploy the open-source optimizer today and audit your organization in minutes.</p>
-                <div class="cta-group" style="justify-content: center;">
+    <section class="cta-final" aria-label="Get started">
+        <div class="container">
+            <div class="cta-card reveal">
+                <div class="cta-orb" aria-hidden="true"></div>
+                <h2>Ready to Reclaim Your<br><span class="text-aurora">BigQuery Budget?</span></h2>
+                <p>Deploy the open-source optimizer today and audit your entire organization in minutes.</p>
+                <div class="cta-group">
                     <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener">
-                        <i class="fab fa-github"></i>
-                        Get Started on GitHub
+                        <i class="fab fa-github"></i>Get Started on GitHub
+                        <span class="btn-shine" aria-hidden="true"></span>
                     </a>
-                    <a href="simulator.html" class="btn btn-secondary">
-                        <i class="fas fa-play"></i>
-                        Try the Simulator
+                    <a href="simulator.html" class="btn btn-outline">
+                        <i class="fas fa-play"></i>Try the Simulator
                     </a>
+                </div>
+                <div class="cta-deploy">
+                    <span class="code-strip-lang">bash</span>
+                    <code>gcloud run deploy bq-finops-optimizer --image gcr.io/$PROJECT/bq-finops</code>
+                    <button class="copy-btn" id="copy-deploy" aria-label="Copy deploy command"><i class="far fa-copy"></i></button>
                 </div>
             </div>
         </div>
@@ -767,22 +696,20 @@
     </main>
 
     <!-- ░░ FOOTER ░░ -->
-    <footer class="site-footer">
+    <footer class="site-footer" role="contentinfo">
         <div class="container">
-            <div class="footer-inner">
+            <div class="footer-grid">
                 <div class="footer-brand">
-                    <a href="#" class="logo" aria-label="BigQuery Optimizer home">
-                        <span class="logo-icon" aria-hidden="true">
-                            <i class="fas fa-chart-pie"></i>
-                        </span>
-                        BQ FinOps <span class="gradient-text">Optimizer</span>
+                    <a href="#top" class="logo">
+                        <span class="logo-mark"><i class="fas fa-wave-square"></i></span>
+                        <span class="logo-type">BQ&nbsp;FinOps<em>Optimizer</em></span>
                     </a>
-                    <p>Enterprise-grade diagnostic, simulation, and governance suite for Google Cloud BigQuery cost optimization.</p>
+                    <p>Enterprise-grade diagnostic, simulation and governance suite for Google Cloud BigQuery cost optimization.</p>
                 </div>
                 <div class="footer-col">
                     <h4>Product</h4>
-                    <a href="#features">Features</a>
-                    <a href="#demo">Example</a>
+                    <a href="#features">Capabilities</a>
+                    <a href="#demo">Live Demo</a>
                     <a href="simulator.html">Simulator</a>
                     <a href="#workflow">Workflow</a>
                 </div>
@@ -794,635 +721,249 @@
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2026 BigQuery FinOps Optimizer. Open Source under Apache 2.0 License.</p>
-                <div class="footer-socials">
-                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener" aria-label="GitHub">
-                        <i class="fab fa-github"></i>
-                    </a>
-                </div>
+                <p>&copy; 2026 BigQuery FinOps Optimizer · Open Source under Apache 2.0</p>
+                <p class="trademark-notice">BigQuery and Google Cloud are trademarks of Google LLC. BQ FinOps Optimizer is an independent open-source project and is not affiliated with or endorsed by Google.</p>
+                <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener" aria-label="GitHub"><i
+                        class="fab fa-github"></i></a>
             </div>
         </div>
     </footer>
 
-    <!-- Scripts for navbar scroll, mock data, animations -->
     <script>
-        // ── Navbar scroll effect ──
-        const navbar = document.getElementById('navbar');
-        const onScroll = () => navbar.classList.toggle('scrolled', window.scrollY > 40);
-        window.addEventListener('scroll', onScroll, { passive: true });
+        (() => {
+            'use strict';
 
-        // ── Mobile hamburger ──
+        /* ── Scroll progress + navbar ── */
+        const navbar = document.getElementById('navbar');
+        const progress = document.getElementById('scroll-progress');
+        const onScroll = () => {
+            navbar.classList.toggle('scrolled', window.scrollY > 32);
+            const max = document.documentElement.scrollHeight - innerHeight;
+            progress.style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+        };
+        addEventListener('scroll', onScroll, { passive: true });
+        onScroll();
+
+        /* ── Mobile menu ── */
         const hamburger = document.getElementById('nav-hamburger');
         const navLinks = document.getElementById('nav-links');
-        const hamburgerIcon = document.getElementById('hamburger-icon');
-        if (hamburger) {
-            hamburger.addEventListener('click', () => {
-                navLinks.classList.toggle('mobile-open');
-                const isOpen = navLinks.classList.contains('mobile-open');
-                hamburgerIcon.className = isOpen ? 'fas fa-times' : 'fas fa-bars';
-            });
-            // Close menu on link click
-            navLinks.querySelectorAll('a').forEach(link => {
-                link.addEventListener('click', () => {
-                    navLinks.classList.remove('mobile-open');
-                    hamburgerIcon.className = 'fas fa-bars';
-                });
-            });
-        }
+        const icon = document.getElementById('hamburger-icon');
+        hamburger.addEventListener('click', () => {
+            const open = navLinks.classList.toggle('mobile-open');
+            icon.className = open ? 'fas fa-times' : 'fas fa-bars';
+            document.body.style.overflow = open ? 'hidden' : '';
+        });
+        navLinks.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+            navLinks.classList.remove('mobile-open');
+            icon.className = 'fas fa-bars';
+            document.body.style.overflow = '';
+        }));
 
-        // ── IntersectionObserver for fade-in-up animations ──
-        const fadeObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.classList.add('is-visible');
-                    fadeObserver.unobserve(entry.target);
-                }
+        /* ── Reveal on scroll ── */
+        const io = new IntersectionObserver(entries => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
             });
-        }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+        }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-        document.querySelectorAll('.fade-in-up').forEach(el => fadeObserver.observe(el));
-
-        // ── Animated counters ──
-        function animateCounter(el, target, prefix, suffix) {
-            const duration = 1500;
-            const start = performance.now();
-            const update = (now) => {
-                const progress = Math.min((now - start) / duration, 1);
-                const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
-                const current = Math.round(eased * target);
-                el.textContent = (prefix || '') + current + (suffix || '');
-                if (progress < 1) requestAnimationFrame(update);
+        /* ── Animated counters ── */
+        const animate = (el, target, prefix, suffix) => {
+            const t0 = performance.now(), dur = 1400;
+            const tick = now => {
+                const p = Math.min((now - t0) / dur, 1);
+                const eased = 1 - Math.pow(1 - p, 3);
+                el.textContent = prefix + Math.round(eased * target) + suffix;
+                if (p < 1) requestAnimationFrame(tick);
             };
-            requestAnimationFrame(update);
-        }
-
-        const counterObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const el = entry.target;
-                    const count = parseInt(el.dataset.count, 10);
-                    const prefix = el.dataset.prefix || '';
-                    const suffix = el.dataset.suffix || '';
-                    animateCounter(el, count, prefix, suffix);
-                    counterObserver.unobserve(el);
-                }
+            requestAnimationFrame(tick);
+        };
+        const cio = new IntersectionObserver(entries => {
+            entries.forEach(e => {
+                if (!e.isIntersecting) return;
+                const el = e.target;
+                animate(el, +el.dataset.count, el.dataset.prefix || '', el.dataset.suffix || '');
+                cio.unobserve(el);
             });
-        }, { threshold: 0.5 });
+        }, { threshold: 0.6 });
+        document.querySelectorAll('[data-count]').forEach(el => cio.observe(el));
 
-        document.querySelectorAll('.stat-value[data-count]').forEach(el => counterObserver.observe(el));
+        /* ── Spotlight (mouse-tracking glow) ── */
+        document.addEventListener('pointermove', e => {
+            document.querySelectorAll('.spotlight').forEach(card => {
+                const r = card.getBoundingClientRect();
+                card.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+                card.style.setProperty('--my', (e.clientY - r.top) + 'px');
+            });
+        }, { passive: true });
 
-        // ══════════════════════════════════════════
-        // MOCK DATA (unchanged from original)
-        // ══════════════════════════════════════════
+        /* ── Hero ticker rotation ── */
+        const tickerMsgs = [
+            'Flagged SELECT * on 52 TB fact table — est. $312/run recoverable',
+            'Reservation "etl-prod" idle 41% of billing month — resize to p95 baseline',
+            'HBO saved 63% execution time on 12 recurring queries this week',
+            '3 datasets cheaper on physical billing — DDL generated, ready to apply',
+            'Cooldown tax detected: 21,456 micro-transactions on legacy autoscaler'
+        ];
+        const ticker = document.getElementById('ticker-text');
+        let tIdx = 0;
+        const tickerInterval = setInterval(() => {
+            tIdx = (tIdx + 1) % tickerMsgs.length;
+            ticker.style.opacity = 0;
+            setTimeout(() => { ticker.textContent = tickerMsgs[tIdx]; ticker.style.opacity = 1; }, 350);
+        }, 4200);
 
-        // Mock data
+        /* ── Demo console tabs ── */
+        const tabs = document.querySelectorAll('.console-tab');
+        tabs.forEach(tab => tab.addEventListener('click', () => {
+            tabs.forEach(t => { t.classList.remove('is-active'); t.setAttribute('aria-selected', 'false'); });
+            tab.classList.add('is-active');
+            tab.setAttribute('aria-selected', 'true');
+            document.querySelectorAll('.console-panel').forEach(p => {
+                const active = p.id === tab.dataset.panel;
+                p.classList.toggle('is-active', active);
+                p.hidden = !active;
+            });
+        }));
+
+        /* ── Copy deploy command ── */
+        const copyBtn = document.getElementById('copy-deploy');
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard?.writeText('gcloud run deploy bq-finops-optimizer --image gcr.io/$PROJECT/bq-finops');
+            copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => copyBtn.innerHTML = '<i class="far fa-copy"></i>', 1600);
+        });
+
+        /* ════════ MOCK DATA ════════ */
+        const getEl = id => document.getElementById(id);
+        const money = v => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
         const mockData = [
-  {
-    "id": 1,
-    "project": "ecommerce-web-5",
-    "dataset": "user_profiles_0",
-    "logical_cost": 766.34,
-    "physical_cost": 871.21,
-    "recommendation": "Logical",
-    "savings": 104.88
-  },
-  {
-    "id": 2,
-    "project": "finance-prod-1",
-    "dataset": "ab_testing_1",
-    "logical_cost": 1402.07,
-    "physical_cost": 863.53,
-    "recommendation": "Physical",
-    "savings": 538.55
-  },
-  {
-    "id": 3,
-    "project": "marketing-analytics-5",
-    "dataset": "transactions_2",
-    "logical_cost": 408.22,
-    "physical_cost": 279.89,
-    "recommendation": "Physical",
-    "savings": 128.33
-  },
-  {
-    "id": 4,
-    "project": "iot-events-4",
-    "dataset": "order_history_3",
-    "logical_cost": 342.95,
-    "physical_cost": 199.75,
-    "recommendation": "Physical",
-    "savings": 143.21
-  },
-  {
-    "id": 5,
-    "project": "identity-services-2",
-    "dataset": "click_stream_4",
-    "logical_cost": 1245.73,
-    "physical_cost": 759.8,
-    "recommendation": "Physical",
-    "savings": 485.93
-  },
-  {
-    "id": 6,
-    "project": "marketing-analytics-2",
-    "dataset": "users_5",
-    "logical_cost": 13.92,
-    "physical_cost": 17.97,
-    "recommendation": "Logical",
-    "savings": 4.05
-  },
-  {
-    "id": 7,
-    "project": "marketing-analytics-4",
-    "dataset": "transactions_6",
-    "logical_cost": 5.32,
-    "physical_cost": 7.0,
-    "recommendation": "Logical",
-    "savings": 1.69
-  },
-  {
-    "id": 8,
-    "project": "ecommerce-web-1",
-    "dataset": "inventory_7",
-    "logical_cost": 428.19,
-    "physical_cost": 210.42,
-    "recommendation": "Physical",
-    "savings": 217.77
-  },
-  {
-    "id": 9,
-    "project": "finance-prod-3",
-    "dataset": "user_profiles_8",
-    "logical_cost": 441.84,
-    "physical_cost": 220.99,
-    "recommendation": "Physical",
-    "savings": 220.86
-  },
-  {
-    "id": 10,
-    "project": "data-warehouse-prod-4",
-    "dataset": "users_9",
-    "logical_cost": 4.09,
-    "physical_cost": 1.93,
-    "recommendation": "Logical",
-    "savings": 2.16
-  },
-  {
-    "id": 11,
-    "project": "finance-prod-4",
-    "dataset": "pricing_model_10",
-    "logical_cost": 11.54,
-    "physical_cost": 7.19,
-    "recommendation": "Logical",
-    "savings": 4.35
-  },
-  {
-    "id": 12,
-    "project": "iot-events-2",
-    "dataset": "pricing_model_11",
-    "logical_cost": 1682.51,
-    "physical_cost": 1388.42,
-    "recommendation": "Physical",
-    "savings": 294.09
-  },
-  {
-    "id": 13,
-    "project": "iot-events-3",
-    "dataset": "users_12",
-    "logical_cost": 116.56,
-    "physical_cost": 139.76,
-    "recommendation": "Logical",
-    "savings": 23.2
-  },
-  {
-    "id": 14,
-    "project": "iot-events-2",
-    "dataset": "users_13",
-    "logical_cost": 545.79,
-    "physical_cost": 373.87,
-    "recommendation": "Physical",
-    "savings": 171.92
-  },
-  {
-    "id": 15,
-    "project": "marketing-analytics-4",
-    "dataset": "inventory_14",
-    "logical_cost": 19.7,
-    "physical_cost": 14.51,
-    "recommendation": "Physical",
-    "savings": 5.19
-  },
-  {
-    "id": 16,
-    "project": "ecommerce-web-1",
-    "dataset": "transactions_15",
-    "logical_cost": 81.88,
-    "physical_cost": 65.51,
-    "recommendation": "Physical",
-    "savings": 16.37
-  },
-  {
-    "id": 17,
-    "project": "data-warehouse-prod-1",
-    "dataset": "pricing_model_16",
-    "logical_cost": 18.83,
-    "physical_cost": 22.01,
-    "recommendation": "Physical",
-    "savings": 3.18
-  },
-  {
-    "id": 18,
-    "project": "identity-services-4",
-    "dataset": "device_logs_17",
-    "logical_cost": 1075.08,
-    "physical_cost": 501.31,
-    "recommendation": "Physical",
-    "savings": 573.77
-  },
-  {
-    "id": 19,
-    "project": "recommendation-engine-2",
-    "dataset": "ab_testing_18",
-    "logical_cost": 7.4,
-    "physical_cost": 6.14,
-    "recommendation": "Physical",
-    "savings": 1.26
-  },
-  {
-    "id": 20,
-    "project": "iot-events-5",
-    "dataset": "transactions_19",
-    "logical_cost": 174.86,
-    "physical_cost": 135.47,
-    "recommendation": "Physical",
-    "savings": 39.39
-  },
-  {
-    "id": 21,
-    "project": "finance-prod-5",
-    "dataset": "transactions_20",
-    "logical_cost": 11.43,
-    "physical_cost": 5.34,
-    "recommendation": "Physical",
-    "savings": 6.08
-  },
-  {
-    "id": 22,
-    "project": "finance-prod-2",
-    "dataset": "click_stream_21",
-    "logical_cost": 14.23,
-    "physical_cost": 12.39,
-    "recommendation": "Logical",
-    "savings": 1.83
-  },
-  {
-    "id": 23,
-    "project": "identity-services-1",
-    "dataset": "transactions_22",
-    "logical_cost": 337.61,
-    "physical_cost": 166.72,
-    "recommendation": "Physical",
-    "savings": 170.89
-  },
-  {
-    "id": 24,
-    "project": "finance-prod-2",
-    "dataset": "click_stream_23",
-    "logical_cost": 637.49,
-    "physical_cost": 819.84,
-    "recommendation": "Logical",
-    "savings": 182.35
-  },
-  {
-    "id": 25,
-    "project": "identity-services-1",
-    "dataset": "audit_logs_24",
-    "logical_cost": 1060.4,
-    "physical_cost": 499.16,
-    "recommendation": "Physical",
-    "savings": 561.24
-  }
-];
+            { project: "ecommerce-web-5", dataset: "user_profiles_0", logical_cost: 766.34, physical_cost: 871.21, recommendation: "Logical", savings: 104.88 },
+            { project: "finance-prod-1", dataset: "ab_testing_1", logical_cost: 1402.07, physical_cost: 863.53, recommendation: "Physical", savings: 538.55 },
+            { project: "marketing-analytics-5", dataset: "transactions_2", logical_cost: 408.22, physical_cost: 279.89, recommendation: "Physical", savings: 128.33 },
+            { project: "iot-events-4", dataset: "order_history_3", logical_cost: 342.95, physical_cost: 199.75, recommendation: "Physical", savings: 143.21 },
+            { project: "identity-services-2", dataset: "click_stream_4", logical_cost: 1245.73, physical_cost: 759.80, recommendation: "Physical", savings: 485.93 },
+            { project: "marketing-analytics-2", dataset: "users_5", logical_cost: 13.92, physical_cost: 17.97, recommendation: "Logical", savings: 4.05 },
+            { project: "marketing-analytics-4", dataset: "transactions_6", logical_cost: 5.32, physical_cost: 7.00, recommendation: "Logical", savings: 1.69 },
+            { project: "ecommerce-web-1", dataset: "inventory_7", logical_cost: 428.19, physical_cost: 210.42, recommendation: "Physical", savings: 217.77 },
+            { project: "finance-prod-3", dataset: "user_profiles_8", logical_cost: 441.84, physical_cost: 220.99, recommendation: "Physical", savings: 220.86 },
+            { project: "data-warehouse-prod-4", dataset: "users_9", logical_cost: 4.09, physical_cost: 1.93, recommendation: "Physical", savings: 2.16 },
+            { project: "finance-prod-4", dataset: "pricing_model_10", logical_cost: 11.54, physical_cost: 7.19, recommendation: "Logical", savings: 4.35 },
+            { project: "iot-events-2", dataset: "pricing_model_11", logical_cost: 1682.51, physical_cost: 1388.42, recommendation: "Physical", savings: 294.09 },
+            { project: "iot-events-3", dataset: "users_12", logical_cost: 116.56, physical_cost: 139.76, recommendation: "Logical", savings: 23.20 },
+            { project: "iot-events-2", dataset: "users_13", logical_cost: 545.79, physical_cost: 373.87, recommendation: "Physical", savings: 171.92 },
+            { project: "marketing-analytics-4", dataset: "inventory_14", logical_cost: 19.70, physical_cost: 14.51, recommendation: "Physical", savings: 5.19 },
+            { project: "ecommerce-web-1", dataset: "transactions_15", logical_cost: 81.88, physical_cost: 65.51, recommendation: "Physical", savings: 16.37 },
+            { project: "data-warehouse-prod-1", dataset: "pricing_model_16", logical_cost: 18.83, physical_cost: 22.01, recommendation: "Logical", savings: 3.18 },
+            { project: "identity-services-4", dataset: "device_logs_17", logical_cost: 1075.08, physical_cost: 501.31, recommendation: "Physical", savings: 573.77 },
+            { project: "recommendation-engine-2", dataset: "ab_testing_18", logical_cost: 7.40, physical_cost: 6.14, recommendation: "Physical", savings: 1.26 },
+            { project: "iot-events-5", dataset: "transactions_19", logical_cost: 174.86, physical_cost: 135.47, recommendation: "Physical", savings: 39.39 },
+            { project: "finance-prod-5", dataset: "transactions_20", logical_cost: 11.43, physical_cost: 5.34, recommendation: "Physical", savings: 6.08 },
+            { project: "finance-prod-2", dataset: "click_stream_21", logical_cost: 14.23, physical_cost: 12.39, recommendation: "Logical", savings: 1.83 },
+            { project: "identity-services-1", dataset: "transactions_22", logical_cost: 337.61, physical_cost: 166.72, recommendation: "Physical", savings: 170.89 },
+            { project: "finance-prod-2", dataset: "click_stream_23", logical_cost: 637.49, physical_cost: 819.84, recommendation: "Logical", savings: 182.35 },
+            { project: "identity-services-1", dataset: "audit_logs_24", logical_cost: 1060.40, physical_cost: 499.16, recommendation: "Physical", savings: 561.24 }
+        ];
 
-        const tbody = document.getElementById('mock-table-body');
-        mockData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
-            tr.innerHTML = `
-                <td style="padding: 1rem; color: var(--muted);">${row.project}</td>
-                <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.dataset}</td>
-                <td style="padding: 1rem; color: var(--muted);">$${row.logical_cost.toFixed(2)}</td>
-                <td style="padding: 1rem; color: var(--muted);">$${row.physical_cost.toFixed(2)}</td>
-                <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: ${row.recommendation === 'Physical' ? 'var(--secondary)' : 'var(--primary)'}">${row.recommendation}</span></td>
-                <td style="padding: 1rem; color: ${row.recommendation === 'Physical' ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
-            `;
-            tbody.appendChild(tr);
-        });
+        let storageTotal = 0;
+        getEl('mock-table-body').innerHTML = mockData.map(r => {
+            storageTotal += r.savings;
+            const phys = r.recommendation === 'Physical';
+            return `<tr>
+                <td class="mono muted">${r.project}</td>
+                <td class="strong">${r.dataset}</td>
+                <td class="num muted">${money(r.logical_cost)}</td>
+                <td class="num muted">${money(r.physical_cost)}</td>
+                <td><span class="tag ${phys ? 'tag-green' : 'tag-blue'}">${r.recommendation}</span></td>
+                <td class="num gain">+${money(r.savings)}</td>
+            </tr>`;
+        }).join('');
+        getEl('storage-total-kpi').innerHTML = `<i class="fas fa-piggy-bank"></i> ${money(storageTotal)}/mo identified`;
 
-        // Mock Data for Compute
         const mockComputeData = [
-          {
-            "id": 1,
-            "job_id": "job_nwp_edw_dag_2026_03_20",
-            "user": "airflow@company.com",
-            "on_demand_cost": 15430.00,
-            "editions_cost": 3120.00,
-            "profile": "Reservation Candidate",
-            "savings": 12310.00
-          },
-          {
-            "id": 2,
-            "job_id": "job_prometheus_query_456",
-            "user": "prometheus@company.com",
-            "on_demand_cost": 0.05,
-            "editions_cost": 0.96,
-            "profile": "On-Demand Candidate",
-            "savings": -0.91
-          },
-          {
-            "id": 3,
-            "job_id": "job_ad_hoc_analysis_789",
-            "user": "analyst@company.com",
-            "on_demand_cost": 50.00,
-            "editions_cost": 45.00,
-            "profile": "Balanced / Uncertain",
-            "savings": 5.00
-          },
-          {
-            "id": 4,
-            "job_id": "job_etl_load_daily_001",
-            "user": "data-eng@company.com",
-            "on_demand_cost": 2450.50,
-            "editions_cost": 1230.30,
-            "profile": "Reservation Candidate",
-            "savings": 1220.20
-          },
-          {
-            "id": 5,
-            "job_id": "job_dashboard_refresh_101",
-            "user": "powerbi-svc@company.com",
-            "on_demand_cost": 12.40,
-            "editions_cost": 15.60,
-            "profile": "On-Demand Candidate",
-            "savings": -3.20
-          },
-          {
-            "id": 6,
-            "job_id": "job_ml_training_v2_999",
-            "user": "ml-model@company.com",
-            "on_demand_cost": 5000.00,
-            "editions_cost": 4800.00,
-            "profile": "Balanced / Uncertain",
-            "savings": 200.00
-          },
-          {
-            "id": 7,
-            "job_id": "job_audit_log_cleanup_555",
-            "user": "security-svc@company.com",
-            "on_demand_cost": 5.20,
-            "editions_cost": 0.50,
-            "profile": "Reservation Candidate",
-            "savings": 4.70
-          },
-          {
-            "id": 8,
-            "job_id": "job_weekly_finance_rpt_888",
-            "user": "cfo-team@company.com",
-            "on_demand_cost": 850.00,
-            "editions_cost": 920.00,
-            "profile": "On-Demand Candidate",
-            "savings": -70.00
-          },
-          {
-            "id": 9,
-            "job_id": "job_customer_segmentation_02",
-            "user": "marketing@company.com",
-            "on_demand_cost": 1200.00,
-            "editions_cost": 300.00,
-            "profile": "Reservation Candidate",
-            "savings": 900.00
-          },
-          {
-            "id": 10,
-            "job_id": "job_real_time_streaming_911",
-            "user": "pubsub-svc@company.com",
-            "on_demand_cost": 150.00,
-            "editions_cost": 850.00,
-            "profile": "On-Demand Candidate",
-            "savings": -700.00
-          }
+            { job_id: "job_nwp_edw_dag_2026_03_20", user: "airflow@company.com", on_demand_cost: 15430.00, editions_cost: 3120.00, profile: "Reservation Candidate", savings: 12310.00 },
+            { job_id: "job_prometheus_query_456", user: "prometheus@company.com", on_demand_cost: 0.05, editions_cost: 0.96, profile: "On-Demand Candidate", savings: -0.91 },
+            { job_id: "job_ad_hoc_analysis_789", user: "analyst@company.com", on_demand_cost: 50.00, editions_cost: 45.00, profile: "Balanced / Uncertain", savings: 5.00 },
+            { job_id: "job_etl_load_daily_001", user: "data-eng@company.com", on_demand_cost: 2450.50, editions_cost: 1230.30, profile: "Reservation Candidate", savings: 1220.20 },
+            { job_id: "job_dashboard_refresh_101", user: "powerbi-svc@company.com", on_demand_cost: 12.40, editions_cost: 15.60, profile: "On-Demand Candidate", savings: -3.20 },
+            { job_id: "job_ml_training_v2_999", user: "ml-model@company.com", on_demand_cost: 5000.00, editions_cost: 4800.00, profile: "Balanced / Uncertain", savings: 200.00 },
+            { job_id: "job_audit_log_cleanup_555", user: "security-svc@company.com", on_demand_cost: 5.20, editions_cost: 0.50, profile: "Reservation Candidate", savings: 4.70 },
+            { job_id: "job_weekly_finance_rpt_888", user: "cfo-team@company.com", on_demand_cost: 850.00, editions_cost: 920.00, profile: "On-Demand Candidate", savings: -70.00 },
+            { job_id: "job_customer_segmentation_02", user: "marketing@company.com", on_demand_cost: 1200.00, editions_cost: 300.00, profile: "Reservation Candidate", savings: 900.00 },
+            { job_id: "job_real_time_streaming_911", user: "pubsub-svc@company.com", on_demand_cost: 150.00, editions_cost: 850.00, profile: "On-Demand Candidate", savings: -700.00 }
         ];
 
-        const computeTbody = document.getElementById('mock-compute-table-body');
-        mockComputeData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
-            tr.innerHTML = `
-                <td style="padding: 1rem; color: var(--muted);">${row.job_id}</td>
-                <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.user}</td>
-                <td style="padding: 1rem; color: var(--muted);">$${row.on_demand_cost.toFixed(2)}</td>
-                <td style="padding: 1rem; color: var(--muted);">$${row.editions_cost.toFixed(2)}</td>
-                <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: ${row.profile.includes('Reservation') ? 'var(--secondary)' : row.profile.includes('On-Demand') ? 'var(--primary)' : 'var(--light)'}">${row.profile}</span></td>
-                <td style="padding: 1rem; color: ${row.savings > 0 ? 'var(--secondary)' : 'var(--light)'}; font-weight: 700;">$${row.savings.toFixed(2)}</td>
-            `;
-            computeTbody.appendChild(tr);
-        });
+        getEl('mock-compute-table-body').innerHTML = mockComputeData.map(r => {
+            const cls = r.profile.includes('Reservation') ? 'tag-green' : r.profile.includes('On-Demand') ? 'tag-blue' : 'tag-amber';
+            return `<tr>
+                <td class="mono muted">${r.job_id}</td>
+                <td class="strong">${r.user}</td>
+                <td class="num muted">${money(r.on_demand_cost)}</td>
+                <td class="num muted">${money(r.editions_cost)}</td>
+                <td><span class="tag ${cls}">${r.profile}</span></td>
+                <td class="num ${r.savings > 0 ? 'gain' : 'loss'}">${r.savings > 0 ? '+' : ''}${money(r.savings)}</td>
+            </tr>`;
+        }).join('');
 
-        // Mock Data for Workload Profiler
         const mockProfilerData = [
-            {
-                "query": "SELECT t1.* FROM `enterprise_project.warehouse.dim_customer` t1 CROSS JOIN `enterprise_project.warehouse.fact_sales` t2",
-                "project": "data-warehouse-prod-3",
-                "job_id": "job_cross_join_abc",
-                "frequency": 8760,
-                "avg_slot_hours": 245.100000,
-                "avg_duration_seconds": 1450.30,
-                "avg_bytes": 52428800000000,
-                "recommendation": "Candidate"
-            },
-            {
-                "query": "SELECT * FROM `recommendation-engine-4.logs.user_events` WHERE CAST(timestamp AS STRING) = '2026-06-20'",
-                "project": "recommendation-engine-4",
-                "job_id": "job_partition_scan_456",
-                "frequency": 17520,
-                "avg_slot_hours": 83.000000,
-                "avg_duration_seconds": 120.50,
-                "avg_bytes": 1073741824000,
-                "recommendation": "Candidate"
-            },
-            {
-                "query": "COMMIT TRANSACTION",
-                "project": "identity-services-2",
-                "job_id": "job_commit_123",
-                "frequency": 21456,
-                "avg_slot_hours": 0.000138,
-                "avg_duration_seconds": 0.01,
-                "avg_bytes": 0,
-                "recommendation": "Candidate"
-            },
-            {
-                "query": "BEGIN TRANSACTION",
-                "project": "identity-services-2",
-                "job_id": "job_begin_123",
-                "frequency": 24188,
-                "avg_slot_hours": 0.000000,
-                "avg_duration_seconds": 0.00,
-                "avg_bytes": 0,
-                "recommendation": "Candidate"
-            },
-            {
-                "query": "SELECT * FROM `analytics_project.ecommerce.products` LIMIT 100",
-                "project": "ecommerce-web-5",
-                "job_id": "job_select_456",
-                "frequency": 5259,
-                "avg_slot_hours": 45.000000,
-                "avg_duration_seconds": 23.00,
-                "avg_bytes": 50485760000,
-                "recommendation": "Candidate"
-            },
-            {
-                "query": "INSERT INTO `marketing_project.campaigns.metrics`",
-                "project": "marketing-analytics-5",
-                "job_id": "job_insert_789",
-                "frequency": 7642,
-                "avg_slot_hours": 0.000000,
-                "avg_duration_seconds": 1.22,
-                "avg_bytes": 0,
-                "recommendation": "Candidate"
-            }
+            { query: "SELECT t1.* FROM `enterprise_project.warehouse.dim_customer` t1 CROSS JOIN `enterprise_project.warehouse.fact_sales` t2", project: "data-warehouse-prod-3", frequency: 8760, avg_slot_hours: 245.1, avg_duration_seconds: 1450.30, avg_bytes: 52428800000000 },
+            { query: "SELECT * FROM `recommendation-engine-4.logs.user_events` WHERE CAST(timestamp AS STRING) = '2026-06-20'", project: "recommendation-engine-4", frequency: 17520, avg_slot_hours: 83.0, avg_duration_seconds: 120.50, avg_bytes: 1073741824000 },
+            { query: "COMMIT TRANSACTION", project: "identity-services-2", frequency: 21456, avg_slot_hours: 0.000138, avg_duration_seconds: 0.01, avg_bytes: 0 },
+            { query: "BEGIN TRANSACTION", project: "identity-services-2", frequency: 24188, avg_slot_hours: 0, avg_duration_seconds: 0, avg_bytes: 0 },
+            { query: "SELECT * FROM `analytics_project.ecommerce.products` LIMIT 100", project: "ecommerce-web-5", frequency: 5259, avg_slot_hours: 45.0, avg_duration_seconds: 23.00, avg_bytes: 50485760000 },
+            { query: "INSERT INTO `marketing_project.campaigns.metrics`", project: "marketing-analytics-5", frequency: 7642, avg_slot_hours: 0, avg_duration_seconds: 1.22, avg_bytes: 0 }
         ];
 
-        // Mock Data for Top Spenders
+        getEl('mock-profiler-table-body').innerHTML = mockProfilerData.map(r => `<tr>
+            <td class="mono query-cell" title="${r.query.replace(/"/g, '&quot;')}">${r.query.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+            <td class="muted">${r.project}</td>
+            <td class="num muted">${r.frequency.toLocaleString()}</td>
+            <td class="num muted">${r.avg_slot_hours.toFixed(4)}</td>
+            <td class="num muted">${r.avg_duration_seconds.toFixed(2)}</td>
+            <td class="num muted">${(r.avg_bytes / 1048576).toFixed(2)} MB</td>
+            <td><span class="tag tag-blue">Candidate</span></td>
+        </tr>`).join('');
+
         const mockTopSpendersData = [
-            {
-                "user": "airflow@company.com",
-                "count": 145000,
-                "bytes": 125676211200000,
-                "slots": 12050.5,
-                "cost": 45500.00
-            },
-            {
-                "user": "analyst@company.com",
-                "count": 25000,
-                "bytes": 5000000000000,
-                "slots": 4520.2,
-                "cost": 15350.00
-            },
-            {
-                "user": "powerbi-svc@company.com",
-                "count": 12000,
-                "bytes": 1000000000000,
-                "slots": 1560.6,
-                "cost": 8750.00
-            }
+            { user: "airflow@company.com", count: 145000, bytes: 125676211200000, slots: 12050.5, cost: 45500.00 },
+            { user: "analyst@company.com", count: 25000, bytes: 5000000000000, slots: 4520.2, cost: 15350.00 },
+            { user: "powerbi-svc@company.com", count: 12000, bytes: 1000000000000, slots: 1560.6, cost: 8750.00 }
         ];
+        const maxCost = Math.max(...mockTopSpendersData.map(r => r.cost));
 
-        const profilerTbody = document.getElementById('mock-profiler-table-body');
-        if (profilerTbody) {
-            mockProfilerData.forEach(row => {
-                const tr = document.createElement('tr');
-                tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
-                tr.innerHTML = `
-                    <td style="padding: 1rem; color: var(--light); font-family: monospace; font-size: 0.8rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.query}">${row.query}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.project}</td>
-                    <td style="padding: 1rem; color: var(--muted); font-family: monospace; font-size: 0.75rem;">${row.job_id}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.frequency.toLocaleString()}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.avg_slot_hours.toFixed(4)}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.avg_duration_seconds.toFixed(2)}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${(row.avg_bytes / (1024 * 1024)).toFixed(2)} MB</td>
-                    <td style="padding: 1rem;"><span class="btn btn-nav" style="font-size: 0.7rem; padding: 0.2rem 0.6rem; border-color: var(--primary); color: var(--primary);">${row.recommendation}</span></td>
-                `;
-                profilerTbody.appendChild(tr);
-            });
-        }
+        getEl('mock-top-spenders-table-body').innerHTML = mockTopSpendersData.map(r => `<tr>
+            <td class="strong">${r.user}</td>
+            <td class="num muted">${r.count.toLocaleString()}</td>
+            <td class="num muted">${(r.bytes / 1024 ** 4).toFixed(2)} TB</td>
+            <td class="num muted">${r.slots.toFixed(1)}</td>
+            <td class="num gain">${money(r.cost)}</td>
+            <td><div class="share-bar"><i style="--w:${(r.cost / maxCost * 100).toFixed(1)}%"></i></div></td>
+        </tr>`).join('');
 
-        const spendersTbody = document.getElementById('mock-top-spenders-table-body');
-        if (spendersTbody) {
-            mockTopSpendersData.forEach(row => {
-                const tr = document.createElement('tr');
-                tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
-                tr.innerHTML = `
-                    <td style="padding: 1rem; color: var(--light); font-weight: 500;">${row.user}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.count.toLocaleString()}</td>
-                    <td style="padding: 1rem; color: var(--muted);">${(row.bytes / (1024**4)).toFixed(2)} TB</td>
-                    <td style="padding: 1rem; color: var(--muted);">${row.slots.toFixed(1)}</td>
-                    <td style="padding: 1rem; color: var(--secondary); font-weight: 700;">$${row.cost.toFixed(2)}</td>
-                `;
-                spendersTbody.appendChild(tr);
-            });
-        }
-
-        // Mock Data for Simulation
         const mockSimulationData = [
-          {
-            "bucket": "[0 → 0]",
-            "mins": 1440,
-            "slots": 0,
-            "utilization": 0,
-            "slot_hours": 12000,
-            "slot_month": 16.4,
-            "autoscale_cost": 12000,
-            "base_payg": 0,
-            "base_1yr": 0,
-            "base_3yr": 0,
-            "total_payg": 12000,
-            "total_1yr": 12000,
-            "total_3yr": 12000
-          },
-          {
-            "bucket": "[0 → 100]",
-            "mins": 720,
-            "slots": 100,
-            "utilization": 50,
-            "slot_hours": 6000,
-            "slot_month": 8.2,
-            "autoscale_cost": 6000,
-            "base_payg": 5000,
-            "base_1yr": 4000,
-            "base_3yr": 3000,
-            "total_payg": 11000,
-            "total_1yr": 10000,
-            "total_3yr": 9000
-          },
-          {
-            "bucket": "[100 → 200]",
-            "mins": 360,
-            "slots": 200,
-            "utilization": 80,
-            "slot_hours": 2000,
-            "slot_month": 2.7,
-            "autoscale_cost": 2000,
-            "base_payg": 10000,
-            "base_1yr": 8000,
-            "base_3yr": 6000,
-            "total_payg": 12000,
-            "total_1yr": 10000,
-            "total_3yr": 8000
-          }
+            { bucket: "[0 → 0]", mins: 1440, slots: 0, utilization: 0, slot_hours: 12000, slot_month: 16.4, autoscale_cost: 12000, base_payg: 0, base_1yr: 0, base_3yr: 0, total_payg: 12000, total_1yr: 12000, total_3yr: 12000 },
+            { bucket: "[0 → 100]", mins: 720, slots: 100, utilization: 50, slot_hours: 6000, slot_month: 8.2, autoscale_cost: 6000, base_payg: 5000, base_1yr: 4000, base_3yr: 3000, total_payg: 11000, total_1yr: 10000, total_3yr: 9000 },
+            { bucket: "[100 → 200]", mins: 360, slots: 200, utilization: 80, slot_hours: 2000, slot_month: 2.7, autoscale_cost: 2000, base_payg: 10000, base_1yr: 8000, base_3yr: 6000, total_payg: 12000, total_1yr: 10000, total_3yr: 8000 }
         ];
+        const bestTotal = Math.min(...mockSimulationData.map(r => r.total_3yr));
 
-        const simTbody = document.getElementById('mock-simulation-table-body');
-        mockSimulationData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
-            tr.innerHTML = `
-                <td style="padding: 0.75rem; color: var(--light); text-align: center;">${row.bucket}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.mins}</td>
-                <td style="padding: 0.75rem; color: var(--light); text-align: center;">${row.slots}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.utilization}%</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">${row.slot_hours}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">${row.slot_month}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">$${row.autoscale_cost}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.base_payg}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.base_1yr}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center; border-right: 1px solid rgba(255,255,255,0.1);">$${row.base_3yr}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.total_payg}</td>
-                <td style="padding: 0.75rem; color: var(--muted); text-align: center;">$${row.total_1yr}</td>
-                <td style="padding: 0.75rem; color: var(--light); text-align: center; font-weight: 700; background: rgba(59, 130, 246, 0.1);">$${row.total_3yr}</td>
-            `;
-            simTbody.appendChild(tr);
-        });
+        getEl('mock-simulation-table-body').innerHTML = mockSimulationData.map(r => `<tr>
+            <td class="mono strong">${r.bucket}</td>
+            <td class="num muted sep">${r.mins}</td>
+            <td class="num strong">${r.slots}</td>
+            <td class="num muted sep">${r.utilization}%</td>
+            <td class="num muted">${r.slot_hours.toLocaleString()}</td>
+            <td class="num muted sep">${r.slot_month}</td>
+            <td class="num muted sep">$${r.autoscale_cost.toLocaleString()}</td>
+            <td class="num muted">$${r.base_payg.toLocaleString()}</td>
+            <td class="num muted">$${r.base_1yr.toLocaleString()}</td>
+            <td class="num muted sep">$${r.base_3yr.toLocaleString()}</td>
+            <td class="num muted">$${r.total_payg.toLocaleString()}</td>
+            <td class="num muted">$${r.total_1yr.toLocaleString()}</td>
+            <td class="num total-cell ${r.total_3yr === bestTotal ? 'best' : ''}">$${r.total_3yr.toLocaleString()}${r.total_3yr === bestTotal ? ' <i class="fas fa-star"></i>' : ''}</td>
+        </tr>`).join('');
+    })();
     </script>
 </body>
-
 </html>
