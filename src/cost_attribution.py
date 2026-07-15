@@ -1,21 +1,54 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed
+from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end
 from collections import defaultdict
 import json
 import os
 import logging
+import time
+
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
 
-CONFIG_FILE = "cost_attribution_config.json"
+CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"
 
 # _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
+
+
+def _run_and_log(client, sql, label, params=None, query_parameters=None):
+    """Run a query with timing, BQ URL, and structured logging."""
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", label, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    results = query_job.result()
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return results
+
 
 class ReservationConfig(BaseModel):
     sku_rate: float
@@ -27,7 +60,7 @@ class CostAttributionConfig(BaseModel):
     borrowing_rule: str = "lender_pays" # "lender_pays", "borrower_pays"
     reservations: Dict[str, ReservationConfig] = {}
 
-class CostAttributionParams(BaseModel):
+class CostAttributionParams(FocusMixin):
     billing_month_start: str
     billing_month_end: str
     org_project_id: Optional[str] = None
@@ -44,28 +77,46 @@ class CostAttributionParams(BaseModel):
         except ValueError:
             raise ValueError("Date parameters must be in YYYY-MM-DD format")
 
+    @model_validator(mode='after')
+    def validate_date_range(self):
+        """Ensure billing_month_start <= billing_month_end to prevent silent empty results."""
+        if self.billing_month_start > self.billing_month_end:
+            raise ValueError(
+                f"billing_month_start ({self.billing_month_start}) must be on or before "
+                f"billing_month_end ({self.billing_month_end})"
+            )
+        return self
+
 def load_config() -> CostAttributionConfig:
+    """Load the saved config, or defaults if none has been saved yet.
+
+    A missing file is a legitimate initial state (returns defaults). A file
+    that exists but fails to parse/validate is a real problem — callers must
+    handle that explicitly rather than have it silently masked as defaults,
+    which would make every reservation appear "unconfigured" with no
+    indication that the stored config was actually lost/corrupted.
+    """
     if not os.path.exists(CONFIG_FILE):
         return CostAttributionConfig()
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            data = json.load(f)
-            return CostAttributionConfig(**data)
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return CostAttributionConfig()
+    with open(CONFIG_FILE, "r") as f:
+        data = json.load(f)
+    return CostAttributionConfig(**data)
 
 def save_config(config: CostAttributionConfig):
     try:
         with open(CONFIG_FILE, "w") as f:
-            json.dump(config.dict(), f, indent=2)
+            json.dump(config.model_dump(), f, indent=2)
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
         raise HTTPException(status_code=500, detail="Failed to save configuration")
 
 @router.get("/config", response_model=CostAttributionConfig)
 def get_config():
-    return load_config()
+    try:
+        return load_config()
+    except Exception as e:
+        logger.error(f"Failed to load cost attribution config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load cost attribution configuration; check server logs.")
 
 @router.post("/config")
 def update_config(config: CostAttributionConfig):
@@ -74,21 +125,25 @@ def update_config(config: CostAttributionConfig):
 
 @router.post("/calculate")
 def calculate_cost_attribution(params: CostAttributionParams):
-    config = load_config()
-    
+    params.focus_projects = validate_focus_projects(params.focus_projects)
+    t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
+        config = load_config()
         scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
         # Determine table name based on admin_project_id
         target_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
         target_project = _safe_ident(target_project_raw, "admin_project_id")
         reject_dummy_project(target_project)
-        
+        region = _safe_ident(_normalize_region(params.region), "region")
+        # Always query all projects — waste computation needs the full denominator.
+        # Focus is applied to the DISPLAY, not the computation.
+
         if target_project:
-            table_name = f"`{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
+            table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
         else:
             # Fallback to region-scoped view as in example
-            table_name = f"`{params.region}`.INFORMATION_SCHEMA.JOBS"
+            table_name = f"`{region}`.INFORMATION_SCHEMA.JOBS"
             
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)
@@ -105,22 +160,18 @@ def calculate_cost_attribution(params: CostAttributionParams):
               creation_time >= TIMESTAMP(@start_date)
               AND creation_time < TIMESTAMP(@end_date)
               AND job_type = 'QUERY'
-              AND statement_type != 'SCRIPT'
+              AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
               AND reservation_id IS NOT NULL
             GROUP BY
               project_id,
               reservation_id
         """
         
-        logger.info(f"Executing Cost Attribution Query:\n{query}")
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
-                bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
-            ],
-            maximum_bytes_billed=get_max_bytes_billed(params),
-        )
-        job_results = scoped_client.query(query, job_config=job_config).result()
+        all_params = [
+            bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
+            bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
+        ]
+        job_results = _run_and_log(scoped_client, query, "Cost Attribution", params=params, query_parameters=all_params)
         
         project_usage = []
         reservation_totals = defaultdict(float)
@@ -183,7 +234,13 @@ def calculate_cost_attribution(params: CostAttributionParams):
             })
             
         # Handle Rule B (Central Dump) properly if needed
-        if config.waste_rule == "B" and config.central_cost_center_project:
+        if config.waste_rule == "B":
+            if not config.central_cost_center_project:
+                raise HTTPException(
+                    400,
+                    "Cost attribution with waste_rule='B' (Central Dump) requires "
+                    "central_cost_center_project to be configured."
+                )
             for res_id, total_used_slots in reservation_totals.items():
                 short_res_id = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
                 res_config = config.reservations.get(short_res_id) or config.reservations.get(res_id)
@@ -200,15 +257,25 @@ def calculate_cost_attribution(params: CostAttributionParams):
                         "reservation_id": res_id,
                         "direct_usage_cost_usd": 0.0,
                         "allocated_waste_cost_usd": round(waste_cost, 2),
-                        "total_cost_attribution_usd": round(waste_cost, 2)
+                        "total_cost_attribution_usd": round(waste_cost, 2),
+                        "slot_hours": 0.0
                     })
             
-        logger.info(f"Returning {len(final_attributions)} attribution records.")
-        return final_attributions
+        # Tier 1.5: compute org-wide, filter display to focused projects
+        total_org_projects = len(set(a["project_id"] for a in final_attributions))
+        if params.focus_projects:
+            focus_set = set(params.focus_projects)
+            final_attributions = [a for a in final_attributions if a["project_id"] in focus_set]
+
+        scope = AppliedScope(
+            mode="focused" if params.focus_projects else "org",
+            projects=params.focus_projects,
+            total_org_projects=total_org_projects if params.focus_projects else None,
+        )
+
+        logger.info("Returning %d attribution records (scope: %s).", len(final_attributions), scope.mode)
+        log_endpoint_end("Cost Attribution", t0, _logger=logger)
+        return {"scope": scope.model_dump(), "attributions": final_attributions}
         
     except Exception as e:
         handle_endpoint_exception(e, "Cost attribution")
-
-@router.post("/test-hbo")
-def test_hbo():
-    return {"message": "HBO test works"}

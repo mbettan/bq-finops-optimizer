@@ -34,6 +34,10 @@ LOOKBACK_ENDPOINTS = [
     ("/api/slots/profiler/queries",    {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/users/top_spenders",        {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/slots/fluid_simulation",    {"org_project_id": "valid-proj", "region": "region-us"}),
+    ("/api/hbo/analyze",               {"org_project_id": "valid-proj", "region": "region-us"}),
+    ("/api/hbo/summary",               {"org_project_id": "valid-proj", "region": "region-us"}),
+    ("/api/hbo/performance_insights",  {"org_project_id": "valid-proj", "region": "region-us"}),
+    ("/api/hbo/status",                {"org_project_id": "valid-proj", "region": "region-us"}),
 ]
 
 
@@ -279,21 +283,9 @@ class TestFluidSimBounds:
 
 
 # ---------------------------------------------------------------------------
-# HBO model bounds (verify lookback_days has no bounds yet — regression anchor)
+# HBO model bounds: lookback_days now has Field(ge=1, le=90) like every other
+# endpoint (see LOOKBACK_ENDPOINTS above, which covers all three HBO routes
+# plus /api/hbo/status). This class previously documented the opposite
+# (no bounds) as a tracked gap — the gap is now closed.
 # ---------------------------------------------------------------------------
 
-class TestHBOParamsAcceptance:
-    """HBO endpoints don't yet have Field bounds on lookback_days.
-    These tests document the current behavior so future bound additions are tracked."""
-
-    @pytest.mark.parametrize("endpoint", [
-        "/api/hbo/analyze",
-        "/api/hbo/summary",
-        "/api/hbo/performance_insights",
-    ])
-    def test_hbo_lookback_large_value_not_rejected_by_pydantic(self, endpoint):
-        """HBO models currently lack Field bounds — large values pass Pydantic."""
-        payload = {"org_project_id": "valid-proj", "lookback_days": 365}
-        response = client.post(endpoint, json=payload)
-        # Should NOT be 422 (no Pydantic bound), but may be 400/500 from handler
-        assert response.status_code != 422

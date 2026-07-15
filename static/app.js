@@ -56,7 +56,14 @@
             const sanitized = {};
             for (const key in data) {
                 if (Object.prototype.hasOwnProperty.call(data, key)) {
-                    if (key === 'query' || key === 'sql' || key === 'gemini_optimization_advice' || key === 'ddl' || key === 'referenced_schemas') {
+                    // `ddl` is synthesized server-side from already-validated
+                    // identifiers and fixed templates (never raw user input),
+                    // and is written into <textarea>.value / clipboard as literal
+                    // text, so escaping it would corrupt copy/paste. Every other
+                    // field — including raw SQL query text and AI-generated
+                    // advice, both of which can contain attacker-influenced
+                    // content — is escaped like everything else by default.
+                    if (key === 'ddl') {
                         sanitized[key] = data[key];
                     } else {
                         sanitized[key] = sanitizeData(data[key]);
@@ -67,21 +74,40 @@
         }
         return data;
     }
+
+    // Exposed so other code paths that bypass fetch() (e.g. Snapshot import,
+    // which loads data from a file straight into localStorage) can apply the
+    // same escaping before that data ever reaches the DOM.
+    window.sanitizeData = sanitizeData;
 })();
+
+// Guards against a corrupted/malicious localStorage value (e.g. from a bad
+// Snapshot import) breaking script execution for the rest of this file.
+function safeParseJSON(raw, fallback) {
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
+        return fallback;
+    }
+}
 
 // State
 const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
-    scanMode: localStorage.getItem('bq_scan_mode') || 'organization',
     maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
+    focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
     storageData: [],
     slotsData: [],
     slotsChart: null,
     actualProvisioningChart: null,
     jobsScatterChart: null,
-    debugMode: true
+    // Logs fetch params (project IDs, region, focus_projects) to the console
+    // when true. Keep this off by default — screenshots/screen-shares/HAR
+    // exports of the console can leak org topology otherwise.
+    debugMode: false
 };
 
 // Quota-safe localStorage helper available globally
@@ -95,6 +121,88 @@ function safeSetLocalStorage(key, value) {
         return false;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Scope classification — derived from backend, not hand-maintained
+// ---------------------------------------------------------------------------
+
+/** Populated at startup from GET /api/meta/scope-map.
+ *  Keys are real route paths (e.g. '/api/cost-attribution/calculate'),
+ *  values are 'focus' or 'org'. */
+let FOCUS_SCOPE_MAP = {};
+
+/** Fetch the scope map once at startup so buildPayload and the badge work. */
+async function loadScopeMap() {
+    try {
+        const res = await fetch('/api/meta/scope-map');
+        if (res.ok) {
+            FOCUS_SCOPE_MAP = await res.json();
+        } else {
+            console.error('[ScopeMap] Non-OK response:', res.status);
+        }
+    } catch (e) {
+        console.error('[ScopeMap] Failed to load — falling back to pass-through', e);
+    }
+}
+
+/**
+ * Strip focus_projects from the payload for org-only endpoints.
+ * Warns on unmapped endpoints so missing entries surface during dev.
+ */
+function buildPayload(endpoint, basePayload) {
+    const scope = FOCUS_SCOPE_MAP[endpoint];
+    if (!scope) {
+        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — focus_projects passed unchanged`);
+    }
+    if (scope === 'org') {
+        const { focus_projects, ...rest } = basePayload;
+        return rest;
+    }
+    return basePayload;
+}
+
+/** Maps navigation view names to their primary POST endpoint for badge display. */
+const VIEW_TO_ENDPOINT = {
+    'storage': '/api/storage/analyze',
+    'schema-optimizer': '/api/storage/static_audit',
+    'jobs': '/api/jobs/analyze',
+    'slots': '/api/slots/analyze',
+    'fluid-scaling': '/api/fluid-scaling/estimate',
+    'slots-simulator': '/api/slots/simulate',
+    'cost-attribution': '/api/cost-attribution/calculate',
+    'profiler': '/api/slots/profiler',
+    'users': '/api/users/top_spenders',
+    'hbo': '/api/hbo/analyze',
+    'storage-hygiene': '/api/storage/hygiene',
+    'antipatterns': '/api/antipatterns/dml',
+    'performance-insights': '/api/hbo/performance_insights',
+    'bi-optimizer': '/api/bi/analyze',
+    'ai-reviewer': '/api/ai/analyze',
+};
+
+// Update scope badge based on active view and focusProjects state
+function updateScopeBadge(viewName) {
+    const container = document.getElementById('scope-badge-container');
+    const badge = document.getElementById('scope-badge');
+    if (!container || !badge) return;
+
+    const endpoint = VIEW_TO_ENDPOINT[viewName];
+    const scope = endpoint ? FOCUS_SCOPE_MAP[endpoint] : undefined;
+    const projects = state.focusProjects || [];
+
+    container.style.display = '';
+    if (scope === 'org') {
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
+    } else if (projects.length > 0) {
+        badge.textContent = `🎯 Focused: ${projects.length} project${projects.length > 1 ? 's' : ''}`;
+        badge.style.color = 'var(--accent-primary)';
+    } else {
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
+    }
+}
+
 
 /**
  * Clear stale module data instantly when a user clicks a fetch button.
@@ -229,6 +337,24 @@ const Snapshot = (() => {
     showNotification(`Exported ${keyCount} result set(s).`, 'success');
   }
 
+  // Data imported from a snapshot file bypasses the fetch() response
+  // sanitizer entirely (it's loaded straight from a file, never through
+  // window.fetch), so it must be re-escaped here before it ever reaches
+  // localStorage / the DOM — otherwise a crafted snapshot shared via the
+  // app's own "share with your team" export/import feature is a stored XSS
+  // vector requiring no BigQuery access at all. Falls back to the raw
+  // string for plain (non-JSON) scalar values, e.g. a bare project id.
+  function sanitizeImportedValue(raw) {
+    if (typeof raw !== 'string') return raw;
+    try {
+      const parsed = JSON.parse(raw);
+      const sanitize = window.sanitizeData || (v => v);
+      return JSON.stringify(sanitize(parsed));
+    } catch {
+      return raw;
+    }
+  }
+
   function importSnapshot(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -267,10 +393,30 @@ const Snapshot = (() => {
       }
       keysToClear.forEach(k => localStorage.removeItem(k));
 
+      // Sanitize imported data to prevent XSS via snapshot hydration.
+      // The global fetch-proxy sanitizer only covers network responses;
+      // imported snapshots bypass it entirely, so we must sanitize here.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      function sanitizeImport(data) {
+          if (data === null || data === undefined) return data;
+          if (typeof data === 'string') return escHtml(data);
+          if (Array.isArray(data)) return data.map(sanitizeImport);
+          if (typeof data === 'object') {
+              const out = {};
+              for (const k2 in data) {
+                  if (Object.prototype.hasOwnProperty.call(data, k2)) {
+                      out[k2] = sanitizeImport(data[k2]);
+                  }
+              }
+              return out;
+          }
+          return data;
+      }
+
       let written = 0;
       keys.forEach(k => {
         if (k.startsWith(KEY_PREFIX)) {
-          const ok = safeSetLocalStorage(k, parsed.data[k]);
+          const ok = safeSetLocalStorage(k, sanitizeImportedValue(parsed.data[k]));
           if (ok) written++;
         }
       });
@@ -342,9 +488,9 @@ document.addEventListener('DOMContentLoaded', () => {
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
-        cfgScanMode: document.getElementById('cfg-scan-mode'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
+        cfgFocusProjects: document.getElementById('cfg-focus-projects'),
         
         // Storage Form & Elements
         btnAnalyzeStorage: document.getElementById('analyze-storage-btn'),
@@ -414,7 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeBi: document.getElementById('analyze-bi-btn'),
         
-        // AI Reviewer
+        // AI Doctor
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit'),
@@ -440,8 +586,9 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgOrgProject.value = state.orgProject;
         if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
-        if (elements.cfgScanMode) elements.cfgScanMode.value = state.scanMode;
         if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
+        if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
+        updateScopeBadge(Router.getCurrentViewId());
         
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -473,19 +620,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Save Settings
     elements.saveSettingsBtn.addEventListener('click', () => {
+        // GCP project ID regex: starts with lowercase letter, 6-30 chars, [a-z0-9-]
+        const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
+        const validationErrors = [];
+
+        // --- Strip & validate Org Project ---
         state.orgProject = elements.cfgOrgProject.value.trim();
         elements.cfgOrgProject.value = state.orgProject;
+        if (state.orgProject && !PROJECT_ID_RE.test(state.orgProject)) {
+            validationErrors.push(`Invalid Organization Project ID "${state.orgProject}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
+        }
+
+        // --- Strip & validate Admin Project ---
         if (elements.cfgAdminProject) {
             state.adminProject = elements.cfgAdminProject.value.trim();
             elements.cfgAdminProject.value = state.adminProject;
+            if (state.adminProject && !PROJECT_ID_RE.test(state.adminProject)) {
+                validationErrors.push(`Invalid Admin Project ID "${state.adminProject}". Must be 6-30 lowercase chars, starting with a letter.`);
+            }
             localStorage.setItem('bq_admin_project', state.adminProject);
         }
-        state.region = elements.cfgRegion.value;
-        if (elements.cfgScanMode) {
-            state.scanMode = elements.cfgScanMode.value;
-            localStorage.setItem('bq_scan_mode', state.scanMode);
-        }
 
+        // --- Region (dropdown, no validation needed — just trim) ---
+        state.region = elements.cfgRegion.value;
+
+        // --- Strip & validate Max Bytes Billed ---
         if (elements.cfgMaxBytesBilled) {
             const val = parseInt(elements.cfgMaxBytesBilled.value);
             state.maxBytesBilledGb = (val && val > 0) ? val : null;
@@ -496,14 +655,48 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // --- Strip & validate Focus Projects ---
+        if (elements.cfgFocusProjects) {
+            const raw = elements.cfgFocusProjects.value;
+            state.focusProjects = raw.split(',').map(s => s.trim()).filter(Boolean);
+            // Validate each focus project ID
+            const invalidProjects = state.focusProjects.filter(p => !PROJECT_ID_RE.test(p));
+            if (invalidProjects.length > 0) {
+                validationErrors.push(`Invalid Focus Project ID(s): ${invalidProjects.map(p => `"${p}"`).join(', ')}. Each must be 6-30 lowercase chars, starting with a letter.`);
+            }
+            // Write back cleaned values to the input field
+            elements.cfgFocusProjects.value = state.focusProjects.join(', ');
+            if (state.focusProjects.length > 0) {
+                safeSetLocalStorage('bq_focus_projects', JSON.stringify(state.focusProjects));
+            } else {
+                localStorage.removeItem('bq_focus_projects');
+            }
+        }
+
+        // --- Abort on validation errors ---
+        if (validationErrors.length > 0) {
+            showNotification(validationErrors.join('\n'), 'error');
+            return;
+        }
+
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
+
+        // Flush all cached module results — stale data from a previous scope
+        // (e.g., org-wide results before focus_projects was set) must not persist.
+        const allKeys = Object.keys(localStorage);
+        const resultKeys = allKeys.filter(k => k.startsWith('bq_') && k.endsWith('_results'));
+        resultKeys.forEach(k => localStorage.removeItem(k));
+        // Also clear any cached summaries/timelines/status that are scope-dependent
+        ['bq_hbo_status', 'bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries',
+         'bq_top_spenders', 'bq_cost_attr_results', 'bq_cost_attr_config'].forEach(k => localStorage.removeItem(k));
 
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
         elements.currentRegion.textContent = state.region;
+        updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved successfully.', 'success');
+        showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
         Router.navigate('storage');
     });
 
@@ -566,6 +759,7 @@ document.addEventListener('DOMContentLoaded', () => {
             min_monthly_saving: parseFloat(elements.stMinSave.value),
             min_monthly_saving_pct: parseFloat(elements.stMinSavePct.value),
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
             max_bytes_billed_gb: state.maxBytesBilledGb
         };
@@ -575,7 +769,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/analyze', params))
             });
 
             if (!response.ok) {
@@ -647,6 +841,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 slot_step_size: parseInt(document.getElementById('jb-slot-step').value),
                 lookback_days: parseInt(document.getElementById('jb-lookback').value),
                 region: state.region,
+                focus_projects: state.focusProjects,
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 min_bytes_billed: parseInt(document.getElementById('jb-min-size').value) * 1024 * 1024,
@@ -659,7 +854,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/api/jobs/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/jobs/analyze', params))
                 });
 
                 if (!response.ok) {
@@ -966,9 +1161,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render Active Assist Results
     const renderActiveAssistResults = (data) => {
+        // Must destroy DataTable BEFORE clearing innerHTML or appending rows
+        if ($.fn.DataTable.isDataTable('#active-assist-table')) {
+            $('#active-assist-table').DataTable().destroy();
+        }
+
         const tbody = document.querySelector('#active-assist-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
+        
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 2rem;">
+                <div style="background: rgba(234, 179, 8, 0.1); border: 1px dashed rgba(234, 179, 8, 0.3); border-radius: 8px; padding: 1.5rem; display: inline-block;">
+                    <h4 style="color: #fef08a; margin: 0 0 0.5rem 0; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation"></i> No Active Assist Recommendations Found</h4>
+                    <div style="color: #cbd5e1; font-size: 0.9rem; margin: 0; text-align: left;">
+                        <p style="margin: 0 0 0.5rem 0;">This can happen when:</p>
+                        <ul style="margin: 0 0 1rem 0; padding-left: 1.5rem;">
+                            <li>Tables are already well-optimized</li>
+                            <li>Query history is under 30 days (Recommender needs more data)</li>
+                            <li>Active tables with heavy DML may be intentionally excluded to prioritize compute efficiency</li>
+                        </ul>
+                        <p style="margin: 0;">Rely on the <strong>Static Schema Auditor</strong> below for structural governance.</p>
+                    </div>
+                </div>
+            </td></tr>`;
+            return;
+        }
 
         const getRecBadge = (rec) => {
             let bg, color, border;
@@ -1005,9 +1223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#active-assist-table')) {
-            $('#active-assist-table').DataTable().destroy();
-        }
+
         $('#active-assist-table').DataTable({
             pageLength: 10,
             order: [[6, 'desc']], // Sort by On-Demand Savings descending
@@ -1023,6 +1239,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const params = {
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
             max_bytes_billed_gb: state.maxBytesBilledGb
         };
@@ -1032,7 +1249,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/active_assist', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/active_assist', params))
             });
 
             if (!response.ok) {
@@ -1055,6 +1272,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Render Static Audit Results
     const renderStaticAuditResults = (data) => {
+        // Destroy existing DataTables before modifying the DOM to prevent it from wiping our new rows
+        if ($.fn.DataTable.isDataTable('#static-audit-table')) {
+            $('#static-audit-table').DataTable().destroy();
+        }
+
         const tbody = document.querySelector('#static-audit-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -1142,9 +1364,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#static-audit-table')) {
-            $('#static-audit-table').DataTable().destroy();
-        }
         $('#static-audit-table').DataTable({
             pageLength: 10,
             order: [[4, 'desc']], // Sort by Logical Size descending
@@ -1160,9 +1379,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const params = {
             region: state.region,
+            focus_projects: state.focusProjects,
             org_project_id: state.orgProject,
-                max_bytes_billed_gb: state.maxBytesBilledGb,
-            scan_mode: state.scanMode || 'single'
+                max_bytes_billed_gb: state.maxBytesBilledGb
         };
 
         try {
@@ -1170,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/storage/static_audit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(params)
+                body: JSON.stringify(buildPayload('/api/storage/static_audit', params))
             });
 
             if (!response.ok) {
@@ -1794,8 +2013,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         (curr.performance_baseline_max || 0) > (prev.performance_baseline_max || 0) ? curr : prev
       );
 
-      console.log('Rendering tier cards for reservation:', mainRes.reservation_id, mainRes);
-
       setTierCardValues(
         mainRes.aggressive_baseline_p80,
         mainRes.balanced_baseline_p95,
@@ -1968,9 +2185,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
         };
 
+        // XSS-safe helper: escapes HTML entities for use in innerHTML / title attributes
+        const esc = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+
         data.forEach(row => {
-            console.log("[BIGQUERY-OPTIMIZER] Row data:", row);
-            
             const avgBytes = row.avg_bytes_processed || 0;
             const recommendation = row.recommendation || 'N/A';
             const isCandidate = recommendation !== 'N/A';
@@ -1979,7 +2197,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const badgeText = isCandidate ? 'Candidate' : 'N/A';
             
             table.row.add([
-                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.query}">${row.query}</div>`,
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.query)}">${esc(row.query)}</div>`,
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
@@ -2386,13 +2604,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                     region: state.region,
+                focus_projects: state.focusProjects,
                     admin_project_id: state.adminProject
                 };
 
                 const response = await fetch('/api/cost-attribution/calculate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/cost-attribution/calculate', params))
                 });
 
                 if (!response.ok) {
@@ -2401,8 +2620,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
 
                 const data = await response.json();
-                renderCostAttributionResults(data);
-                showNotification('Cost attribution calculated successfully.', 'success');
+                const attributions = data.attributions || data; // backward compat
+                const scope = data.scope;
+                renderCostAttributionResults(attributions);
+                if (scope && scope.mode === 'focused' && scope.total_org_projects) {
+                    showNotification(`Cost attribution calculated — showing ${scope.projects.length} of ${scope.total_org_projects} projects (waste computed over full org).`, 'success');
+                } else {
+                    showNotification('Cost attribution calculated successfully.', 'success');
+                }
             } catch (error) {
                 console.error("Cost Attribution Error:", error);
                 showNotification(error.message, 'error');
@@ -2485,7 +2710,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             .filter(proj => !proj.startsWith('res-') && !proj.includes(':') && !proj.includes('.'));
         
         state.top5Projects = sortedProjects.slice(0, 5);
-        console.log("Top 5 Spender Projects identified for HBO:", state.top5Projects);
     };
 
     if (elements.btnAnalyzeProfiler) {
@@ -2504,6 +2728,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject
             };
@@ -2512,7 +2737,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/slots/profiler', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/slots/profiler', params))
                 });
 
                 if (!response.ok) {
@@ -2530,7 +2755,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const queriesResponse = await fetch('/api/slots/profiler/queries', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/slots/profiler/queries', params))
                 });
                 
                 if (queriesResponse.ok) {
@@ -2563,6 +2788,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: parseInt(elements.slLookback.value) || 7,
                 admin_project_id: state.adminProject,
                 od_price: parseFloat(document.getElementById('jb-od-rate').value) || 6.25,
@@ -2573,7 +2799,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/users/top_spenders', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/users/top_spenders', params))
                 });
 
                 if (!response.ok) {
@@ -2668,8 +2894,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(item => {
             const div = document.createElement('div');
             div.style.marginBottom = '0.5rem';
-            
-            if (item.enabled) {
+
+            if (item.error) {
+                div.innerHTML = `<i class="fa-solid fa-circle-question" style="color: #94a3b8; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: ${item.error}`;
+            } else if (item.enabled) {
                 div.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Enabled.`;
             } else {
                 div.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Disabled.`;
@@ -2709,6 +2937,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: targetProject,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30),
                 limit: 10
             };
@@ -2720,17 +2949,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     fetch('/api/hbo/analyze', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/analyze', params))
                     }),
                     fetch('/api/hbo/status', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/status', params))
                     }),
                     fetch('/api/hbo/summary', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(params)
+                        body: JSON.stringify(buildPayload('/api/hbo/summary', params))
                     })
                 ]);
 
@@ -2784,6 +3013,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: projectOverride || state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: lookbackOverride ? parseInt(lookbackOverride) : 7
             };
 
@@ -2791,7 +3021,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/hbo/performance_insights', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/hbo/performance_insights', params))
                 });
 
                 if (!response.ok) {
@@ -2965,6 +3195,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 limit: 20
             };
 
@@ -2972,7 +3203,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/storage/hygiene', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/storage/hygiene', params))
                 });
 
                 if (!response.ok) {
@@ -3274,15 +3505,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
-                limit_per_project: 100,
-                scan_mode: state.scanMode || 'organization'
+                limit_per_project: 100
             };
             try {
                 const response = await fetch('/api/antipatterns/linter', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/linter', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3310,6 +3541,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 1,
                 threshold: 1000
             };
@@ -3317,7 +3549,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/dml', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/dml', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3345,13 +3577,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7
             };
             try {
                 const response = await fetch('/api/antipatterns/mv', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/mv', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3379,6 +3612,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit_per_project: 50
             };
@@ -3386,7 +3620,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/skew', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/skew', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3414,6 +3648,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit_per_project: 50
             };
@@ -3421,7 +3656,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/antipatterns/batch_candidates', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/antipatterns/batch_candidates', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3448,13 +3683,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects,
+                audit_type: 'expiration'
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3488,13 +3725,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects,
+                audit_type: 'filter'
             };
             try {
                 const response = await fetch('/api/governance/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3528,13 +3767,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/mv/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/mv/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3561,13 +3801,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
-                region: state.region
+                region: state.region,
+                focus_projects: state.focusProjects
             };
             try {
                 const response = await fetch('/api/resource_warnings/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/resource_warnings/analyze', params))
                 });
                 if (!response.ok) {
                     const err = await response.json();
@@ -3701,6 +3942,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 lookback_days: 7,
                 limit: 50
             };
@@ -3709,7 +3951,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/bi/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params)
+                    body: JSON.stringify(buildPayload('/api/bi/analyze', params))
                 });
 
                 if (!response.ok) {
@@ -3787,13 +4029,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const renderMarkdown = (text) => {
                 if (!text) return '';
-                
-                // 1. HTML Escape the raw text first
-                let html = text
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
-                
+
+                // text is already HTML-escaped by the global sanitizeData()
+                // fetch wrapper — do not escape again here.
+                let html = text;
+
                 // 2. Extract and mask triple-backtick code blocks
                 const codeBlocks = [];
                 html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
@@ -3819,19 +4059,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 return html;
             };
 
-            const escapeHtml = (str) => {
-                if (!str) return '';
-                return str
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
-            };
-
+            // row.query is already HTML-escaped by the global sanitizeData()
+            // fetch wrapper — do not escape again here.
             const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
-            const escapedQuery = row.query ? escapeHtml(row.query) : '';
-            const escapedPreview = sqlPreview !== 'N/A' ? escapeHtml(sqlPreview) : 'N/A';
+            const escapedQuery = row.query || '';
+            const escapedPreview = sqlPreview;
 
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
@@ -3914,6 +4146,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
+                focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
                 lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7')
             };
@@ -3922,7 +4155,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const response = await fetch('/api/ai/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(params),
+                    body: JSON.stringify(buildPayload('/api/ai/analyze', params)),
                     signal: abortController.signal
                 });
 
@@ -4620,7 +4853,7 @@ const Dashboard = (() => {
     }
 
     container.innerHTML = items.slice(0, 5).map((item, i) => `
-      <a class="opportunity-row" href="${item.deepLink}">
+      <a class="opportunity-row" href="${safeDeepLinkHref(item.deepLink)}">
         <span class="opportunity-row__rank">${i + 1}</span>
         <span class="opportunity-row__label">${escapeHtml(item.label)}</span>
         <span class="opportunity-row__module">${escapeHtml(item.module)}</span>
@@ -4690,8 +4923,8 @@ const Dashboard = (() => {
       <div class="anomaly-row">
         <i class="fa-solid fa-triangle-exclamation anomaly-row__icon
            ${a.severity === 'critical' ? 'anomaly-row__icon--critical' : ''}"></i>
-        <span class="anomaly-row__text">${a.html /* pre-sanitized server-side */}</span>
-        <a class="anomaly-row__action" href="${a.deepLink}">
+        <span class="anomaly-row__text">${escapeHtml(a.message)}</span>
+        <a class="anomaly-row__action" href="${safeDeepLinkHref(a.deepLink)}">
           Investigate <i class="fa-solid fa-arrow-right" style="font-size:0.6rem;"></i>
         </a>
       </div>
@@ -4799,6 +5032,16 @@ const Dashboard = (() => {
       .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;').replaceAll('"', '&quot;')
       .replaceAll("'", '&#39;');
+  }
+
+  function safeDeepLinkHref(link) {
+    // deepLink values are always in-page hash-fragment navigation targets
+    // (e.g. "#capacity?reservation=..."). Reject anything else outright —
+    // an absolute/protocol-relative URL (including a javascript: URI) would
+    // execute if a compromised/malicious backend response ever supplied
+    // one, since HTML-escaping an href attribute does not neutralize a
+    // javascript: scheme.
+    return (typeof link === 'string' && link.startsWith('#')) ? link : '#';
   }
 
   return { init, load };
@@ -4955,8 +5198,8 @@ const FluidScaling = (() => {
 
     // Run BOTH fetches in parallel and tolerate partial failure
     const [estimateResult, jobsResult] = await Promise.allSettled([
-      fetchEstimate({ orgProject, adminProject, region, lookback, price }),
-      fetchJobSimulation({ orgProject, region, lookback, price }),
+      fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
+      fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
     ]);
 
     if (estimateResult.status === 'fulfilled') {
@@ -4985,7 +5228,7 @@ const FluidScaling = (() => {
   // ---------------------------------------------------------------
   // Fetch helpers — both throw on non-OK so Promise.allSettled catches
   // ---------------------------------------------------------------
-  async function fetchEstimate({ orgProject, adminProject, region, lookback, price }) {
+  async function fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb }) {
     const res = await fetch('/api/fluid-scaling/estimate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4995,6 +5238,7 @@ const FluidScaling = (() => {
         region,
         lookback_days:     lookback,
         price_per_slot_hr: price,
+        max_bytes_billed_gb: maxBytesBilledGb,
       }),
     });
     if (!res.ok) {
@@ -5004,7 +5248,7 @@ const FluidScaling = (() => {
     return res.json();
   }
 
-  async function fetchJobSimulation({ orgProject, region, lookback, price }) {
+  async function fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb }) {
     const res = await fetch('/api/slots/fluid_simulation', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5013,6 +5257,7 @@ const FluidScaling = (() => {
         region,
         lookback_days:        lookback,
         edition_slot_hr_rate: price,
+        max_bytes_billed_gb:  maxBytesBilledGb,
       }),
     });
     if (!res.ok) {
@@ -5206,7 +5451,6 @@ const FluidScaling = (() => {
         }
     }
 
-    console.debug('[FluidScaling] job simulation patterns:', rows.length);
 
     if (rows.length === 0) {
       tbody.innerHTML = `
@@ -5361,7 +5605,7 @@ const Router = (() => {
     const targetView = getCurrentViewId();
     
     // Global project check: redirect to settings if no project is set (ignore for dashboard/settings)
-    if (targetView !== 'settings' && targetView !== 'dashboard' && !state.orgProject) {
+    if (targetView !== 'settings' && targetView !== 'dashboard' && targetView !== 'about' && !state.orgProject) {
         showNotification('Execution Project ID must be set in Settings before proceeding.', 'warning');
         location.hash = '#settings';
         return;
@@ -5412,6 +5656,7 @@ const Router = (() => {
     }
 
     document.title = `${capitalize(targetView)} · FinOps Optimizer`;
+    updateScopeBadge(targetView);
 
     const viewport = document.querySelector('.dashboard-viewport');
     if (viewport) viewport.scrollTop = 0;
@@ -5443,7 +5688,8 @@ const Router = (() => {
 })();
 
 // Boot
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadScopeMap();
   Router.init();
 });
 
@@ -5458,3 +5704,90 @@ Router.register('fluid-scaling', {
     FluidScaling.init();
   }
 });
+
+// ---------------------------------------------------------------------------
+// About Panel — fetches /api/about and populates the sidebar badge + view
+// ---------------------------------------------------------------------------
+(function initAboutPanel() {
+  let _aboutData = null;
+
+  async function fetchAbout() {
+    if (_aboutData) return _aboutData;
+    try {
+      const res = await fetch('/api/about');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      _aboutData = await res.json();
+    } catch (err) {
+      console.warn('About: failed to fetch /api/about:', err);
+      _aboutData = {
+        name: 'BigQuery FinOps Optimizer',
+        version: '?.?.?',
+        release_date: '—',
+        releases: [],
+        repo_url: '#',
+        changelog_url: '#',
+        demo_url: '#',
+      };
+    }
+    return _aboutData;
+  }
+
+  // Populate sidebar badge on page load
+  document.addEventListener('DOMContentLoaded', async () => {
+    const data = await fetchAbout();
+    const badge = document.getElementById('sidebar-version-badge');
+    if (badge) badge.textContent = `v${data.version}`;
+  });
+
+  // Populate About view when navigated to
+  Router.register('about', {
+    show: async () => {
+      const data = await fetchAbout();
+
+      // Header
+      const nameEl = document.getElementById('about-app-name');
+      if (nameEl) nameEl.textContent = data.name;
+
+      const versionEl = document.getElementById('about-version');
+      if (versionEl) versionEl.textContent = `v${data.version}`;
+
+      const dateEl = document.getElementById('about-release-date');
+      if (dateEl) dateEl.textContent = data.release_date;
+
+      // Releases
+      const releasesContainer = document.getElementById('about-releases-container');
+      if (releasesContainer) {
+        releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
+          const isLatest = index === 0;
+          return `
+            <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #38bdf8; ${isLatest ? '' : 'opacity: 0.8;'}">
+                        ${isLatest ? '<i class="fa-solid fa-sparkles" style="margin-right: 0.5rem;"></i>' : ''}${release.version}
+                    </h3>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    ${(release.highlights || []).map(h => 
+                        `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${h}
+                        </li>`
+                    ).join('')}
+                </ul>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Links
+      const changelogLink = document.getElementById('about-changelog-link');
+      if (changelogLink) changelogLink.href = data.changelog_url || '#';
+
+      const demoLink = document.getElementById('about-demo-link');
+      if (demoLink) demoLink.href = data.demo_url || '#';
+
+      const repoLink = document.getElementById('about-repo-link');
+      if (repoLink) repoLink.href = data.repo_url || '#';
+    }
+  });
+})();

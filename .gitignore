@@ -1,33 +1,36 @@
 # Logs
 *.log
 
-# Environment/Scratch
+# Environment / Secrets
 venv/
 venv-audit/
 .venv/
 myenv/
 .env
-*.sh
-scratch_*
+.env.*
+
+# Scratch / Diagnostic scripts
 scratch/
+scratch_*
 
 # Python
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+dist/
+build/
 
-# Documentation
-PRD.MD
+# IDE
+.vscode/
+.idea/
 
 # OS
 .DS_Store
+Thumbs.db
 
-# Cost Attribution Plan
-cost_attribution_plan.md
+# Docker
+*.tar
 
-# Context Handover
-context_handover_ai_generate.md
-
-# Internal Telemetry Snapshots
-heavy_job_ids_ref.md
-roadmap.md
+# Internal docs (not for public repo)
+# Move any internal docs into scratch/ or use generic wildcards if applicable.

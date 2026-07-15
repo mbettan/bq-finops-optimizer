@@ -6,21 +6,54 @@
     <title>BQ FinOps optimizer</title>
     <meta name="description" content="Optimize BigQuery storage and compute costs with actionable insights and glassmorphic UI.">
     <link rel="icon" type="image/png" href="./static/favicon.png">
-    
+
+    <!-- Content-Security-Policy: restricts script/style/font/image origins to
+         this app plus the specific CDNs used below. Note: <meta> delivery
+         cannot enforce frame-ancestors/report-uri — those require the HTTP
+         header form if added later. 'unsafe-inline' is required in style-src
+         because the app renders many inline style="..." attributes; it is
+         deliberately NOT present in script-src, which is the directive that
+         actually blocks <script>/onerror=/javascript: XSS payloads. -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.datatables.net;
+        font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:;
+        img-src 'self' data:;
+        connect-src 'self';
+        object-src 'none';
+        base-uri 'self';
+    ">
+
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- FontAwesome for icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
+
+    <!-- FontAwesome for icons (SRI hash verified against cdnjs's own published
+         integrity metadata for this exact library+version). -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+          integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw=="
+          crossorigin="anonymous" referrerpolicy="no-referrer">
+
+    <!-- Chart.js: pinned to an explicit version (was unpinned "@latest", which
+         can silently change served code with no warning — a supply-chain
+         risk independent of SRI). No integrity hash: this exact file's hash
+         could not be verified against jsdelivr's registry from this
+         environment; add one when that can be confirmed. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+
     <!-- DataTables.net (Vanilla JS version or standard jQuery if needed, let's use standard with lightweight jQuery for DataTables as per PRD recommendation if required, or simple tables if preferred. PRD says DataTables.net. Let's use standard table with sorting if possible, or DataTables CDN) -->
+    <!-- No integrity hash: cdn.datatables.net does not publish machine-readable
+         SRI metadata for this version, and a wrong hash would hard-fail the
+         entire table UI, so none is guessed here. -->
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <!-- jQuery: served from cdnjs (rather than code.jquery.com) specifically
+         so the SRI hash below — sourced from cdnjs's own published integrity
+         metadata for this exact library+version — is guaranteed to match. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.0/jquery.min.js"
+            integrity="sha512-3gJwYpMe3QewGELv8k/BX9vcqhryRdzRMxVfq6ngyWXwo03GFEzjsUm8Q7RZcHPHksttq7/GFoxjCVUjkjvPdw=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 
     <link rel="stylesheet" href="static/style.css">
@@ -100,16 +133,35 @@
 
             <details class="nav-hub" open>
               <summary>
-                <i class="fa-solid fa-bolt" style="font-size: 0.7rem;"></i>
-                Compute
+                <i class="fa-solid fa-cubes" style="font-size: 0.7rem;"></i>
+                Schema
               </summary>
               <div class="nav-hub__items">
-                <a href="#jobs" class="nav-link" id="nav-jobs">Query cost optimizer</a>
-                <a href="#slots" class="nav-link" id="nav-slots">Slots optimizer</a>
-                <a href="#slots-simulator" class="nav-link" id="nav-slots-simulator">Edition matrix simulation</a>
-                <a href="#fluid-scaling" class="nav-link" id="nav-fluid-scaling">Fluid scaling</a>
+                <a href="#schema-optimizer" class="nav-link" id="nav-schema-optimizer">Schema Optimizer</a>
+              </div>
+            </details>
+
+            <details class="nav-hub" open>
+              <summary>
+                <i class="fa-solid fa-bolt" style="font-size: 0.7rem;"></i>
+                Workload Optimization
+              </summary>
+              <div class="nav-hub__items">
+                <a href="#jobs" class="nav-link" id="nav-jobs">Query Cost Optimizer</a>
+                <a href="#slots" class="nav-link" id="nav-slots">Slots Optimizer</a>
+                <a href="#slots-simulator" class="nav-link" id="nav-slots-simulator">Edition Matrix Simulation</a>
+                <a href="#fluid-scaling" class="nav-link" id="nav-fluid-scaling">Fluid Scaling</a>
+              </div>
+            </details>
+
+            <details class="nav-hub" open>
+              <summary>
+                <i class="fa-solid fa-chart-pie" style="font-size: 0.7rem;"></i>
+                Cost Allocation
+              </summary>
+              <div class="nav-hub__items">
                 <a href="#cost-attribution" class="nav-link" id="nav-cost-attribution">Cost Attribution</a>
-                <a href="#profiler" class="nav-link" id="nav-profiler">Workload profiler</a>
+                <a href="#profiler" class="nav-link" id="nav-profiler">Workload Profiler</a>
                 <a href="#users" class="nav-link" id="nav-users">Top Spenders</a>
               </div>
             </details>
@@ -133,7 +185,7 @@
               <div class="nav-hub__items">
                 <a href="#hbo" class="nav-link" id="nav-hbo">HBO Insights</a>
                 <a href="#bi-optimizer" class="nav-link" id="nav-bi-optimizer">BI Optimizer</a>
-                <a href="#ai-reviewer" class="nav-link" id="nav-ai-reviewer">AI Reviewer</a>
+                <a href="#ai-reviewer" class="nav-link" id="nav-ai-reviewer">AI Doctor</a>
               </div>
             </details>
           </nav>
@@ -142,7 +194,9 @@
             <a href="#settings" style="color: inherit; text-decoration: none;">
               <i class="fa-solid fa-gear"></i> Settings
             </a>
-            <span><kbd class="kbd">⌘K</kbd></span>
+            <a href="#about" id="sidebar-about-link" style="color: inherit; text-decoration: none; cursor: pointer;">
+              <i class="fa-solid fa-circle-info"></i> <span id="sidebar-version-badge" style="font-size: 0.75rem; opacity: 0.6;">v…</span>
+            </a>
           </div>
         </aside>
 
@@ -183,6 +237,10 @@
                     <div class="info-item">
                         <span class="label">Region:</span>
                         <span class="value" id="current-region">region-us</span>
+                    </div>
+                    <div class="info-item" id="scope-badge-container" style="display: none;">
+                        <span class="label">Scope:</span>
+                        <span class="value" id="scope-badge" style="color: var(--accent-primary); font-weight: 600;"></span>
                     </div>
 
                 </div>
@@ -266,6 +324,44 @@
                   </div>
                 </section>
 
+                <!-- About View -->
+                <section id="view-about" class="view" data-view="about">
+                    <h1 class="view-title">About</h1>
+                    <div class="glass-card" style="max-width: 700px;">
+                        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                            <img src="./static/favicon.png" alt="logo" style="width: 48px; height: 48px; object-fit: contain;">
+                            <div>
+                                <h2 id="about-app-name" style="margin: 0; font-size: 1.4rem;">BigQuery FinOps Optimizer</h2>
+                                <p style="margin: 0.25rem 0 0; color: var(--text-secondary); font-size: 0.9rem;">
+                                    <span id="about-version" style="font-weight: 600; color: #38bdf8;">v…</span>
+                                    <span style="margin: 0 0.5rem; opacity: 0.3;">|</span>
+                                    Released <span id="about-release-date">…</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <p style="color: var(--text-secondary); line-height: 1.6; margin-bottom: 1.5rem;">
+                            An enterprise-grade diagnostic and simulation suite for Google Cloud BigQuery costs. Analyzes historical telemetry, query workloads, and storage configurations across GCP organizations to maximize cost efficiency.
+                        </p>
+
+                        <div id="about-releases-container" style="margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
+                            <!-- Populated by JS -->
+                        </div>
+
+                        <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem;">
+                            <a id="about-changelog-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem;">
+                                <i class="fa-solid fa-scroll" style="margin-right: 0.5rem;"></i>Release Notes
+                            </a>
+                            <a id="about-demo-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3);">
+                                <i class="fa-solid fa-play" style="margin-right: 0.5rem;"></i>Interactive Demo
+                            </a>
+                            <a id="about-repo-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
+                                <i class="fa-brands fa-github" style="margin-right: 0.5rem;"></i>GitHub
+                            </a>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Settings View -->
                 <section id="view-settings" class="view" data-view="settings">
                     <h1 class="view-title">Global configuration</h1>
@@ -295,17 +391,14 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-scan-mode">Linter Scan Mode <span class="tooltip" data-tooltip="Choose whether the linter audits the entire organization or only the specified project."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <select id="cfg-scan-mode">
-                                    <option value="organization">Organization-wide (All Projects)</option>
-                                    <option value="single">Single Project Only</option>
-                                </select>
-                                <small>Controls audit scope</small>
-                            </div>
-                            <div class="form-group">
                                 <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 200 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="number" id="cfg-max-bytes-billed" placeholder="200" min="1" max="10240" step="50">
                                 <small>Default: 200 GiB — increase for large orgs (max 10 TiB)</small>
+                            </div>
+                            <div class="form-group" style="grid-column: 1 / -1;">
+                                <label for="cfg-focus-projects">Focus Projects <span class="tooltip" data-tooltip="Comma-separated list of GCP project IDs to limit the analysis scope. When set, only data from these projects will be included in all queries. Leave empty for org-wide analysis."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-focus-projects" placeholder="e.g. project-a, project-b, project-c">
+                                <small>Optional — leave empty for full org-wide analysis</small>
                             </div>
                         </div>
                         <button id="save-settings-btn" class="btn-primary">Save Config</button>
@@ -314,7 +407,7 @@
 
                 <!-- Storage Optimizer View -->
                 <section id="view-storage" class="view" data-view="storage">
-                    <h1 class="view-title">Storage cost optimizer</h1>
+                    <h1 class="view-title">Storage cost optimizer <span class="scope-indicator"></span></h1>
                     <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Note: This analysis evaluates physical vs logical billing specifically for <strong>BASE TABLE</strong> storage (excluding materialized views and external tables).</p>
                     <div class="glass-card params-panel">
                         <h2>Pricing & parameters</h2>
@@ -348,7 +441,6 @@
                                 <input type="number" id="st-min-save-pct" value="0.0" step="0.01">
                             </div>
                         </div>
-                        <button id="analyze-storage-btn" class="btn-primary">Run Analysis</button>
                     </div>
 
                     <div class="kpi-grid">
@@ -405,7 +497,10 @@
                     </div>
 
                     <div class="glass-card results-panel">
-                        <h2>Recommendations</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h2 style="display: flex; align-items: center; color: #f1f5f9; margin: 0;"><i class="fa-solid fa-money-bill-transfer" style="margin-right: 0.5rem; color: #10b981;"></i>Storage Billing Arbitrage</h2>
+                            <button id="analyze-storage-btn" class="btn-primary">Run Analysis</button>
+                        </div>
                         <div class="table-responsive">
                             <table id="storage-results-table" class="display nowrap" style="width:100%">
                                 <thead>
@@ -423,6 +518,41 @@
                                     <!-- Rows will be injected here -->
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Schema Optimizer View -->
+                <section id="view-schema-optimizer" class="view" data-view="schema-optimizer">
+                    <h1 class="view-title">Schema Optimizer <span class="scope-indicator"></span></h1>
+                    <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Partitioning and clustering recommendations from two complementary engines: Google Active Assist (compute-optimized) and our Static Schema Auditor (bytes-scanned-optimized).</p>
+
+                    <!-- Educational Section: Methodology & Scope -->
+                    <div class="glass-card" style="background: rgba(15, 23, 42, 0.4); border: 1px dashed rgba(255, 255, 255, 0.15);">
+                        <h2 style="margin: 0 0 1rem 0; font-size: 1.1rem; color: #f1f5f9; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fa-solid fa-graduation-cap" style="color: #a78bfa;"></i> Methodology & Scope: A Complementary Approach
+                        </h2>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; font-size: 0.9rem;">
+                            <!-- Active Assist -->
+                            <div style="padding: 1rem; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px;">
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8; display: flex; align-items: center; gap: 0.5rem;">
+                                    <i class="fa-solid fa-wand-magic-sparkles"></i> Active Assist (Dynamic)
+                                </h3>
+                                <p style="color: #cbd5e1; margin-bottom: 0.75rem;"><strong>Optimizes for Compute (Slot-ms).</strong> Analyzes the last 30 days of query history to calculate the net compute savings of clustering/partitioning.</p>
+                                <div style="padding: 0.5rem; background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; color: #bae6fd; font-size: 0.85rem;">
+                                    <strong><i class="fa-solid fa-circle-info"></i> Methodology:</strong> Active Assist is designed to optimize for net compute efficiency. It may intentionally suppress recommendations for tables with heavy daily DML (inserts/updates) if estimated background maintenance costs outweigh the expected read savings.
+                                </div>
+                            </div>
+                            <!-- Static Schema Auditor -->
+                            <div style="padding: 1rem; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px;">
+                                <h3 style="margin: 0 0 0.5rem 0; color: #10b981; display: flex; align-items: center; gap: 0.5rem;">
+                                    <i class="fa-solid fa-shield-halved"></i> Static Guardrail (Structural)
+                                </h3>
+                                <p style="color: #cbd5e1; margin-bottom: 0.75rem;"><strong>Optimizes for Storage & On-Demand Costs (Bytes Scanned).</strong> Performs a structural analysis of tables >1GB to enforce clustering/partitioning best practices.</p>
+                                <div style="padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-left: 3px solid #10b981; color: #6ee7b7; font-size: 0.85rem;">
+                                    <strong><i class="fa-solid fa-handshake"></i> Better Together:</strong> Complements Active Assist by serving as a structural safety net for tables undergoing heavy DML. Essential for preventing On-Demand cost spikes during migration.
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -494,40 +624,41 @@
 
                 <!-- Compute / Jobs View -->
                 <section id="view-jobs" class="view" data-view="jobs">
-                    <h1 class="view-title">Query cost & routing optimization</h1>
+                    <h1 class="view-title">Query cost & routing optimization <span class="scope-indicator"></span></h1>
                     
-                    <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
-                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
-                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
-                            <div>
-                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How it works</h3>
-                                <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
-                                    This analyzer profiles your historical BigQuery jobs to determine their most cost-effective billing model (On-Demand vs. Editions/Autoscaler). It is designed to act as an <strong>Advanced Workload Router</strong>, helping you identify structural "slot hogs" (better for On-Demand) and "data hogs" (better for Editions).
-                                </p>
-                                
-                                <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
-                                    <i class="fa-solid fa-lightbulb" style="color: #f59e0b; margin-right: 5px;"></i>
-                                    <strong>Pro-Tip for Spikey Workloads:</strong> For extremely sparse workloads with high peaks, it is often cheaper to move those specific projects back to <strong>On-Demand billing</strong> (paying per TB processed) instead of Editions. This eliminates the cost of idle slots during cool downs entirely. This analyzer is designed to identify exactly these candidates!
-                                
-                                <p style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0 0 1rem 0;">
-                                    To identify the specific inefficiencies of individual queries, this tool evaluates each job in isolation. In reality, BigQuery Editions highly benefit from concurrency (sharing idle slots across many overlapping jobs). Because blending queries together hides individual bad actors, we use a Smart Job-Centric approach, applying advanced heuristics to approximate how an isolated job behaves against the BigQuery Autoscaler:
-                                </p>
-                                
-                                <ul style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 1rem 1.25rem; padding: 0;">
-                                    <li><strong>The Spike Factor (Legacy):</strong> Editions traditionally charge a 1-minute minimum for provisioned slots. Short queries (&lt; 60s) are mathematically penalized here to simulate this penalty.</li>
-                                    <li><strong>Fluid Scaling (New):</strong> BigQuery now supports per-second billing without the 1-minute minimum floor. Check the "Simulate with Fluid Scaling" box to see how much you save on spiky workloads!</li>
-                                    <li><strong>Autoscaler Granularity &amp; Sharing:</strong> BigQuery scales in discrete blocks of 50 slots. We round simulated slot usage up to the nearest 50. Exception: Small queries using &lt; 50 slots are assumed to seamlessly "pack" into your existing baseline capacity without triggering independent autoscaler events.</li>
-                                    <li><strong>Routing Profiles:</strong> We categorize your recurring queries into actionable buckets. Use this to build a dynamic routing table—for example, automatically routing high-CPU/low-IO queries to an On-Demand billing project.</li>
-                                </ul>
-                                
-                                <h4 style="margin: 1rem 0 0.25rem 0; color: #ef4444; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation"></i> Constraints &amp; Limitations</h4>
-                                <ul style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 0 1.25rem; padding: 0;">
-                                    <li><strong>Not for Capacity Planning:</strong> Because we test jobs in isolation to find routing candidates, this tool does not calculate your total concurrent slot demand. Do not use this view to size your overall organization's baseline commitments.</li>
-                                    <li><strong>Cost Drift:</strong> Query behavior can change over time based on data volume and parameters. Only route recurring queries that demonstrate stable, consistent savings in one specific model.</li>
-                                </ul>
-                            </div>
+                    <details class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); cursor: pointer;" open>
+                        <summary style="display: flex; align-items: center; gap: 0.75rem; list-style: none;">
+                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.2rem;"></i>
+                            <h3 style="margin: 0; color: #38bdf8; font-size: 1rem;">How it works</h3>
+                            <i class="fa-solid fa-chevron-down" style="margin-left: auto; color: #38bdf8; font-size: 0.7rem; opacity: 0.6; transition: transform 0.2s;"></i>
+                        </summary>
+                        <div style="margin-top: 1rem;">
+                            <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                This analyzer profiles your historical BigQuery jobs to determine their most cost-effective billing model (On-Demand vs. Editions/Autoscaler). It is designed to act as an <strong>Advanced Workload Router</strong>, helping you identify structural "slot hogs" (better for On-Demand) and "data hogs" (better for Editions).
+                            </p>
+                            
+                            <p style="color: #cbd5e1; font-size: 0.95rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                <i class="fa-solid fa-lightbulb" style="color: #f59e0b; margin-right: 5px;"></i>
+                                <strong>Pro-Tip for Spikey Workloads:</strong> For extremely sparse workloads with high peaks, it is often cheaper to move those specific projects back to <strong>On-Demand billing</strong> (paying per TB processed) instead of Editions. This eliminates the cost of idle slots during cool downs entirely. This analyzer is designed to identify exactly these candidates!
+                            
+                            <p style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0 0 1rem 0;">
+                                To identify the specific inefficiencies of individual queries, this tool evaluates each job in isolation. In reality, BigQuery Editions highly benefit from concurrency (sharing idle slots across many overlapping jobs). Because blending queries together hides individual bad actors, we use a Smart Job-Centric approach, applying advanced heuristics to approximate how an isolated job behaves against the BigQuery Autoscaler:
+                            </p>
+                            
+                            <ul style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 1rem 1.25rem; padding: 0;">
+                                <li><strong>The Spike Factor (Legacy):</strong> Editions traditionally charge a 1-minute minimum for provisioned slots. Short queries (&lt; 60s) are mathematically penalized here to simulate this penalty.</li>
+                                <li><strong>Fluid Scaling (New):</strong> BigQuery now supports per-second billing without the 1-minute minimum floor. Check the "Simulate with Fluid Scaling" box to see how much you save on spiky workloads!</li>
+                                <li><strong>Autoscaler Granularity &amp; Sharing:</strong> BigQuery scales in discrete blocks of 50 slots. We round simulated slot usage up to the nearest 50. Exception: Small queries using &lt; 50 slots are assumed to seamlessly "pack" into your existing baseline capacity without triggering independent autoscaler events.</li>
+                                <li><strong>Routing Profiles:</strong> We categorize your recurring queries into actionable buckets. Use this to build a dynamic routing table—for example, automatically routing high-CPU/low-IO queries to an On-Demand billing project.</li>
+                            </ul>
+                            
+                            <h4 style="margin: 1rem 0 0.25rem 0; color: #ef4444; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation"></i> Constraints &amp; Limitations</h4>
+                            <ul style="color: #94a3b8; font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0 0 1.25rem; padding: 0;">
+                                <li><strong>Not for Capacity Planning:</strong> Because we test jobs in isolation to find routing candidates, this tool does not calculate your total concurrent slot demand. Do not use this view to size your overall organization's baseline commitments.</li>
+                                <li><strong>Cost Drift:</strong> Query behavior can change over time based on data volume and parameters. Only route recurring queries that demonstrate stable, consistent savings in one specific model.</li>
+                            </ul>
                         </div>
-                    </div>
+                    </details>
                     
                     <div class="glass-card params-panel">
                         <h2>Pricing & parameters</h2>
@@ -666,7 +797,7 @@
 
                 <!-- Slots Optimizer View -->
                 <section id="view-slots" class="view" data-view="slots">
-                    <h1 class="view-title">Slots autoscaler optimizer</h1>
+                    <h1 class="view-title">Slots autoscaler optimizer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card" style="margin-bottom: 1.5rem; padding: 1.5rem;">
                         <h3 style="margin-top: 0; color: #60a5fa;">Understanding slot recommendations</h3>
@@ -965,39 +1096,50 @@
 
 <!-- Fluid Scaling Estimate View -->
 <section id="view-fluid-scaling" class="view" data-view="fluid-scaling">
-  <h1 class="view-title">Fluid scaling</h1>
+  <h1 class="view-title">Fluid scaling <span class="scope-indicator"></span></h1>
   <p class="view-subtitle">Estimate savings from enabling Fluid Scaling (per-second billing).</p>
 
   <div class="glass-card section-explanation" style="margin-bottom: 1.5rem; padding: 1.5rem;">
-    <h3 style="margin-top: 0; color: #60a5fa;">Understanding fluid scaling savings</h3>
-    <p style="margin-bottom: 0.5rem;">This simulation estimates the savings you could achieve by enabling <strong>Fluid Scaling</strong> on your reservations, which eliminates the 60-second minimum billing floor for short queries.</p>
-    <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-      According to the official Google Cloud blog, BigQuery fluid scaling helps lower costs by up to <strong>34% on average</strong> for autoscaling workloads by scaling up resources instantly when needed and scaling back when they don't. While this tool provides a conservative estimate based on query logs, the blog provides a good benchmark for overall expected savings.
+    <h3 style="margin-top: 0; color: #60a5fa; display: flex; align-items: center; gap: 0.5rem;">
+      <i class="fa-solid fa-graduation-cap"></i> Fluid Scaling: The FinOps Shift
+    </h3>
+    
+    <p style="margin-bottom: 1rem;">
+      BigQuery Fluid Scaling introduces true sub-minute elasticity to the autoscaler. By shifting from discrete one-minute billing increments to a continuous compute profiling model, you only pay for the exact duration of your workload execution, down to the second.
     </p>
 
-    <h4 style="color: #e2e8f0; font-size: 1rem; margin-bottom: 0.25rem;">Key Concepts (Before Fluid Scaling)</h4>
-    <ul style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; padding-left: 1.5rem; margin-bottom: 1rem;">
-      <li><strong>Baseline Slots:</strong> Committed slots that can be shared across reservations within the same admin project and Edition if idle slot sharing is enabled.</li>
-      <li><strong>Autoscaler Slots:</strong> Dynamically added slots. Crucially, these are <strong>NOT</strong> shared across different reservations. They are locked to the reservation that triggered the scaling.</li>
-      <li><strong>Idle Slot Sharing:</strong> Applies only to <strong>BASELINE</strong> slots. Autoscaled slots are not shared.</li>
-      <li><strong>Minimum Billing:</strong> Autoscaled slots are billed for a minimum of 60 seconds.</li>
-    </ul>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+      <!-- The Problem -->
+      <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); padding: 1rem; border-radius: 8px;">
+        <h4 style="color: #ef4444; margin-top: 0; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fa-solid fa-fire"></i> The Legacy Model: The 60-Second Floor
+        </h4>
+        <ul style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; padding-left: 1.5rem; margin-bottom: 0;">
+          <li style="margin-bottom: 0.25rem;"><strong>The Autoscale Penalty:</strong> Historically, scaling events incurred a mandatory 60-second minimum charge, meaning a lightning-fast 5-second dashboard query still billed you for a full minute of capacity.</li>
+          <li style="margin-bottom: 0.25rem;"><strong>Forced Consolidation:</strong> To mitigate this overhead, data platform teams were often forced to artificially pack unrelated, spiky workloads into shared reservations, sacrificing performance isolation.</li>
+          <li><strong>Complex Engineering:</strong> Managing these "noisy neighbors" required significant FinOps engineering to constantly tune and rebalance slot limits across the organization.</li>
+        </ul>
+      </div>
 
-    <div style="background: rgba(245, 158, 11, 0.1); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(245, 158, 11, 0.2); margin-bottom: 1rem;">
-      <p style="color: #f59e0b; font-size: 0.875rem; margin: 0;">
-        <strong>Conservative Math Assumption:</strong> The tool calculates "wasted slot hours" by multiplying the actual slots used by the query by the unused fraction of the first minute. This assumes queries can "pack" into existing capacity within the same reservation.
-      </p>
+      <!-- The Solution -->
+      <div style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); padding: 1rem; border-radius: 8px;">
+        <h4 style="color: #10b981; margin-top: 0; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fa-solid fa-droplet"></i> The Modern Model: Frictionless Capacity
+        </h4>
+        <ul style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; padding-left: 1.5rem; margin-bottom: 0;">
+          <li style="margin-bottom: 0.25rem;"><strong>Micro-Billing:</strong> Capacity costs scale down instantly. If a complex aggregation resolves in 12 seconds, the financial meter stops at 12 seconds.</li>
+          <li style="margin-bottom: 0.25rem;"><strong>Decoupled Architecture:</strong> Organizations can freely provision dedicated, isolated reservations for individual business units without suffering financial penalties for idle time.</li>
+          <li><strong>Granular FinOps:</strong> Spend becomes perfectly proportional to execution time, enabling hyper-accurate chargebacks and eliminating opaque "unused capacity" overhead.</li>
+        </ul>
+      </div>
     </div>
 
-    <div style="background: rgba(56, 189, 248, 0.1); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(56, 189, 248, 0.2); margin-bottom: 1rem;">
-      <p style="color: #38bdf8; font-size: 0.875rem; margin: 0;">
-        <strong>Cross-Reservation Sharing Limitation:</strong> Query logs do not show if slots were shared with other reservations in real-time. However, the official Google Cloud documentation states that <strong>autoscaled slots are not shared across reservations</strong>. Therefore, if a short query triggers an autoscaler event and runs in isolation within its reservation, those slots are locked and wasted for the full 60 seconds, even if other reservations could use them! This means if your workload is spiky and isolated, your actual waste is much larger, and savings could be up to 35x higher than displayed.
+    <div style="background: rgba(56, 189, 248, 0.1); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(56, 189, 248, 0.2);">
+      <p style="color: #38bdf8; font-size: 0.875rem; margin: 0; line-height: 1.5;">
+        <i class="fa-solid fa-chart-line" style="margin-right: 5px;"></i>
+        <strong>Expected Impact:</strong> Industry-standard power tests show this architectural shift improving overall price-to-performance by up to <strong>34%</strong>. The simulator below analyzes your organization's unique `JOBS_TIMELINE` data to calculate the exact financial recovery you'll see by enabling per-second billing.
       </p>
     </div>
-
-    <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5;">
-      <strong>Lookback Window:</strong> Savings are calculated for the specific days selected in parameters. Projecting this over a year or across more queries will reveal higher true scale value!
-    </p>
   </div>
 
   <!-- Fluid Scaling Config Status Card -->
@@ -1023,7 +1165,7 @@
     <div class="form-grid">
       <div class="form-group">
         <label for="fs-lookback">Lookback Window (Days)</label>
-        <input type="number" id="fs-lookback" value="7" min="1" max="90" step="1">
+        <input type="number" id="fs-lookback" value="1" min="1" max="90" step="1">
       </div>
       <div class="form-group">
         <label for="fs-price">Slot/Hr Rate ($)</label>
@@ -1094,6 +1236,21 @@
 
   <div class="glass-card results-panel fluid-jobs-panel" style="margin-top: 4rem;">
     <h2>Fluid scaling savings by pattern &amp; reservation</h2>
+    
+    <div style="background: rgba(14, 165, 233, 0.1); border: 1px solid rgba(14, 165, 233, 0.2); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem;">
+      <h3 style="color: #38bdf8; font-size: 1rem; margin-top: 0; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+        <i class="fa-solid fa-lightbulb"></i> Why analyze savings by query pattern?
+      </h3>
+      <p style="color: #cbd5e1; font-size: 0.875rem; margin-bottom: 0.75rem; line-height: 1.5;">
+        While the aggregate numbers above show the total potential value of Fluid Scaling, this pattern-level breakdown is critical for <strong>actionability and risk mitigation</strong>:
+      </p>
+      <ul style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0; padding-left: 1.5rem; line-height: 1.5;">
+        <li style="margin-bottom: 0.25rem;"><strong>Workload Isolation:</strong> If you are hesitant to enable Fluid Scaling globally, identify the specific patterns (e.g., Looker dashboards or dbt models) suffering from the 60-second cooldown penalty and isolate them into a dedicated reservation.</li>
+        <li style="margin-bottom: 0.25rem;"><strong>FinOps Accountability:</strong> Assign wasteful idle time directly to the engineering team or pipeline responsible for the query.</li>
+        <li><strong>Catching Anti-Patterns:</strong> If a 200ms query runs continuously and wastes thousands of dollars in cooldown penalties, the right architectural fix might be moving that workload out of BigQuery entirely (e.g. to Cloud SQL).</li>
+      </ul>
+    </div>
+
     <p id="fluid-simulation-subtitle" class="panel-subtitle">
       Top 100 (query pattern × reservation) combinations ranked by estimated savings impact.
       The same pattern may appear once per reservation it runs on.
@@ -1125,7 +1282,7 @@
 
                 <!-- Slots Simulator View -->
                 <section id="view-slots-simulator" class="view" data-view="slots-simulator">
-                    <h1 class="view-title">Edition Matrix Simulation</h1>
+                    <h1 class="view-title">Edition Matrix Simulation <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card params-panel">
                         <h2>Simulation parameters</h2>
@@ -1298,7 +1455,7 @@
 
                 <!-- Cost Attribution View -->
                 <section id="view-cost-attribution" class="view" data-view="cost-attribution">
-                    <h1 class="view-title">Cost attribution</h1>
+                    <h1 class="view-title">Cost attribution <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1415,7 +1572,7 @@
 
                 <!-- Workload Profiler View -->
                 <section id="view-profiler" class="view" data-view="profiler">
-                    <h1 class="view-title">Workload profiler</h1>
+                    <h1 class="view-title">Workload profiler <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1568,7 +1725,7 @@
 
                 <!-- Top Spenders View -->
                 <section id="view-users" class="view" data-view="users">
-                    <h1 class="view-title">Top Spenders</h1>
+                    <h1 class="view-title">Top Spenders <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1623,7 +1780,7 @@
 
                 <!-- HBO Analyzer View -->
                 <section id="view-hbo" class="view" data-view="hbo">
-                    <h1 class="view-title">History-Based Optimization (HBO) Analyzer</h1>
+                    <h1 class="view-title">History-Based Optimization (HBO) Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1724,7 +1881,7 @@
 
                 <!-- Storage Hygiene View -->
                 <section id="view-storage-hygiene" class="view" data-view="storage-hygiene">
-                    <h1 class="view-title">Storage Hygiene & Time Travel Auditor</h1>
+                    <h1 class="view-title">Storage Hygiene & Time Travel Auditor <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1824,7 +1981,7 @@
 
                 <!-- Anti-Patterns View -->
                 <section id="view-antipatterns" class="view" data-view="antipatterns">
-                    <h1 class="view-title">Architectural Anti-Pattern Scanner</h1>
+                    <h1 class="view-title">Architectural Anti-Pattern Scanner <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2108,7 +2265,7 @@
 
                 <!-- Performance Insights View -->
                 <section id="view-performance-insights" class="view" data-view="performance-insights">
-                    <h1 class="view-title">BigQuery Execution Insights</h1>
+                    <h1 class="view-title">BigQuery Execution Insights <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2223,7 +2380,7 @@
 
                 <!-- BI Optimizer View -->
                 <section id="view-bi-optimizer" class="view" data-view="bi-optimizer">
-                    <h1 class="view-title">BI Engine ROI & Cache Miss Analyzer</h1>
+                    <h1 class="view-title">BI Engine ROI & Cache Miss Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2293,9 +2450,9 @@
                     </div>
                 </section>
 
-                <!-- AI Reviewer View -->
+                <!-- AI Doctor View -->
                 <section id="view-ai-reviewer" class="view" data-view="ai-reviewer">
-                    <h1 class="view-title">GenAI SQL Code Doctor</h1>
+                    <h1 class="view-title">AI Doctor <span class="scope-indicator"></span></h1>
                     <!-- Collapsible Detailed Learn More Drawer -->
                     <div id="ddl-learn-more-drawer" class="glass-card" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(255, 255, 255, 0.08); padding: 1.5rem; background: rgba(15, 23, 42, 0.3);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">

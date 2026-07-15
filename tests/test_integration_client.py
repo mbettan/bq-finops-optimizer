@@ -140,6 +140,37 @@ def test_slot_utilization_integration():
 
 
 @pytest.mark.integration
+def test_fluid_scaling_estimate_integration():
+    """
+    Integration test for the Fluid Scaling estimate endpoint.
+    Verifies the per-second savings model against live INFORMATION_SCHEMA:
+      - response contract (reservations list + config_status),
+      - per-reservation invariants (0 <= fluid <= legacy, savings never negative).
+    """
+    response = client.post("/api/fluid-scaling/estimate", json={
+        "org_project_id": TEST_PROJECT_ID,
+        "admin_project_id": TEST_PROJECT_ID,
+        "region": TEST_REGION,
+        "lookback_days": 7,
+    })
+
+    assert response.status_code == 200, f"Fluid estimate endpoint failed: {response.text}"
+
+    data = response.json()
+    assert isinstance(data, dict), "Response should be a JSON object"
+    assert "reservations" in data and "config_status" in data
+
+    reservations = data["reservations"]
+    print(f"\nFluid Scaling Estimate Integration Test Passed! {len(reservations)} reservations.")
+    for r in reservations:
+        # Per-second clamp guarantees fluid usage never exceeds legacy capacity,
+        # so recoverable slot-hours and % savings must be non-negative.
+        assert r["fluid_autoscaler_slot_hours"] <= r["legacy_autoscaler_slot_hours"] + 1e-6, \
+            f"Fluid exceeds legacy for {r['reservation_id']}"
+        assert r["slot_hours_saved"] >= -1e-6
+        assert r["clamped_pct_savings"] >= -1e-6
+
+@pytest.mark.integration
 def test_storage_analysis_integration():
     """
     Integration test for the Storage Optimization Analyzer endpoint.

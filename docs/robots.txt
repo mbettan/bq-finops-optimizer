@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://mbettan.github.io/bq-finops-optimizer/sitemap.xml

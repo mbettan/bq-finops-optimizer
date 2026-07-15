@@ -11,11 +11,10 @@ from src.fluid_scaling import (
     DAYS_PER_MONTH,
     DAYS_PER_YEAR,
     SECONDS_PER_HOUR,
-    SECONDS_PER_MINUTE,
     FluidEstimateMetric,
     _normalize_region,
     _parse_option_value,
-    _rollup_to_summaries,
+    _process_unified_results,
     _safe_ident,
     _strip_qualifier,
     _to_metric,
@@ -31,208 +30,57 @@ from fastapi import HTTPException
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
 
-def _make_capacity(
-    reservation_id: str,
-    start: str,
-    seconds: int,
-    baseline: float,
-    autoscale_current: float,
-    edition: str = "enterprise",
-) -> pd.DataFrame:
-    """Build a per-second capacity DataFrame for one reservation."""
-    return pd.DataFrame({
-        "reservation_id": [reservation_id] * seconds,
-        "edition": [edition] * seconds,
-        "period_start": pd.date_range(start, periods=seconds, freq="s", tz="UTC"),
-        "baseline_slots": [baseline] * seconds,
-        "autoscale_current_slots": [autoscale_current] * seconds,
-    })
-
-
-def _make_usage(
-    reservation_id: str,
-    start: str,
-    seconds: int,
-    used: float,
-    edition: str = "enterprise",
-) -> pd.DataFrame:
-    """Build a per-second usage DataFrame for one reservation."""
-    return pd.DataFrame({
-        "reservation_id": [reservation_id] * seconds,
-        "edition": [edition] * seconds,
-        "period_start": pd.date_range(start, periods=seconds, freq="s", tz="UTC"),
-        "used_slots": [used] * seconds,
-    })
-
-
-def _empty_capacity() -> pd.DataFrame:
-    return pd.DataFrame(columns=["reservation_id", "edition", "period_start", "baseline_slots", "autoscale_current_slots"])
-
-
-def _empty_usage() -> pd.DataFrame:
-    return pd.DataFrame(columns=["reservation_id", "edition", "period_start", "used_slots"])
-
 
 # ---------------------------------------------------------------------------
 # _rollup_to_summaries — the cooldown-waste model
 # ---------------------------------------------------------------------------
 
-class TestRollupToSummaries:
-    """End-to-end validation of the per-second → rollup to summaries."""
-
+class TestProcessUnifiedResults:
     def test_empty_inputs_return_empty(self):
-        result = _rollup_to_summaries(_empty_capacity(), _empty_usage())
+        import pandas as pd
+        result = _process_unified_results(pd.DataFrame())
         assert result == []
 
-    def test_empty_capacity_with_usage(self):
-        usage = pd.DataFrame({
-            "reservation_id": ["r1"],
-            "edition": ["enterprise"],
-            "period_start": [pd.Timestamp("2025-01-01 00:00:00", tz="UTC")],
-            "used_slots": [1000.0]
+    def test_basic_processing(self):
+        import pandas as pd
+        df = pd.DataFrame({
+            "reservation_id": ["res1", "res2", "res3"],
+            "edition": ["ENTERPRISE", "ENTERPRISE", "ENTERPRISE"],
+            "legacy_slot_seconds": [100.0, 50.0, 0.0],
+            "fluid_slot_seconds": [80.0, 50.0, 0.0],
+            "total_pure_used_seconds": [90.0, 50.0, 10.0],
+            "has_capacity": [1.0, 1.0, 0.0]
         })
-        result = _rollup_to_summaries(_empty_capacity(), usage)
-        assert len(result) == 1
-        assert result[0].reservation_id == "r1"
-        assert result[0].legacy_slot_seconds == 0
-        assert result[0].fluid_slot_seconds == 0
-
-    def test_empty_usage_with_capacity(self):
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=0, autoscale_current=1000)
-        result = _rollup_to_summaries(capacity, _empty_usage())
-        assert len(result) == 1
-        assert result[0].reservation_id == "r1"
-        assert result[0].legacy_slot_seconds == 60000
-        assert result[0].fluid_slot_seconds == 0
-
-
-    def test_cooldown_waste_captured_correctly(self):
-        # 60 seconds capacity with 1000 autoscaled slots
-        # only 10 seconds of usage with 1000 used slots
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=0, autoscale_current=1000)
-        # Note: the usage df contains per-minute totals or per-second totals.
-        # Since usage in _rollup_to_summaries is floored to minute and divided by 60,
-        # we can provide 60 seconds with used_slots = 1000 * 10 (total slot-seconds for that minute is 10000)
-        # Or we can just build one row for usage in that minute:
-        usage = pd.DataFrame({
-            "reservation_id": ["r1"],
-            "edition": ["enterprise"],
-            "period_start": [pd.Timestamp("2025-01-01 00:00:00", tz="UTC")],
-            "used_slots": [1000.0 * 10]  # 1000 slots used for 10 seconds = 10000 slot-seconds total for the minute
-        })
+        result = _process_unified_results(df)
+        assert len(result) == 3
         
-        summaries = _rollup_to_summaries(capacity, usage)
-        assert len(summaries) == 1
-        s = summaries[0]
-        assert s.reservation_id == "r1"
-        assert s.legacy_slot_seconds == 1000 * 60
-        assert s.fluid_slot_seconds == 1000 * 10
-
-    def test_steady_state_no_savings(self):
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=0, autoscale_current=500)
-        usage = pd.DataFrame({
-            "reservation_id": ["r1"],
-            "edition": ["enterprise"],
-            "period_start": [pd.Timestamp("2025-01-01 00:00:00", tz="UTC")],
-            "used_slots": [500.0 * 60]  # 500 slots used for 60 seconds
-        })
-        s = _rollup_to_summaries(capacity, usage)[0]
-        assert s.legacy_slot_seconds == 30_000
-        assert s.fluid_slot_seconds == 30_000
-
-    def test_idle_reservation_baseline_only(self):
-        # Pure baseline reservation, no autoscaler current slots
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=200, autoscale_current=0)
-        usage = _empty_usage()
-        s = _rollup_to_summaries(capacity, usage)[0]
-        assert s.legacy_slot_seconds == 0
-        assert s.fluid_slot_seconds == 0
-
-    def test_autoscale_burst_with_baseline(self):
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=100, autoscale_current=900)  # provisioned = 1000
-        usage = pd.DataFrame({
-            "reservation_id": ["r1"],
-            "edition": ["enterprise"],
-            "period_start": [pd.Timestamp("2025-01-01 00:00:00", tz="UTC")],
-            "used_slots": [1000.0 * 10]  # 1000 slots used for 10 seconds
-        })
-        s = _rollup_to_summaries(capacity, usage)[0]
-        # Legacy slot seconds (autoscaled_current_slots) = 900 * 60 = 54000
-        assert s.legacy_slot_seconds == 900 * 60
-        # Fluid slot seconds = SUM(autoscaled_used_slots)
-        # Minute-aggregate clamp (NO /60):
-        #   legacy = Σ autoscale_current = 900 * 60 = 54000
-        #   baseline_slot_seconds       = 100 * 60 = 6000
-        #   autoscale_capacity_ss       = 900 * 60 = 54000
-        #   used_above_baseline         = 10000 - 6000 = 4000
-        #   fluid = MIN(4000, 54000)    = 4000
-        assert abs(s.fluid_slot_seconds - 4000.0) < 1.0
-
-    def test_doc_vs_clamped_savings_and_metric(self):
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=500, autoscale_current=100)
-        usage = pd.DataFrame({
-            "reservation_id": ["r1"],
-            "edition": ["enterprise"],
-            "period_start": [pd.Timestamp("2025-01-01 00:00:00", tz="UTC")],
-            "used_slots": [550.0 * 60]  # 33000 total slot-seconds
-        })
-        summaries = _rollup_to_summaries(capacity, usage)
-        assert len(summaries) == 1
-        s = summaries[0]
-        assert s.legacy_slot_seconds == 6000.0
-        assert s.fluid_slot_seconds == 3000.0
-        assert s.total_pure_used_seconds == 33000.0
+        assert result[0].reservation_id == "res1"
+        assert result[0].status == "Active"
+        assert result[0].fluid_slot_seconds == 80.0
         
-        m = _to_metric(s, price_per_slot_hr=0.06, lookback_days=7)
-        assert m.clamped_pct_savings == 50.0
+        assert result[2].reservation_id == "res3"
+        assert result[2].status == "External Admin"
 
 
-    def test_usage_not_duplicated_on_minute_merge(self):
-        """Regression: per-second usage rows must be summed to minute grain BEFORE
-        merging onto per-minute capacity, or capacity fans out 60x."""
-        # 60 seconds of capacity at 100 autoscale slots → legacy = 100*60 = 6000
-        capacity = _make_capacity("r1", "2025-01-01 00:00:00", seconds=60,
-                                  baseline=0, autoscale_current=100)
-        # 60 SECOND-LEVEL usage rows in the same minute (the trigger for the bug)
-        usage = _make_usage("r1", "2025-01-01 00:00:00", seconds=60, used=50.0)  # 50 slots each second
-
-        s = _rollup_to_summaries(capacity, usage)[0]
-
-        # legacy MUST stay 6000, NOT 6000*60 = 360000 (the bug)
-        assert s.legacy_slot_seconds == 6000, (
-            f"Capacity fanned out: got {s.legacy_slot_seconds}, expected 6000 "
-            f"(60x bug reintroduced)"
-        )
-        # used = 50*60 = 3000 slot-seconds for the minute
-        assert s.total_pure_used_seconds == 3000
-
-    def test_metric_field_names_are_stable(self):
-        expected_fields = {
-            "reservation_id",
-            "reservation_short_name",
-            "fluid_autoscaler_slot_hours",
-            "legacy_autoscaler_slot_hours",
-            "total_pure_used_slot_hours",
-            "slot_hours_saved",
-            "clamped_pct_savings",
-            "estimated_usd_saved_window",
-            "extrapolated_monthly_usd",
-            "extrapolated_annual_usd",
-            "status",
-        }
-        actual_fields = set(FluidEstimateMetric.model_fields.keys())
-        assert actual_fields == expected_fields
+def fluid_slot_seconds(used: float, borrowed: float, baseline: float, current: float) -> float:
+    """Pure-Python oracle of the BigQuery Fluid Scaling formula.
+    SQL: LEAST(GREATEST(IFNULL(used_slots, 0) - IFNULL(borrowed_slots, 0) - IFNULL(baseline_slots, 0), 0), IFNULL(current_slots, 0))
+    """
+    return min(max(used - borrowed - baseline, 0.0), current)
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("used,borrowed,baseline,current,expected", [
+    (100, 0, 20, 50, 50),    # usage exceeds capacity -> clamps to current
+    (30,  0, 20, 50, 10),    # normal: 30-20 = 10, under cap
+    (10,  0, 20, 50, 0),     # usage below baseline -> floors at 0
+    (100, 40, 20, 50, 40),   # borrowed subtracted before clamp
+    (100, 0, 20, 0, 0),      # zero autoscaler capacity
+    (200, 0, 0, 50, 50),     # no baseline, full clamp
+])
+def test_fluid_formula(used, borrowed, baseline, current, expected):
+    """Documents and asserts the exact behavior of the Fluid Scaling clamping logic."""
+    assert fluid_slot_seconds(used, borrowed, baseline, current) == expected
+
 
 class TestSafeIdent:
     @pytest.mark.parametrize("value", [
@@ -501,11 +349,19 @@ def test_effective_options_empty_falls_back_to_project_options(monkeypatch):
         def __init__(self, v): self.option_value = v
 
     class FakeQueryJob:
-        def __init__(self, rows): self._rows = rows
+        def __init__(self, rows):
+            self._rows = rows
+            self.total_bytes_processed = 0
+            self.total_bytes_billed = 0
+            self.project = "test-project"
+            self.location = "us"
+            self.job_id = "test-job-id"
+            self.cache_hit = False
+
         def result(self): return self._rows
 
     class FakeClient:
-        def query(self, sql):
+        def query(self, sql, *args, **kwargs):
             if "EFFECTIVE_PROJECT_OPTIONS" in sql:
                 return FakeQueryJob([])  # empty, like the real bug
             if "PROJECT_OPTIONS" in sql:

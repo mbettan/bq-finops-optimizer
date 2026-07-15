@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Literal
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed
+from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, OrgParams, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, DAYS_PER_MONTH
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,8 @@ router = APIRouter(prefix="/api/fluid-scaling", tags=["fluid-scaling"])
 # ---------------------------------------------------------------------------
 
 
-DAYS_PER_MONTH = 30.44
 DAYS_PER_YEAR = 365.25
 SECONDS_PER_HOUR = 3600
-SECONDS_PER_MINUTE = 60
 
 # MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 MAX_LOOKBACK_DAYS = 90
@@ -41,14 +40,14 @@ class FluidScalingStatus(BaseModel):
     ddl: Optional[str] = None
 
 
-class FluidScalingParams(BaseModel):
+class FluidScalingParams(OrgParams):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
 
 
-class FluidEstimateParams(BaseModel):
+class FluidEstimateParams(OrgParams):
     org_project_id: Optional[str] = None
     admin_project_id: Optional[str] = None
     region: str = "region-us"
@@ -98,6 +97,35 @@ def _strip_qualifier(reservation_id: Optional[str]) -> str:
     return re.split(r"[.:]", reservation_id)[-1]
 
 
+def _run_and_log(client, sql, label, params=None, query_parameters=None):
+    """Run a query with timing, BQ URL, and structured logging."""
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", label, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    results = query_job.result()
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Status endpoint
 # ---------------------------------------------------------------------------
@@ -121,7 +149,7 @@ def _render_sql(template: str, **idents) -> str:
     return out
 
 
-def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: str, region: str) -> set[str]:
+def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: str, region: str, params=None) -> set[str]:
     effective_sql = f"""
       SELECT option_value
       FROM `{project}`.`{region}`.INFORMATION_SCHEMA.EFFECTIVE_PROJECT_OPTIONS
@@ -132,9 +160,17 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
       FROM `{project}`.`{region}`.INFORMATION_SCHEMA.PROJECT_OPTIONS
       WHERE option_name = 'preflight_fluid_autoscaling_reservations'
     """
-    for label, sql in [("EFFECTIVE_PROJECT_OPTIONS", effective_sql), ("PROJECT_OPTIONS", fallback_sql)]:
+    # Tracks whether the *last completed* attempt was a failure. If every
+    # attempt raises, we genuinely don't know the configured state and must
+    # not report "no reservations configured" — that would generate a
+    # misleading "please enable fluid scaling" DDL suggestion for
+    # reservations that may already be enabled. A later successful query
+    # (even a confirmed 0-row result) supersedes an earlier failure.
+    last_error = None
+    for label, sql in [("Fluid Options (EFFECTIVE)", effective_sql), ("Fluid Options (Fallback)", fallback_sql)]:
         try:
-            results = list(client.query(sql).result())
+            results = list(_run_and_log(client, sql, label, params=params))
+            last_error = None
             for row in results:
                 vals = _parse_option_value(row.option_value)
                 if vals:
@@ -143,11 +179,15 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
             logger.info("Fluid option not found via %s on %s (0 rows)", label, project)
         except Exception as e:
             logger.warning("%s query failed on %s: %s", label, project, e)
+            last_error = e
+    if last_error is not None:
+        raise last_error
     return set()
 
 
 @router.post("/status", response_model=List[FluidScalingStatus])
 def check_fluid_scaling_status(params: FluidScalingParams):
+    t0 = log_endpoint_start("Fluid Scaling Status", params, _logger=logger)
     try:
         client, project = init_bq_client_and_resolve_project(params)
         admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else project
@@ -159,9 +199,10 @@ def check_fluid_scaling_status(params: FluidScalingParams):
             SELECT reservation_name
             FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATIONS
         """
-        all_reservations = [r.reservation_name for r in client.query(sql_reservations).result()]
+        res_results = _run_and_log(client, sql_reservations, "Fluid Scaling Reservations", params=params)
+        all_reservations = [r.reservation_name for r in res_results]
 
-        enabled = get_effective_fluid_scaling_reservations(client, admin_project, region)
+        enabled = get_effective_fluid_scaling_reservations(client, admin_project, region, params=params)
         enabled_norm = {_strip_qualifier(r) for r in enabled}
 
         output: List[FluidScalingStatus] = []
@@ -171,7 +212,8 @@ def check_fluid_scaling_status(params: FluidScalingParams):
             ddl = None
             if not is_enabled:
                 new_list = sorted(list(enabled_norm | {short}))
-                list_str = ", ".join(f'"{r}"' for r in new_list)
+                new_list_safe = [_safe_ident(r, "reservation_name") for r in new_list]
+                list_str = ", ".join(f'"{r}"' for r in new_list_safe)
                 ddl = (
                     f"ALTER PROJECT `{admin_project}`\n"
                     f"SET OPTIONS (\n"
@@ -179,6 +221,7 @@ def check_fluid_scaling_status(params: FluidScalingParams):
                     f");"
                 )
             output.append(FluidScalingStatus(reservation_id=res, enabled=is_enabled, ddl=ddl))
+        log_endpoint_end("Fluid Scaling Status", t0, _logger=logger)
         return output
 
     except gax_exc.Forbidden:
@@ -190,60 +233,106 @@ def check_fluid_scaling_status(params: FluidScalingParams):
     except gax_exc.GoogleAPIError:
         logger.exception("BigQuery error checking fluid scaling status")
         raise HTTPException(500, "Query failed; check server logs")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unexpected error checking fluid scaling status")
+        raise HTTPException(500, "Unexpected error; check server logs")
 
 
 # ---------------------------------------------------------------------------
 # Estimate endpoint
 # ---------------------------------------------------------------------------
 
-_SQL_PER_SECOND_CAPACITY = """
+# Aggregates to the minute-grain inside BigQuery instead of returning every
+# per-second row to the client. A 90-day lookback would otherwise materialize
+# up to ~60x more rows per reservation (one per second) into a pandas
+# DataFrame — enough to OOM a memory-capped Cloud Run instance. Summing here
+# is mathematically identical to summing the same per-second rows client-side.
+_SQL_UNIFIED_FLUID_SCALING = """
+WITH capacity_per_sec AS (
+  SELECT
+    reservation_id,
+    edition,
+    s.start_time AS period_start,
+    IFNULL(s.slots_assigned, 0) AS baseline_slots,
+    IFNULL(s.autoscale_current_slots, 0) AS current_slots,
+    IFNULL(s.borrowed_slots, 0) AS borrowed_slots
+  FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT AS rt,
+  UNNEST(
+    IF(ARRAY_LENGTH(per_second_details) > 0,
+       ARRAY(
+         SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned, d.borrowed_slots
+         FROM UNNEST(per_second_details) AS d
+       ),
+       ARRAY(
+         SELECT AS STRUCT
+           ts AS start_time,
+           autoscale.current_slots AS autoscale_current_slots,
+           slots_assigned AS slots_assigned,
+           0 AS borrowed_slots
+         FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
+           rt.period_start,
+           TIMESTAMP_ADD(rt.period_start, INTERVAL 59 SECOND),
+           INTERVAL 1 SECOND
+         )) AS ts
+       )
+    )
+  ) AS s
+  WHERE rt.period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
+    AND rt.period_start <  CURRENT_TIMESTAMP()
+    AND reservation_id IS NOT NULL
+    AND reservation_id != ''
+),
+usage_per_sec AS (
+  SELECT
+    reservation_id,
+    period_start,
+    SUM(period_slot_ms) / 1000.0 AS used_slots
+  FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+  -- job_creation_time must have a wide slack (7 days) to ensure jobs that started BEFORE the
+  -- lookback window but continued running INTO the window are not dropped by partition pruning.
+  WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days + 7 DAY)
+    AND job_creation_time <  CURRENT_TIMESTAMP()
+  -- period_start must be tight and strictly aligned with capacity_per_sec to prevent orphaned
+  -- rows in the FULL OUTER JOIN. (Included at @start, excluded exactly at CURRENT_TIMESTAMP).
+    AND period_start      >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
+    AND period_start      <  CURRENT_TIMESTAMP()
+    AND reservation_id IS NOT NULL
+    AND reservation_id != ''
+    AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
+    {focus_clause}
+  GROUP BY reservation_id, period_start
+),
+joined_per_sec AS (
+  SELECT
+    COALESCE(c.reservation_id, u.reservation_id) AS reservation_id,
+    c.edition,
+    c.current_slots,
+    c.baseline_slots,
+    c.borrowed_slots,
+    u.used_slots,
+    IF(c.period_start IS NOT NULL, 1, 0) AS _from_capacity
+  FROM capacity_per_sec c
+  FULL OUTER JOIN usage_per_sec u
+    ON c.reservation_id = u.reservation_id
+   AND c.period_start = u.period_start
+)
 SELECT
   reservation_id,
-  edition,
-  s.start_time AS period_start,
-  IFNULL(s.slots_assigned, 0) AS baseline_slots,
-  IFNULL(s.autoscale_current_slots, 0) AS autoscale_current_slots
-FROM `{admin_project}`.`{region}`.INFORMATION_SCHEMA.RESERVATION_TIMELINE_BY_PROJECT,
-UNNEST(
-  IF(ARRAY_LENGTH(per_second_details) > 0,
-     ARRAY(
-       SELECT AS STRUCT d.start_time, d.autoscale_current_slots, d.slots_assigned
-       FROM UNNEST(per_second_details) AS d
-     ),
-     ARRAY(
-       SELECT AS STRUCT
-         ts AS start_time,
-         autoscale.current_slots AS autoscale_current_slots,
-         slots_assigned AS slots_assigned
-       FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
-         period_start,
-         TIMESTAMP_ADD(period_start, INTERVAL 59 SECOND),
-         INTERVAL 1 SECOND
-       )) AS ts
-     )
-  )
-) AS s
-WHERE period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND period_start <  CURRENT_TIMESTAMP()
-  AND reservation_id IS NOT NULL
-  AND reservation_id != ''
-"""
-
-_SQL_PER_SECOND_USAGE = """
-SELECT
-  reservation_id,
-  edition,
-  period_start,
-  SUM(period_slot_ms) / 1000.0 AS used_slots
-FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
-WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND job_creation_time <  CURRENT_TIMESTAMP()
-  AND period_start      >  TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days DAY)
-  AND period_start      <= CURRENT_TIMESTAMP()
-  AND reservation_id IS NOT NULL
-  AND reservation_id != ''
-  AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-GROUP BY reservation_id, edition, period_start
+  MAX(edition) AS edition,
+  SUM(IFNULL(current_slots, 0)) AS legacy_slot_seconds,
+  -- Core FinOps Mathematical Engine for Fluid Scaling:
+  -- 1. `used_slots - borrowed_slots - baseline_slots` isolates the pure autoscaling usage.
+  -- 2. `GREATEST(..., 0)` safely floors negative values (e.g. if usage is entirely within the baseline).
+  -- 3. `LEAST(..., current_slots)` imposes a strict cap, ensuring billed usage never mathematically 
+  --    exceeds the provisioned capacity ceiling for that exact second.
+  -- Summing these bounded seconds accurately reconstructs the exact billable autoscaler capacity.
+  SUM(LEAST(GREATEST(IFNULL(used_slots, 0) - IFNULL(borrowed_slots, 0) - IFNULL(baseline_slots, 0), 0), IFNULL(current_slots, 0))) AS fluid_slot_seconds,
+  SUM(IFNULL(used_slots, 0)) AS total_pure_used_seconds,
+  MAX(_from_capacity) AS has_capacity
+FROM joined_per_sec
+GROUP BY reservation_id
 """
 
 
@@ -257,94 +346,20 @@ class _ReservationSummary:
     status: str
 
 
-def _rollup_to_summaries(
-    capacity_df: pd.DataFrame,
-    usage_df: pd.DataFrame,
-) -> List[_ReservationSummary]:
-    if capacity_df.empty and usage_df.empty:
+def _process_unified_results(df: pd.DataFrame) -> List[_ReservationSummary]:
+    if df.empty:
         return []
 
-    capacity_df = capacity_df.copy()
-    usage_df = usage_df.copy()
-
-    # Normalize edition on both sides to prevent split rows on NULL/skew (Gap B)
-    if not capacity_df.empty:
-        capacity_df["edition"] = capacity_df["edition"].fillna("").astype(str)
-    if not usage_df.empty:
-        usage_df["edition"] = usage_df["edition"].fillna("").astype(str)
-
-    if capacity_df.empty:
-        capacity_df = pd.DataFrame(columns=["reservation_id", "edition", "period_start", "baseline_slots", "autoscale_current_slots"])
-        capacity_df["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
-    else:
-        capacity_df["period_start"] = pd.to_datetime(capacity_df["period_start"], utc=True)
-        capacity_df["minute"] = capacity_df["period_start"].dt.floor("min")
-
-    if usage_df.empty:
-        usage_df = pd.DataFrame(columns=["reservation_id", "edition", "period_start", "used_slots"])
-        usage_df["minute"] = pd.Series(dtype="datetime64[ns, UTC]")
-    else:
-        usage_df["period_start"] = pd.to_datetime(usage_df["period_start"], utc=True)
-        usage_df["minute"] = usage_df["period_start"].dt.floor("min")
-
-    # Aggregate capacity to the minute-grain (Gap A)
-    cap_per_min = capacity_df.groupby(
-        ["reservation_id", "edition", "minute"], as_index=False
-    ).agg(
-        baseline_slot_seconds=("baseline_slots", "sum"),              # Sum baseline over the 60s
-        autoscale_capacity_slot_seconds=("autoscale_current_slots", "sum"),  # Sum current over the 60s
-    )
-    cap_per_min["_from_capacity"] = 1.0
-
-    # Aggregate usage to the minute-grain (Gap A)
-    usage_per_min = usage_df.groupby(
-        ["reservation_id", "edition", "minute"], as_index=False
-    ).agg(
-        used_slots=("used_slots", "sum"),
-    )
-
-    # Merge on reservation_id, edition, and minute (Gap B - one-to-one)
-    merged = cap_per_min.merge(
-        usage_per_min,
-        on=["reservation_id", "edition", "minute"],
-        how="outer",
-    )
-
-    merged["baseline_slot_seconds"] = merged["baseline_slot_seconds"].astype(float).fillna(0.0)
-    merged["autoscale_capacity_slot_seconds"] = merged["autoscale_capacity_slot_seconds"].astype(float).fillna(0.0)
-    merged["used_slots"] = merged["used_slots"].astype(float).fillna(0.0)
-    merged["_from_capacity"] = merged["_from_capacity"].astype(float).fillna(0.0)
-
-    # Fluid clamp on minute-aggregated slot-seconds (Gap A)
-    used_above_baseline = (merged["used_slots"] - merged["baseline_slot_seconds"]).clip(lower=0)
-    merged["fluid_slot_seconds_min"] = pd.concat(
-        [used_above_baseline, merged["autoscale_capacity_slot_seconds"]], axis=1
-    ).min(axis=1).clip(lower=0)
-
-    # Per-res sums
-    per_res = merged.groupby("reservation_id", as_index=False).agg(
-        legacy_slot_seconds=("autoscale_capacity_slot_seconds", "sum"),
-        fluid_slot_seconds=("fluid_slot_seconds_min", "sum"),
-        total_pure_used_seconds=("used_slots", "sum"),
-    )
-
-    # Calculate status criteria using capacity presence indicator (Gap C)
-    res_sums = merged.groupby("reservation_id").agg(
-        has_capacity=("_from_capacity", "max"),
-        sum_used=("used_slots", "sum")
-    )
-
     output = []
-    for row in per_res.itertuples():
-        # Robust scalar extraction (avoids Series-truthiness ValueError)
-        has_capacity = float(res_sums.at[row.reservation_id, "has_capacity"])
-        sum_used = float(res_sums.at[row.reservation_id, "sum_used"])
+    for row in df.itertuples():
+        has_capacity = float(row.has_capacity) if pd.notnull(row.has_capacity) else 0.0
+        used_secs = float(row.total_pure_used_seconds) if pd.notnull(row.total_pure_used_seconds) else 0.0
 
-        if has_capacity == 0 and sum_used > 0:
+        if has_capacity == 0 and used_secs > 0:
             status = "External Admin"
-        elif sum_used == 0 and has_capacity > 0:
+        elif used_secs == 0 and has_capacity > 0:
             status = "Idle"
-        elif has_capacity == 0 and sum_used == 0:
+        elif has_capacity == 0 and used_secs == 0:
             status = "Inactive"
         else:
             status = "Active"
@@ -352,9 +367,9 @@ def _rollup_to_summaries(
         output.append(
             _ReservationSummary(
                 reservation_id=row.reservation_id,
-                legacy_slot_seconds=float(row.legacy_slot_seconds),
-                fluid_slot_seconds=float(row.fluid_slot_seconds),
-                total_pure_used_seconds=float(row.total_pure_used_seconds),
+                legacy_slot_seconds=float(row.legacy_slot_seconds) if pd.notnull(row.legacy_slot_seconds) else 0.0,
+                fluid_slot_seconds=float(row.fluid_slot_seconds) if pd.notnull(row.fluid_slot_seconds) else 0.0,
+                total_pure_used_seconds=float(row.total_pure_used_seconds) if pd.notnull(row.total_pure_used_seconds) else 0.0,
                 status=status
             )
         )
@@ -369,10 +384,10 @@ def _to_metric(
     today_hours = summary.legacy_slot_seconds / SECONDS_PER_HOUR
     fluid_hours = summary.fluid_slot_seconds / SECONDS_PER_HOUR
     total_pure_used_hours = summary.total_pure_used_seconds / SECONDS_PER_HOUR
-    saved_hours = today_hours - fluid_hours
+    saved_hours = max(0.0, today_hours - fluid_hours)
 
     # Clamped True cooldown savings (always >= 0%)
-    clamped_savings = (saved_hours / today_hours * 100.0) if today_hours > 0 else 0.0
+    clamped_savings = min(max((saved_hours / today_hours * 100.0), 0.0), 100.0) if today_hours > 0 else 0.0
 
     usd_window = saved_hours * price_per_slot_hr
     usd_monthly = usd_window * (DAYS_PER_MONTH / lookback_days)
@@ -399,18 +414,42 @@ def _run_query_to_df(
     lookback_days: int,
     label: str,
     params=None,
+    extra_query_params=None,
 ) -> pd.DataFrame:
+    all_params = [
+        bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
+    ] + (extra_query_params or [])
+    max_bytes = get_max_bytes_billed(params)
     job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
-        ],
-        maximum_bytes_billed=get_max_bytes_billed(params),
+        query_parameters=all_params,
+        maximum_bytes_billed=max_bytes,
     )
-    logger.info("Running %s query (lookback=%d days)", label, lookback_days)
+    logger.info("⏳ %s — submitting query (lookback=%d days, safety cap: %s GiB)…", label, lookback_days, max_bytes // (1024**3))
     logger.debug("%s SQL:\n%s", label.upper(), sql)
-    return client.query(sql, job_config=job_config).result().to_dataframe(
-        create_bqstorage_client=True,
+    t0 = time.time()
+    query_job = client.query(sql, job_config=job_config)
+    try:
+        df = query_job.result().to_dataframe(create_bqstorage_client=True)
+    except Exception:
+        logger.warning("BigQuery Storage API failed or unavailable. Falling back to REST API for to_dataframe().")
+        df = query_job.result().to_dataframe()
+    elapsed = time.time() - t0
+    # Log profile with clickable BQ Console URL
+    job_project = query_job.project
+    job_location = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={job_project}"
+        f"&j=bq:{job_location}:{query_job.job_id}&page=queryresults"
     )
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return df
 
 
 def _build_config_status(
@@ -446,7 +485,8 @@ def _build_config_status(
         is_fully_enabled = False
         # Union with already-enabled names so the DDL doesn't drop existing entries.
         new_list = sorted(list(enabled_norm | actionable_res_names))
-        list_str = ", ".join(f'"{r}"' for r in new_list)
+        new_list_safe = [_safe_ident(r, "reservation_name") for r in new_list]
+        list_str = ", ".join(f'"{r}"' for r in new_list_safe)
         ddl = (
             f"ALTER PROJECT `{admin_project}`\n"
             f"SET OPTIONS (\n"
@@ -464,6 +504,8 @@ def _build_config_status(
 
 @router.post("/estimate", response_model=FluidScalingEstimateResponse)
 def estimate_fluid_scaling(params: FluidEstimateParams):
+    # NOTE: focus_projects intentionally NOT applied to capacity planning.
+    t0 = log_endpoint_start("Fluid Scaling Estimate", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
         admin_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else org_project
@@ -471,33 +513,16 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         reject_dummy_project(admin_project)
         region = _safe_ident(_normalize_region(params.region), "region")
 
-        capacity_sql = _render_sql(_SQL_PER_SECOND_CAPACITY, admin_project=admin_project, region=region)
-        usage_sql = _render_sql(_SQL_PER_SECOND_USAGE, org_project=org_project, region=region)
 
-        capacity_df = _run_query_to_df(client, capacity_sql, params.lookback_days, "capacity", params=params)
-        usage_df = _run_query_to_df(client, usage_sql, params.lookback_days, "usage", params=params)
+        unified_sql = _render_sql(_SQL_UNIFIED_FLUID_SCALING, admin_project=admin_project, org_project=org_project, region=region, focus_clause="")
+        df = _run_query_to_df(client, unified_sql, params.lookback_days, "fluid_scaling_unified", params=params)
 
-        logger.info(
-            "Fetched %d capacity rows, %d usage rows", len(capacity_df), len(usage_df)
-        )
+        logger.info("Fetched %d unified rows", len(df))
 
-        logger.info("capacity period_start dtype: %s, sample: %r",
-                    capacity_df["period_start"].dtype if not capacity_df.empty else "empty",
-                    capacity_df["period_start"].iloc[0] if not capacity_df.empty else None)
-        logger.info("usage period_start dtype: %s, sample: %r",
-                    usage_df["period_start"].dtype if not usage_df.empty else "empty",
-                    usage_df["period_start"].iloc[0] if not usage_df.empty else None)
-        if capacity_df.empty and not usage_df.empty:
-            logger.warning(
-                "Capacity query returned 0 rows but usage has %d rows. "
-                "Likely cause: admin_project_id (%s) does not own any reservations. "
-                "Reservations seen in usage data: %s",
-                len(usage_df),
-                admin_project,
-                usage_df["reservation_id"].unique().tolist()[:10],
-            )
+        if df.empty:
+            logger.warning("Unified query returned 0 rows. Likely cause: admin_project_id (%s) does not own any reservations.", admin_project)
 
-        summaries = _rollup_to_summaries(capacity_df, usage_df)
+        summaries = _process_unified_results(df)
 
         metrics = [
             _to_metric(s, params.price_per_slot_hr, params.lookback_days)
@@ -506,7 +531,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         metrics.sort(key=lambda m: m.extrapolated_annual_usd, reverse=True)
 
         # Config status check
-        enabled_reservations = get_effective_fluid_scaling_reservations(client, admin_project, region)
+        enabled_reservations = get_effective_fluid_scaling_reservations(client, admin_project, region, params=params)
         config_status = _build_config_status(summaries, enabled_reservations, admin_project, region)
         
         logger.info(
@@ -516,6 +541,7 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
             config_status.missing_reservations,
         )
 
+        log_endpoint_end("Fluid Scaling Estimate", t0, _logger=logger)
         return FluidScalingEstimateResponse(
             reservations=metrics,
             config_status=config_status

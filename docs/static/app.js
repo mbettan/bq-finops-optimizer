@@ -400,7 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeBi: document.getElementById('analyze-bi-btn'),
         
-        // AI Reviewer
+        // AI Doctor
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit')
@@ -4899,8 +4899,8 @@ const FluidScaling = (() => {
 
     // Run BOTH fetches in parallel and tolerate partial failure
     const [estimateResult, jobsResult] = await Promise.allSettled([
-      fetchEstimate({ orgProject, adminProject, region, lookback, price }),
-      fetchJobSimulation({ orgProject, region, lookback, price }),
+      fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
+      fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
     ]);
 
     if (estimateResult.status === 'fulfilled') {
@@ -4929,7 +4929,7 @@ const FluidScaling = (() => {
   // ---------------------------------------------------------------
   // Fetch helpers — both throw on non-OK so Promise.allSettled catches
   // ---------------------------------------------------------------
-  async function fetchEstimate({ orgProject, adminProject, region, lookback, price }) {
+  async function fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb }) {
     const res = await fetch('/api/fluid-scaling/estimate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4939,6 +4939,7 @@ const FluidScaling = (() => {
         region,
         lookback_days:     lookback,
         price_per_slot_hr: price,
+        max_bytes_billed_gb: maxBytesBilledGb,
       }),
     });
     if (!res.ok) {
@@ -4948,7 +4949,7 @@ const FluidScaling = (() => {
     return res.json();
   }
 
-  async function fetchJobSimulation({ orgProject, region, lookback, price }) {
+  async function fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb }) {
     const res = await fetch('/api/slots/fluid_simulation', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4957,6 +4958,7 @@ const FluidScaling = (() => {
         region,
         lookback_days:        lookback,
         edition_slot_hr_rate: price,
+        max_bytes_billed_gb:  maxBytesBilledGb,
       }),
     });
     if (!res.ok) {

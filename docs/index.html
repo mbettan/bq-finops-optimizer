@@ -4,25 +4,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BQ FinOps Optimizer — BigQuery Cost Optimization & Slot Simulation</title>
+    <title>BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization & Slot Simulation Suite</title>
     <meta name="description"
-        content="Open-source BigQuery cost optimization suite. Automated query review, slot capacity simulation, dynamic billing guardrails, hybrid cost attribution, and migration risk detection — the complete FinOps toolkit for Google Cloud.">
-    <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer, Query Doctor, Gemini, BigQuery Editions, Reservation Sizing, Capacity Planning, Cooldown Tax, Fluid Scaling, Migration Guardrails, Cost Attribution, Autoscaler">
+        content="Free, open-source BigQuery cost optimization suite. Automated query review, slot capacity simulation, dynamic billing guardrails, hybrid cost attribution, fluid scaling analysis, and migration risk detection — the complete FinOps toolkit for Google Cloud BigQuery.">
+    <meta name="keywords" content="BigQuery, FinOps, Cost Optimization, Slot Simulation, Google Cloud, Data Warehouse, BQ Optimizer, AI Doctor, Gemini, BigQuery Editions, Reservation Sizing, Capacity Planning, Cooldown Tax, Fluid Scaling, Migration Guardrails, Cost Attribution, Autoscaler, BigQuery Slots, GCP Cost Management, Cloud FinOps, BigQuery Storage Billing">
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+    <meta name="author" content="mbettan">
+    <meta name="theme-color" content="#3b82f6">
     <link rel="canonical" href="https://mbettan.github.io/bq-finops-optimizer/">
+    <link rel="apple-touch-icon" href="static/favicon.png">
 
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="og:title" content="BQ FinOps Optimizer — BigQuery Cost Optimization">
-    <meta property="og:description" content="Open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+    <meta property="og:title" content="BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization Suite">
+    <meta property="og:description" content="Free, open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
     <meta property="og:site_name" content="BQ FinOps Optimizer">
     <meta property="og:locale" content="en_US">
+    <meta property="og:image" content="https://mbettan.github.io/bq-finops-optimizer/static/favicon.png">
+    <meta property="og:image:width" content="512">
+    <meta property="og:image:height" content="512">
+    <meta property="og:image:alt" content="BQ FinOps Optimizer logo">
 
     <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image">
     <meta property="twitter:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="twitter:title" content="BQ FinOps Optimizer — BigQuery Cost Optimization">
-    <meta property="twitter:description" content="Open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+    <meta property="twitter:title" content="BQ FinOps Optimizer — Open-Source BigQuery Cost Optimization Suite">
+    <meta property="twitter:description" content="Free, open-source suite for BigQuery cost optimization. Automated query review, slot simulation, billing guardrails, cost attribution, and migration risk detection.">
+    <meta property="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/favicon.png">
+    <meta property="twitter:image:alt" content="BQ FinOps Optimizer logo">
 
     <!-- Structured Data: SoftwareApplication -->
     <script type="application/ld+json">
@@ -38,7 +48,7 @@
             "price": "0",
             "priceCurrency": "USD"
         },
-        "softwareVersion": "1.1.0",
+        "softwareVersion": "1.2.0",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
         "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
@@ -47,6 +57,78 @@
             "@type": "Person",
             "name": "mbettan"
         }
+    }
+    </script>
+
+    <!-- Structured Data: BreadcrumbList -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "Home",
+                "item": "https://mbettan.github.io/bq-finops-optimizer/"
+            },
+            {
+                "@type": "ListItem",
+                "position": 2,
+                "name": "Interactive Simulator",
+                "item": "https://mbettan.github.io/bq-finops-optimizer/simulator.html"
+            }
+        ]
+    }
+    </script>
+
+    <!-- Structured Data: FAQPage (targets featured snippet rich results) -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": "How do I optimize BigQuery costs?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Use the BQ FinOps Optimizer to analyze storage billing models, right-size slot reservations, detect anti-patterns in SQL queries, and simulate capacity scenarios. It covers storage optimization, compute right-sizing, cost attribution, and AI-powered query review."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What is the BigQuery cooldown tax and how does Fluid Scaling help?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The cooldown tax occurs when BigQuery charges a 60-second minimum for autoscaled slots even for queries lasting fractions of a second. Fluid Scaling provides true per-second billing with zero minimum capacity, eliminating this overcharge for high-frequency short queries."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Should I use physical or logical storage billing in BigQuery?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "It depends on your data modification patterns. Physical billing charges for compressed bytes including Time Travel and Fail-safe storage. Logical billing charges for uncompressed logical bytes. The BQ FinOps Optimizer automatically analyzes each dataset and recommends the cheaper model."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How do I right-size BigQuery Editions reservations?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Use the Slot Capacity Bucket Method to simulate slot consumption over a 730-hour billing month. The tool generates tiered recommendations (Aggressive p80, Balanced p95, and Max Performance) and calculates costs for PAYG, 1-Year, and 3-Year commitment tiers to find your optimal baseline."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is BQ FinOps Optimizer free to use?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes, BQ FinOps Optimizer is 100% free and open-source under the Apache 2.0 license. It runs entirely within your own GCP environment — no data is sent to third-party servers."
+                }
+            }
+        ]
     }
     </script>
 
@@ -95,6 +177,7 @@
     </nav>
 
     <!-- ░░ HERO ░░ -->
+    <main id="main-content">
     <header class="hero" id="top">
         <div class="hero-inner container">
             <div class="hero-content">
@@ -105,7 +188,7 @@
                     </div>
                     <div class="hero-badge version-badge">
                         <i class="fas fa-rocket" aria-hidden="true" style="font-size: 0.65rem;"></i>
-                        v1.1.0
+                        v1.2.0
                     </div>
                 </div>
 
@@ -138,12 +221,12 @@
             <div class="hero-visual" aria-label="Product statistics">
                 <div class="hero-stats">
                     <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-count="272" data-suffix="+">0</div>
+                        <div class="stat-value" data-count="167" data-suffix="+">0</div>
                         <div class="stat-label">Tests Passing</div>
                     </div>
                     <div class="stat-card fade-in-up">
-                        <div class="stat-value" data-count="7" data-suffix="">0</div>
-                        <div class="stat-label">Analysis Modules</div>
+                        <div class="stat-value" data-count="16" data-suffix="">0</div>
+                        <div class="stat-label">Analysis Views</div>
                     </div>
                     <div class="stat-card fade-in-up">
                         <div class="stat-value" data-prefix="$" data-count="0" data-suffix="">$0</div>
@@ -173,11 +256,11 @@
     </div>
 
     <!-- ░░ RELEASE ANNOUNCEMENT BANNER ░░ -->
-    <a href="#features" class="release-banner" aria-label="View new features in v1.1.0">
+    <a href="#features" class="release-banner" aria-label="View new features in v1.2.0">
         <div class="container release-banner-inner">
-            <span class="release-banner-tag">New in v1.1.0</span>
+            <span class="release-banner-tag">New in v1.2.0</span>
             <span class="release-banner-text">
-                🚀 <span>Query Doctor</span> · Dynamic Billing Caps · Fluid Scaling · Migration Guardrails · Cost Attribution
+                🚀 Org-Wide Schema Auditing · Project Focus Scope · XSS Hardening · AI Doctor Enhancements · Fluid Scaling Guardrails
             </span>
             <i class="fas fa-arrow-right release-banner-arrow" aria-hidden="true"></i>
         </div>
@@ -409,18 +492,18 @@
             <div class="section-header fade-in-up">
                 <span class="hero-badge" style="margin-left:auto; margin-right:auto;">Capabilities</span>
                 <h2>Zero Friction <span class="gradient-text">Cost Optimization</span></h2>
-                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. 7 modules, one mission.</p>
+                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. 16 analysis views, one mission.</p>
             </div>
 
             <div class="features-bento stagger-children">
 
-                <!-- ★ Query Doctor — PREMIUM FULL-WIDTH CARD -->
+                <!-- ★ AI Doctor — PREMIUM FULL-WIDTH CARD -->
                 <div class="bento-card bento-full bento-premium fade-in-up">
                     <span class="feature-pill pill-new">✦ New</span>
                     <div class="premium-inner">
                         <div>
                             <div class="bento-icon icon-ai"><i class="fas fa-robot"></i></div>
-                            <h3>Automated Semantic Query Review</h3>
+                            <h3>AI Doctor — Semantic Query Review</h3>
                             <p>Leverages BigQuery's native <code>AI.GENERATE</code> scalar function to run high-speed, cost-efficient SQL reviews directly inside the data warehouse. Scans your most expensive queries for 7 critical anti-patterns and generates actionable routing snippets.</p>
                             <div class="gemini-tag">
                                 <i class="fas fa-sparkles"></i>
@@ -528,6 +611,49 @@
                     <p>Generates the exact <code>ALTER SCHEMA</code> code you need. Run it directly or copy to your IAC pipeline.</p>
                 </div>
 
+                <!-- Workload Profiler -->
+                <div class="bento-card bento-large fade-in-up">
+                    <div class="bento-icon icon-clock"><i class="fas fa-gauge-high"></i></div>
+                    <div>
+                        <h3>Workload Profiler &amp; Trickle Detection</h3>
+                        <p>Detects high-frequency small queries causing wasteful autoscaler activations. Visualizes patterns with temporal heatmaps (hour × day-of-week) and ranks top offending queries by slot waste.</p>
+                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Temporal Heatmaps</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Top Offenders</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Batch Candidates</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Execution Insights -->
+                <div class="bento-card fade-in-up">
+                    <div class="bento-icon"><i class="fas fa-microscope"></i></div>
+                    <h3>Execution Insights</h3>
+                    <p>Surfaces queries impacted by slot contention, insufficient shuffle quota, and significant data volume changes from BigQuery's native performance telemetry.</p>
+                </div>
+
+                <!-- BI Optimizer -->
+                <div class="bento-card fade-in-up">
+                    <div class="bento-icon icon-green"><i class="fas fa-chart-line"></i></div>
+                    <h3>BI Engine Optimizer</h3>
+                    <p>Analyzes BI Engine acceleration eligibility and identifies dashboards that could benefit from in-memory caching to reduce latency and cost.</p>
+                </div>
+
+                <!-- Edition Matrix Simulation -->
+                <div class="bento-card bento-large fade-in-up">
+                    <span class="feature-pill pill-enhanced">Enhanced</span>
+                    <div class="bento-icon"><i class="fas fa-table-cells"></i></div>
+                    <div>
+                        <h3>Edition Matrix Simulation</h3>
+                        <p>Tests every possible baseline size against your actual workload and calculates the total monthly bill for PAYG, 1-Year, and 3-Year commitment tiers. Automatically highlights the optimal turning point.</p>
+                        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> PAYG / 1-Year / 3-Year</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Utilization %</span>
+                            <span class="btn btn-nav" style="font-size: 0.75rem;"><i class="fas fa-check"></i> Optimal Baseline</span>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </section>
@@ -540,14 +666,14 @@
                     <i class="fas fa-lock" style="font-size: 0.65rem;" aria-hidden="true"></i>
                     Enterprise Ready
                 </span>
-                <h2>Built for <span class="gradient-text">Trust & Security</span></h2>
+                <h2 id="trust-heading">Built for <span class="gradient-text">Trust & Security</span></h2>
                 <p>Rigorously tested, sanitized, and hardened for production environments.</p>
             </div>
 
             <div class="trust-grid stagger-children">
                 <div class="trust-card fade-in-up">
                     <div class="trust-icon"><i class="fas fa-vial"></i></div>
-                    <div class="trust-value">272+ Tests</div>
+                    <div class="trust-value">167+ Tests</div>
                     <div class="trust-label">Unit & integration tests with mocked BigQuery endpoints</div>
                 </div>
                 <div class="trust-card fade-in-up">
@@ -611,7 +737,7 @@
                     <div class="step-card">
                         <div class="bento-icon icon-shield"><i class="fas fa-shield-halved"></i></div>
                         <h3>Govern & Guard</h3>
-                        <p>Set dynamic billing limits to prevent runaway charges. Run migration guardrails to detect high-risk schemas before they cost you. Continuously monitor with the Query Doctor.</p>
+                        <p>Set dynamic billing limits to prevent runaway charges. Run migration guardrails to detect high-risk schemas before they cost you. Continuously monitor with the AI Doctor.</p>
                     </div>
                 </div>
             </div>
@@ -637,6 +763,8 @@
             </div>
         </div>
     </section>
+
+    </main>
 
     <!-- ░░ FOOTER ░░ -->
     <footer class="site-footer">

@@ -10,10 +10,11 @@ def test_ai_doctor_schema_aware_analysis():
     # It contains the query details along with our new DDL count metrics and LLM advice.
     mock_ai_row = MagicMock(
         job_id="expensive_select_job_123",
+        project_id="acme-sandbox",
         user_email="data_engineer@acme.com",
         total_slot_ms=125000,
         query="SELECT * FROM `acme-sandbox.dataset.table` LIMIT 10",
-        gemini_optimization_advice="- Avoid SELECT * and specify columns to prune bytes.\n- Add partition filter for date.",
+        ai_struct={"result": "- Avoid SELECT * and specify columns to prune bytes.\n- Add partition filter for date."},
         tables_referenced_count=3,
         tables_found_count=2
     )
@@ -76,8 +77,13 @@ def test_ai_doctor_schema_aware_analysis():
 
         
         # 2. Verify SQL Query construction logic
-        assert mock_bq_client.query.call_count == 2
+        assert mock_bq_client.query.call_count >= 3
         
+        # Verify the first call (discovery query) uses org-level view
+        discovery_sql = mock_bq_client.query.call_args_list[0][0][0]
+        assert "JOBS_BY_ORGANIZATION" in discovery_sql, "Discovery query must use JOBS_BY_ORGANIZATION, not JOBS_BY_PROJECT"
+        assert "JOBS_BY_PROJECT" not in discovery_sql
+
         # Verify the second call (the UNION ALL AI analysis query)
         called_args, called_kwargs = mock_bq_client.query.call_args
         called_sql = called_args[0]
