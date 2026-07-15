@@ -505,26 +505,16 @@ def fetch_active_assist_recommendations(params: StorageParams):
     
     try:
         if params.focus_projects:
-            # Focus mode: use the explicitly provided projects
+            # Focus mode: UNION ALL across explicitly provided projects
             target_projects = [_safe_ident(p, "project_id") for p in params.focus_projects]
-        else:
-            # Org mode: discover projects from TABLE_STORAGE_BY_ORGANIZATION
-            logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
-            proj_sql = f"""
-            SELECT DISTINCT project_id 
-            FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
-            WHERE deleted = false
-            """
-            proj_results = run_query_and_log(scoped_client, proj_sql, "Get Org Projects for Active Assist", params=params)
-            target_projects = [row['project_id'] for row in proj_results]
-        
-        if not target_projects:
-            log_endpoint_end("Active Assist", t0, _logger=logger)
-            return []
 
-        union_blocks = []
-        for p in target_projects:
-            block = f"""
+            if not target_projects:
+                log_endpoint_end("Active Assist", t0, _logger=logger)
+                return []
+
+            union_blocks = []
+            for p in target_projects:
+                block = f"""
             SELECT
               '{p}' AS project_id,
               target_resources,
@@ -536,14 +526,28 @@ def fetch_active_assist_recommendations(params: StorageParams):
             WHERE
               recommender = 'google.bigquery.table.PartitionClusterRecommender'
             """
-            union_blocks.append(block)
-            
-        sql = "\nUNION ALL\n".join(union_blocks) + "\nLIMIT 20"
-        
-        logger.info(f"Querying Google Active Assist Recommendations across {len(target_projects)} projects...")
-        
-        # We will attempt to run it
-        results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+                union_blocks.append(block)
+
+            sql = "\nUNION ALL\n".join(union_blocks)
+            logger.info(f"Querying Active Assist Recommendations across {len(target_projects)} focus projects...")
+            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+        else:
+            # Org mode: single query using the org-scoped RECOMMENDATIONS view
+            logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
+            sql = f"""
+            SELECT
+              project_id,
+              target_resources,
+              description,
+              primary_impact,
+              additional_details
+            FROM
+              `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS_BY_ORGANIZATION
+            WHERE
+              recommender = 'google.bigquery.table.PartitionClusterRecommender'
+              AND state = 'ACTIVE'
+            """
+            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations (Org)", params=params)
         output = []
         
         # If the view exists but returns nothing, or if it succeeds

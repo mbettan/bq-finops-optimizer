@@ -235,7 +235,10 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
 
 - **Objective:** Surface native Google Cloud recommendations for partitioning and clustering.
 - **Acceptance Criteria:**
-    - Query the `RECOMMENDATIONS_BY_ORGANIZATION` API.
+    - **Org-Wide Scan (Default):** When no `focus_projects` are specified, query the org-scoped `INFORMATION_SCHEMA.RECOMMENDATIONS_BY_ORGANIZATION` view directly in a single query. This avoids the need for a project-discovery step and eliminates per-project UNION ALL assembly. Only `ACTIVE` recommendations are returned.
+    - **Focus Mode:** When `focus_projects` are specified, query each project's `INFORMATION_SCHEMA.RECOMMENDATIONS` view individually via `UNION ALL`.
+    - Filter on `recommender = 'google.bigquery.table.PartitionClusterRecommender'` in both modes.
+    - Parse `target_resources` to extract dataset and table identifiers, `description` to classify recommendation type (Partition vs Cluster), `primary_impact` for cost projections, and `additional_details.overview` for column suggestions and estimated savings (bytes and slot-ms).
     - Provide a one-click interface for users to review Google's native table tuning suggestions.
 - **Visualization:** Interactive data table showing missing partitions/clusters with a "Blind Spot" methodology card indicating what Active Assist misses.
 
