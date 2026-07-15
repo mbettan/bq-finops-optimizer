@@ -49,7 +49,6 @@ Promoted the Schema Optimizer to its own navigation group and added collapsible 
 *   **Validation Guardrails:** 
     *   Added `_safe_ident()` validation to BQ-sourced project IDs before SQL interpolation.
     *   Bounded numeric parameters (e.g., capping `lookback_days` to 90) to prevent unbounded org-wide scans or division-by-zero crashes.
-    *   BigQuery internal query error details are logged server-side only and no longer leak schema information to the frontend.
 
 ### 🐛 Bug Fixes
 
@@ -141,4 +140,4 @@ Added `focus_projects` parameter allowing users to optionally scope org-wide ana
 *   **API Framework:** FastAPI (centralized versioning, GZip compression middleware, automated interactive `/docs` landing page).
 *   **Data Science Core:** NumPy, Pandas, DB-Types.
 *   **Frontend UI:** Vanilla ES6 JavaScript, HTML5, Custom Glassmorphic CSS Engine.
-*   **Testing Suite:** 272 comprehensive unit and integration tests (mocked BigQuery endpoints, Pydantic input boundary validation, and SQL injection security checks).
+*   **Testing Suite:** 167 comprehensive unit and integration tests (mocked BigQuery endpoints, Pydantic input boundary validation, and SQL injection security checks).

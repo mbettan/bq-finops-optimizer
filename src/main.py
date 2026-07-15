@@ -33,7 +33,7 @@ import time
 import uuid
 
 
-__version__ = "1.1.5"
+__version__ = "1.2.0"
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).

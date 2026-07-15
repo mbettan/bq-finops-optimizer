@@ -96,15 +96,33 @@
                     '/api/slots/tiered_recommendations':'bq_slots_tiered',
                     '/api/slots/utilization':           'bq_slots_utilization',
                     '/api/slots/actual_provisioning':   'bq_slots_actual_provisioning',
+                    '/api/slots/profiler/queries':      'bq_profiler_queries',
                     '/api/slots/profiler':              'bq_profiler_summary',
                     '/api/slots/simulate':              'bq_slots_simulation_results',
+                    '/api/slots/fluid_simulation':      'bq_fluid_simulation_data',
+                    '/api/slots/peak':                  'bq_slots_peak',
+                    // Cost Attribution
+                    '/api/cost-attribution/calculate':  'bq_cost_attribution_results',
+                    '/api/cost-attribution/config':     'bq_cost_attribution_config',
+                    // Fluid Scaling
+                    '/api/fluid-scaling/estimate':      'bq_fluid_estimate_data',
+                    '/api/fluid-scaling/status':        'bq_fluid_scaling_status',
+                    // HBO
+                    '/api/hbo/performance_insights':'bq_performance_results',
+                    '/api/hbo/status':              'bq_hbo_status',
+                    '/api/hbo/summary':             'bq_hbo_summary',
+                    '/api/hbo/analyze':             'bq_hbo_results',
                     // Governance / Intelligence
                     '/api/governance/analyze':      'bq_gov_results',
                     '/api/ai/analyze':              'bq_ai_results',
                     '/api/bi/analyze':              'bq_bi_results',
-                    '/api/mv/analyze':              'bq_mv_results',
-                    '/api/hbo/analyze':             'bq_hbo_results',
-                    '/api/hbo/performance_insights':'bq_performance_results'
+                    '/api/mv/analyze':              'bq_mv_rejection_results',
+                    '/api/resource_warnings/analyze':'bq_resource_warning_results',
+                    // Dashboard
+                    '/api/dashboard/kpis':          'bq_dashboard_kpis',
+                    '/api/dashboard/opportunities': 'bq_dashboard_opportunities',
+                    '/api/dashboard/top-projects':  'bq_dashboard_top_projects',
+                    '/api/dashboard/anomalies':     'bq_dashboard_anomalies'
                 };
 
                 const matchingPath = Object.keys(apiMap).find(path => urlStr.includes(path));
@@ -225,15 +243,7 @@
               </div>
             </details>
 
-            <details class="nav-hub" open>
-              <summary>
-                <i class="fa-solid fa-cubes" style="font-size: 0.7rem;"></i>
-                Schema
-              </summary>
-              <div class="nav-hub__items">
-                <a href="#schema-optimizer" class="nav-link" id="nav-schema-optimizer">Schema Optimizer</a>
-              </div>
-            </details>
+
 
             <details class="nav-hub" open>
               <summary>
