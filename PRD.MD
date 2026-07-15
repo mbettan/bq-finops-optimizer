@@ -25,6 +25,19 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
 *   **The Solution:** Zero-minimum billing allows for effortless workload isolation (creating hundreds of isolated reservations without penalty) and predictable FinOps (clear job-level cost attribution).
 *   **Implementation:** Activation is managed via DML at the reservation level. Slot capacity continues to scale in increments of 50 slots.
 
+## 1.4 Goals and non-goals
+
+### Goals
+*   **Provide actionable FinOps recommendations:** Automatically identify and quantify cost-saving opportunities across compute and storage.
+*   **Enable precise cost attribution:** Overcome native GCP billing limitations to attribute Editions compute costs down to the exact querying project.
+*   **Safe Execution:** Provide UI-driven execution for DDL changes (e.g., storage billing models) while keeping the user fully in control.
+
+### Non-goals (Out of scope)
+*   **Fully Autonomous Remediation:** The platform is a diagnostic and recommendation tool. It will **not** automatically execute destructive or structural changes (like altering reservations or dropping tables) without explicit user intervention.
+*   **BigQuery ML Tuning:** This tool focuses on FinOps and SQL execution tuning. It explicitly does **not** cover BigQuery ML Hyperparameter Optimization.
+*   **Multi-Cloud FinOps:** The scope is strictly limited to Google Cloud BigQuery.
+
+
 ## 2. Target audience
 
 - **FinOps Practitioners:** Looking to identify cost-saving opportunities across GCP organizations, evaluate active capacity commitments, and balance workload performance SLAs against cost constraints.
@@ -59,21 +72,21 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
   - `Region`: e.g., `region-us`, `region-eu`, `region-us-east4`.
   - `Focus Projects` (Optional): A comma-separated list of up to 50 specific project IDs to focus the optimization queries on.
 
-### 4.2 Module 1: storage cost optimizer
+### 4.2 Module 1: Storage Cost Optimizer
 
 - **Parameters Input:** Active/Long-term Logical and Physical GiB Prices, Time Travel Rescale, Min Monthly Savings constraints.
 - **Execution:** Executes storage metrics queries and processes data in Python.
 - **Visualization:** Data table with Project/Dataset Name, Current/Recommended Billing Model, Monthly Savings, and generated DDL.
 - **Implementation/Action:** An "Apply Optimization" button to execute `ALTER SCHEMA` DDL.
 
-### 4.3 Module 2: on-demand vs. editions job analyzer
+### 4.3 Module 2: On-Demand vs. Editions Job Analyzer
 
 - **Parameters Input:** On-Demand Price (per TiB), Editions Slot Price, Analysis Time Window (Lookback Days).
 - **Execution:** Executes job-level pricing analysis queries to compare the cost of running jobs on Editions (via slot consumption) versus On-Demand (via bytes processed).
 - **Visualization:** Data table with Job ID / Project / User, Current/Recommended Billing Model (On-Demand vs. Editions), Estimated Waste on Editions (Savings), and recommended action. This visualization must be consistent with the Storage Cost Optimizer UI.
 - **Implementation/Action:** Flag or export jobs/projects that are candidates for being moved to On-Demand billing to eliminate waste.
 
-### 4.4 Module 3: cost attribution engine
+### 4.4 Module 3: Cost Attribution Engine
 
 - **Objective:** Accurately calculate and attribute BigQuery Editions compute costs down to the GCP Project level, overcoming native limitations of the standard GCP Billing console.
 - **Parameters Input:** Billing Month Start/End, Execution Project ID, Admin Project ID, Region.
@@ -89,7 +102,7 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Donut chart for provisioning ratio.
     - Data table showing Project ID, Reservation ID, Direct Usage Cost, Allocated Waste, and Total Cost Attribution.
 
-### 4.5 Module 4: actual provisioning & capacity planning
+### 4.5 Module 4: Actual Provisioning & Capacity Planning
 
 - **User Story:** As a Cloud FinOps Administrator (or BigQuery capacity planner), I want to accurately calculate the exact number of BigQuery slot-hours consumed over a specific time period, broken down by autoscaled slots and uncommitted baseline slots, so that I can accurately forecast my BigQuery Enterprise billing, understand my compute overages, and optimize my capacity commitments to save money.
 - **Problem Statement:** With BigQuery Enterprise editions, slot capacity is highly dynamic. Customers purchase fixed Capacity Commitments, but they also configure Reservations that have baseline slots and autoscaling limits. Because autoscaling scales up and down continuously based on workload, and capacity commitments can be created or updated at any time, it is incredibly difficult to calculate actual usage. You cannot just look at a static number; you must calculate the exact "area under the curve" (Time × Slots) down to the second. Currently, customers do not have a simple, single metric or dashboard out-of-the-box that tells them:
@@ -100,7 +113,7 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - The calculation must accurately subtract pre-purchased `capacity_slots` from `baseline_slots` so customers only see the billable uncommitted baseline hours.
     - The solution must account for exact timestamp intervals (`end_timestamp - change_timestamp`) to ensure no over/under-billing of fractional hours.
 
-### 4.6 Module 5: workload profiler
+### 4.6 Module 5: Workload Profiler
 
 - **User Story:** As a FinOps Analyst, I want to identify specific queries that are causing inefficient autoscaler scale-ups, so that I can optimize reservation strategies or move workloads to on-demand pricing.
 - **Problem Statement:** Small, high-frequency queries (e.g., short transactions or heartbeats) can trigger BigQuery's 1-minute minimum charge for autoscaled slots, leading to high waste when spaced out.
@@ -151,7 +164,7 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Detect "Zombie MVs" where refresh cost exceeds query savings.
 - **Visualization:** Table of high-cost MVs.
 
-### 4.12 Module 11: The Query Anti-Pattern Linter `[STATUS: IMPLEMENTED]`
+### 4.12 Module 11: Query Anti-Pattern Linter `[STATUS: IMPLEMENTED]`
 
 - **Objective:** Scan historical queries to detect expensive anti-patterns like `SELECT *`.
 - **Acceptance Criteria:**
@@ -168,7 +181,7 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - **Partition Filter:** Identify partitioned tables missing the `require_partition_filter` setting (using Python API loop for top 5 datasets to bypass missing column limits).
 - **Visualization:** Checklist of high-risk tables and datasets.
 
-### 4.14 Module 13: Cost Control & Quota Watchdog [STATUS: IMPLEMENTED]
+### 4.14 Module 13: Cost Control & Quota Watchdog `[STATUS: IMPLEMENTED]`
 
 - **Objective:** Enforce cost safety guardrails across all diagnostic and analytical query executions to protect cloud budgets.
 - **Acceptance Criteria:**
@@ -178,7 +191,7 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
   - Validate the input dynamically using Pydantic fields across all request payloads and persist the user's preference in the client's local storage.
 - **Visualization:** An adjustable safety input field in the global settings panel displaying the active query cost cap.
 
-### 4.14b Module 25: Observability & Request Tracing [STATUS: IMPLEMENTED]
+### 4.15 Module 14: Observability & Request Tracing `[STATUS: IMPLEMENTED]`
 
 - **Objective:** Provide comprehensive, structured observability for all API endpoints and BigQuery query executions, enabling operators to monitor system health, trace individual requests, and debug query performance in real time.
 - **Acceptance Criteria:**
@@ -195,15 +208,13 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
   - `inject_request_id` middleware in `src/main.py` — generates a unique 8-char hex ID per HTTP request.
   - Query helpers: `run_query_and_log()`, `run_query_to_df()` in `main.py`; `_run_and_log()` in `hbo.py`, `cost_attribution.py`, `fluid_scaling.py`.
 
-### 4.15 Module 14: Interactive vs. Batch Optimizer `[STATUS: IMPLEMENTED]`
+### 4.16 Module 15: Interactive vs. Batch Optimizer `[STATUS: IMPLEMENTED]`
 
 - **Objective:** Identify queries submitted with Interactive priority that are candidates for Batch priority to smooth out slot usage peaks.
 - **Acceptance Criteria:**
     - Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` for jobs with `priority = 'INTERACTIVE'`.
     - Flag jobs that are long-running (>5 minutes), executed during off-peak hours, or generated by service accounts.
 - **Visualization:** Data table of candidates for Batch priority with reasoning, dynamic tags, and tooltips.
-
-
 
 ### 4.17 Module 16: Execution Plan & Data Skew Analyzer `[STATUS: IMPLEMENTED]`
 
@@ -212,13 +223,43 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` (using native array fields on `job_stages`) for jobs where max node compute time is >10x the average.
 - **Visualization:** List of skewed jobs with ratio and wasted slot hours.
 
-### 4.18 Module 17: LLM-Powered Semantic Query Analysis (GenAI) `[STATUS: IMPLEMENTED]`
+### 4.18 Module 17: AI Doctor (Semantic Query Review) `[STATUS: IMPLEMENTED]`
 
-- **Objective:** Use BigQuery's native Vertex AI integration (`AI.GENERATE_TEXT`) to analyze queries for semantic anti-patterns.
+- **Objective:** Use BigQuery's native Vertex AI integration (`AI.GENERATE`) to analyze queries for semantic anti-patterns.
 - **Acceptance Criteria:**
-    - Accept a user-provided remote model name.
-    - Pass top queries to Gemini via SQL and parse `result` column.
-- **Visualization:** "AI Code Reviewer" tab showing job details and Gemini's advice.
+    - Pass top queries to Gemini via SQL and parse the result column.
+    - Ensure AI Doctor inputs are safely parameterized to prevent string interpolation risks.
+- **Visualization:** "AI Doctor" tab showing job details and Gemini's actionable optimization advice.
+
+### 4.19 Module 18: Active Assist Recommendations `[STATUS: IMPLEMENTED]`
+
+- **Objective:** Surface native Google Cloud recommendations for partitioning and clustering.
+- **Acceptance Criteria:**
+    - Query the `RECOMMENDATIONS_BY_ORGANIZATION` API.
+    - Provide a one-click interface for users to review Google's native table tuning suggestions.
+- **Visualization:** Interactive data table showing missing partitions/clusters with a "Blind Spot" methodology card indicating what Active Assist misses.
+
+### 4.20 Module 19: Top Spenders (User-Level Cost Attribution) `[STATUS: IMPLEMENTED]`
+
+- **Objective:** Identify top users consuming slots and bytes across the organization.
+- **Acceptance Criteria:**
+    - Aggregate `total_slot_ms` and `total_bytes_billed` grouping by `user_email`.
+- **Visualization:** Leaderboard or data table ranking users by their financial footprint.
+
+### 4.21 Module 20: Dashboard KPIs & FinOps Summary `[STATUS: IMPLEMENTED]`
+
+- **Objective:** Provide a high-level executive summary of FinOps health.
+- **Acceptance Criteria:**
+    - Calculate aggregate metrics across all underlying modules (e.g., total storage savings, total compute waste, HBO impact).
+- **Visualization:** Global KPI cards on the main dashboard view providing a one-glance summary of potential savings.
+
+### 4.22 Module 21: Proactive Resource Warning Scanner `[STATUS: IMPLEMENTED]`
+
+- **Objective:** Catch queries approaching complexity or resource limits before they fail.
+- **Acceptance Criteria:**
+    - Query `query_info.resource_warning` in `INFORMATION_SCHEMA.JOBS`.
+    - Flag jobs with warnings related to query complexity or resource usage.
+- **Visualization:** List of queries requiring refactoring.
 
 
 
@@ -255,351 +296,11 @@ The Service Account running this application needs:
 - `roles/bigquery.resourceAdmin` (to read/modify reservations and capacity commitments)
 - `roles/bigquery.dataOwner` (to execute `ALTER SCHEMA` DDL)
 
-### 7.2 Backend SQL handling
+### 7.2 Backend Data Extraction Strategy
 
-#### 7.2.1 BigQuery Editions recommender queries
+The application extracts performance and cost metrics exclusively via BigQuery `INFORMATION_SCHEMA` metadata views. This ensures the application never scans the underlying row-level table data, maintaining strict privacy boundaries. 
 
-_Developer Note:_ Module 3 has been updated to query usage across the entire organization using `JOBS_TIMELINE_BY_ORGANIZATION` (to accurately reflect reservation scoping) and utilizes `APPROX_QUANTILES` for the tiered matrix.
-
-**Snippet for Python Backend (FastAPI + GCP BigQuery SDK):**
-
-```python
-# 1. Slot Usage Timeline Query (Organization Wide)
-def get_slot_usage_timeline(params):
-    sql = f"""
-    SELECT
-      TIMESTAMP_TRUNC(period_start, HOUR) AS timestamp,
-      SUM(total_slot_ms) / (1000 * 60 * 60) AS slot_usage,
-      SUM(total_bytes_billed) / POW(1024, 4) AS tib_billed,
-      reservation_id,
-      location AS region
-    FROM
-      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
-    WHERE
-      period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-    GROUP BY
-      timestamp, reservation_id, location
-    ORDER BY timestamp DESC
-    """
-    # Execute query...
-
-# 2. Tiered Recommendation Matrix (Aggressive, Balanced, Performance)
-def get_percentile_recommendations(params):
-    sql = f"""
-    WITH hourly_usage AS (
-        SELECT
-          TIMESTAMP_TRUNC(period_start, HOUR) AS timestamp,
-          SUM(total_slot_ms) / (1000 * 60 * 60) AS slot_usage,
-          reservation_id
-        FROM
-          `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
-        WHERE
-          period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-          AND reservation_id IS NOT NULL
-        GROUP BY
-          timestamp, reservation_id
-    )
-    SELECT
-        reservation_id,
-        APPROX_QUANTILES(slot_usage, 100)[OFFSET(80)] AS aggressive_baseline_p80,
-        APPROX_QUANTILES(slot_usage, 100)[OFFSET(95)] AS balanced_baseline_p95,
-        MAX(slot_usage) AS performance_baseline_max
-    FROM
-        hourly_usage
-    GROUP BY
-        reservation_id
-    """
-    # Execute query...
-
-# 3. Editions Reservation Config Query
-def get_editions_reservations(params):
-    sql = f"""
-    SELECT
-      CURRENT_TIMESTAMP() AS timestamp,
-      reservation_name AS reservation_id,
-      project_number AS admin_project_number,
-      project_id AS admin_project_id,
-      location AS region,
-      edition,
-      slot_capacity AS baseline,
-      (autoscale.max_slots - slot_capacity) AS autoscale_max_slots,
-      ignore_idle_slots
-    FROM
-      `{params.org_project_id}`.`{params.region}`.INFORMATION_SCHEMA.RESERVATIONS
-    """
-    # Execute query...
-```
-
-#### 7.2.2 HBO Impact Estimation Query
-
-```sql
-WITH
-  jobs AS (
-    SELECT
-      *,
-      query_info.query_hashes.normalized_literals AS query_hash,
-      TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS elapsed_ms,
-      IFNULL(
-        ARRAY_LENGTH(JSON_QUERY_ARRAY(query_info.optimization_details.optimizations)) > 0,
-        FALSE)
-        AS has_history_based_optimization,
-    FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
-    WHERE EXTRACT(DATE FROM creation_time) > DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-  ),
-  most_recent_jobs_without_history_based_optimizations AS (
-    SELECT *
-    FROM jobs
-    WHERE NOT has_history_based_optimization
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY query_hash ORDER BY end_time DESC) = 1
-  )
-SELECT
-  job.job_id,
-  100 * SAFE_DIVIDE(
-    original_job.elapsed_ms - job.elapsed_ms,
-    original_job.elapsed_ms) AS percent_execution_time_saved,
-  job.elapsed_ms AS new_elapsed_ms,
-  original_job.elapsed_ms AS original_elapsed_ms,
-FROM jobs AS job
-INNER JOIN most_recent_jobs_without_history_based_optimizations AS original_job
-  USING (query_hash)
-WHERE
-  job.has_history_based_optimization
-  AND original_job.end_time < job.start_time
-ORDER BY percent_execution_time_saved DESC
-LIMIT 10;
-```
-
-#### 7.2.3 Storage Hygiene & Time Travel Waste Detection
-
-```sql
-SELECT
-  table_schema AS dataset,
-  table_name,
-  active_logical_bytes / POW(1024,3) AS live_table_gb,
-  time_travel_physical_bytes / POW(1024,3) AS time_travel_gb,
-  IF(time_travel_physical_bytes > active_logical_bytes, 'High Churn/Recreate Detected', 'Healthy') as health_status
-FROM
-  `region-us`.INFORMATION_SCHEMA.TABLE_STORAGE
-ORDER BY
-  time_travel_gb DESC
-LIMIT 20;
-```
-
-#### 7.2.4 Compute Simulator (On-Demand vs. Slots)
-
-```sql
-SELECT 
-  job_id,
-  query,
-  total_bytes_billed,
-  total_slot_ms,
-  (total_bytes_billed * 6.25) / POW(1024, 4) AS projected_on_demand_cost,
-  (total_slot_ms * 0.04) / (100 * 1000 * 60 * 60) AS projected_slot_cost,
-  IF(
-    ((total_bytes_billed * 6.25) / POW(1024, 4)) > ((total_slot_ms * 0.04) / (100 * 1000 * 60 * 60)), 
-    'MOVE TO EDITIONS/SLOTS', 
-    'KEEP ON-DEMAND'
-  ) AS pricing_recommendation
-FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
-WHERE job_type = 'QUERY' 
-  AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
-ORDER BY projected_on_demand_cost DESC
-LIMIT 50;
-```
-
-#### 7.2.5 DML Abuse Tracker (High-Frequency INSERTs)
-
-```sql
-SELECT
-  user_email,
-  project_id,
-  COUNT(job_id) AS insert_job_count,
-  SUM(total_slot_ms) / (1000 * 60 * 60) AS wasted_slot_hours,
-FROM
-  `region-us`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-WHERE
-  statement_type = 'INSERT'
-  AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
-GROUP BY
-  user_email, project_id
-HAVING 
-  insert_job_count > 1000 
-ORDER BY
-  wasted_slot_hours DESC;
-```
-
-#### 7.2.6 Billing Export Analysis (Future)
-
-Because API ingestion doesn't log to `INFORMATION_SCHEMA.JOBS`, the app must query the GCP Cloud Billing Export Table (if the user grants the tool access to it) to calculate the exact financial waste.
-
-```sql
--- App SQL: Analyze Billing Export to compare Streaming APIs
-SELECT
-  sku.description AS ingestion_method,
-  SUM(usage.amount) AS total_gb_ingested,
-  SUM(cost) AS total_cost
-FROM
-  `your-billing-project.billing_dataset.gcp_billing_export_v1_XXXX`
-WHERE
-  service.description = 'BigQuery'
-  AND sku.description IN (
-    'Streaming Insert', -- This is the legacy tabledata.insertAll SKU
-    'BigQuery Storage Write API' -- This is the modern SKU
-  )
-  AND usage_start_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
-GROUP BY
-  ingestion_method;
-```
-
-#### 7.2.7 BI Engine ROI & Cache Miss Diagnostic
-
-```sql
-SELECT
-  job_id,
-  user_email,
-  total_bytes_processed / POW(1024, 3) AS processed_gb,
-  total_bytes_billed / POW(1024, 3) AS billed_gb,
-  ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * 6.25 AS estimated_dollars_saved,
-  bi_engine_statistics.bi_engine_mode,
-  ARRAY_TO_STRING(
-    ARRAY(SELECT reason FROM UNNEST(bi_engine_statistics.bi_engine_reasons)), ', '
-  ) AS failure_reasons
-FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-WHERE 
-  job_type = 'QUERY'
-  AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
-ORDER BY total_bytes_processed DESC
-LIMIT 50;
-```
-
-#### 7.2.8 Query Linter (SELECT * Abuse)
-
-```sql
-SELECT
-  user_email,
-  query,
-  total_bytes_billed / POW(1024, 3) AS billed_gb,
-  total_slot_ms
-FROM
-  `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
-WHERE
-  job_type = 'QUERY'
-  AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
-  AND total_bytes_billed > 107374182400
-ORDER BY
-  billed_gb DESC
-LIMIT 50;
-```
-
-#### 7.2.9 Partition Filter Guardrail Auditor
-
-```sql
-SELECT
-  table_catalog AS project_id,
-  table_schema AS dataset_id,
-  table_name,
-  partition_type
-FROM
-  `region-us`.INFORMATION_SCHEMA.PARTITIONS
-WHERE
-  partition_type IS NOT NULL
-  AND table_name NOT IN (
-    SELECT table_name 
-    FROM `region-us`.INFORMATION_SCHEMA.TABLES 
-    WHERE is_partition_filter_required = 'YES'
-  )
-GROUP BY 1, 2, 3, 4;
-```
-
-#### 7.2.10 Dataset Expiration Auditor
-
-```sql
-SELECT
-  catalog_name AS project_id,
-  schema_name AS dataset_id,
-  option_value AS default_table_expiration
-FROM
-  `region-us`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS
-WHERE
-  option_name = 'default_table_expiration_days'
-  AND option_value IS NULL;
-```
-
-#### 7.2.11 Data Skew Detector
-
-```sql
-WITH unnested_stages AS (
-  SELECT
-    job_id,
-    user_email,
-    total_slot_ms,
-    stage.name AS stage_name,
-    stage.compute_ms_avg AS avg_compute_ms,
-    stage.compute_ms_max AS max_compute_ms
-  FROM
-    `region-us`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION,
-    UNNEST(job_stages) AS stage
-  WHERE
-    creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
-    AND job_type = 'QUERY'
-)
-SELECT
-  job_id,
-  user_email,
-  stage_name,
-  avg_compute_ms,
-  max_compute_ms,
-  SAFE_DIVIDE(max_compute_ms, avg_compute_ms) AS skew_ratio
-FROM
-  unnested_stages
-WHERE
-  avg_compute_ms > 0
-  AND SAFE_DIVIDE(max_compute_ms, avg_compute_ms) > 10
-  AND max_compute_ms > 10000
-ORDER BY
-  skew_ratio DESC;
-```
-
-#### 7.2.12 Batch Candidate Detector
-
-```sql
-SELECT
-  job_id,
-  user_email,
-  priority,
-  total_slot_ms,
-  TIMESTAMP_DIFF(end_time, start_time, MINUTE) AS duration_minutes,
-  EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") AS run_hour_utc,
-  
-  CASE 
-    WHEN user_email LIKE '%.gserviceaccount.com' THEN 'Service Account'
-    WHEN TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5 THEN 'Long-Running ETL'
-    WHEN EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23 THEN 'Off-Peak Hours (US)'
-    ELSE 'Other'
-  END AS batch_candidate_reason
-
-FROM
-  `region-us`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-WHERE
-  job_type = 'QUERY'
-  AND priority = 'INTERACTIVE'
-  AND total_slot_ms > 10000
-  
-  AND (
-    user_email LIKE '%.gserviceaccount.com'
-    OR TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5
-    OR EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23
-  )
-ORDER BY
-  total_slot_ms DESC
-LIMIT 100;
-```
-
-
-
-### 7.3 Security Considerations: SQL Injection Risk
-- **Problem:** The application uses direct string interpolation for project IDs and regions in SQL queries (e.g., `FROM \`{target_project}\`.\`{params.region}\`.INFORMATION_SCHEMA...`).
-- **Requirement:** Implement strict whitelist validation or regex checks for `region` and `org_project_id` in Pydantic models to ensure they only contain valid characters (alphanumeric, hyphens, underscores) and no SQL control characters.
+All extraction logic, aggregations, and formatting are handled programmatically within the Python backend. To guarantee security, all dynamic inputs (such as project IDs and regions) are strictly validated and passed through parameterized execution functions to prevent SQL injection risks.
 
 ---
 
@@ -668,7 +369,7 @@ gcloud run deploy ${APP_NAME} \
 
 ## 9. Future roadmap
 
-All planned and future modules have been moved to [ROADMAP.MD](./ROADMAP.MD).
+*Roadmap is currently maintained internally.*
 
 ---
 
@@ -686,12 +387,8 @@ Based on the analysis of common query troubleshooting patterns, the following "q
 *   **Implementation:** Query `BiEngineStatistics` to find `BiEngineReason` for partial/no acceleration.
 *   **Value:** Guides users to optimize memory or query structure for better performance and cost.
 
-### 10.3 Proactive Resource Warning Scanner `[STATUS: IMPLEMENTED]`
-*   **Objective:** Catch queries approaching complexity or resource limits.
-*   **Implementation:** Query `query_info.resource_warning` in `INFORMATION_SCHEMA.JOBS`.
-*   **Value:** Prevents query failures by refactoring complex queries early.
 
-_Additional quick wins (10.4–10.6) have been moved to [ROADMAP.MD](./ROADMAP.MD)._
+
 
 ## 11. Guardrails and Risk Mitigation (Self-Inflicted Costs)
 
