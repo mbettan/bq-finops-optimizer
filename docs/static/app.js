@@ -2623,6 +2623,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const attributions = data.attributions || data; // backward compat
                 const scope = data.scope;
                 renderCostAttributionResults(attributions);
+                safeSetLocalStorage('bq_cost_attribution_results', JSON.stringify(data));
                 if (scope && scope.mode === 'focused' && scope.total_org_projects) {
                     showNotification(`Cost attribution calculated — showing ${scope.projects.length} of ${scope.total_org_projects} projects (waste computed over full org).`, 'success');
                 } else {
@@ -2902,16 +2903,40 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             } else {
                 div.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Disabled.`;
                 if (item.ddl) {
-                    const ddlDiv = document.createElement('div');
-                    ddlDiv.style.marginTop = '0.25rem';
-                    ddlDiv.style.padding = '0.5rem';
+                    const ddlContainer = document.createElement('div');
+                    ddlContainer.style.marginTop = '0.5rem';
+                    ddlContainer.style.display = 'flex';
+                    ddlContainer.style.alignItems = 'flex-start';
+                    ddlContainer.style.gap = '0.5rem';
+                    
+                    const ddlDiv = document.createElement('textarea');
+                    ddlDiv.readOnly = true;
+                    ddlDiv.style.flex = '1';
+                    ddlDiv.style.height = '40px';
                     ddlDiv.style.background = 'rgba(15, 23, 42, 0.5)';
                     ddlDiv.style.border = '1px solid rgba(255, 255, 255, 0.1)';
                     ddlDiv.style.borderRadius = '0.25rem';
+                    ddlDiv.style.color = '#e2e8f0';
                     ddlDiv.style.fontFamily = 'monospace';
-                    ddlDiv.style.fontSize = '0.8rem';
-                    ddlDiv.textContent = item.ddl;
-                    div.appendChild(ddlDiv);
+                    ddlDiv.style.fontSize = '0.85rem';
+                    ddlDiv.style.padding = '0.5rem';
+                    ddlDiv.style.resize = 'none';
+                    ddlDiv.value = item.ddl;
+
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'btn-action';
+                    copyBtn.textContent = 'Copy';
+                    copyBtn.title = 'Copy DDL';
+                    copyBtn.addEventListener('click', () => {
+                        navigator.clipboard.writeText(item.ddl).then(() => {
+                            copyBtn.textContent = 'Copied!';
+                            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+                        });
+                    });
+
+                    ddlContainer.appendChild(ddlDiv);
+                    ddlContainer.appendChild(copyBtn);
+                    div.appendChild(ddlContainer);
                 }
             }
             list.appendChild(div);
@@ -3860,6 +3885,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         try {
             renderMvRejectionResults(JSON.parse(cachedMvRejectionResults));
         } catch (e) { console.warn("Failed to parse cached MV rejection results", e); }
+    }
+
+    const cachedCostAttributionResults = localStorage.getItem('bq_cost_attribution_results');
+    if (cachedCostAttributionResults) {
+        try {
+            const parsedData = JSON.parse(cachedCostAttributionResults);
+            const attributions = parsedData.attributions || parsedData;
+            renderCostAttributionResults(attributions);
+        } catch (e) { console.warn("Failed to parse cached cost attribution results", e); }
     }
 
     const cachedWarningResults = localStorage.getItem('bq_resource_warning_results');

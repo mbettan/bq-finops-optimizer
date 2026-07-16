@@ -258,7 +258,15 @@
               </div>
             </details>
 
-
+            <details class="nav-hub" open>
+              <summary>
+                <i class="fa-solid fa-cubes" style="font-size: 0.7rem;"></i>
+                Schema
+              </summary>
+              <div class="nav-hub__items">
+                <a href="#schema-optimizer" class="nav-link" id="nav-schema-optimizer">Schema Optimizer</a>
+              </div>
+            </details>
 
             <details class="nav-hub" open>
               <summary>
@@ -353,6 +361,10 @@
                     <div class="info-item">
                         <span class="label">Region:</span>
                         <span class="value" id="current-region">region-us</span>
+                    </div>
+                    <div class="info-item" id="scope-badge-container" style="display: none;">
+                        <span class="label">Scope:</span>
+                        <span class="value" id="scope-badge" style="color: var(--accent-primary); font-weight: 600;"></span>
                     </div>
 
                 </div>
@@ -503,8 +515,14 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-connection-name">BigQuery Connection Name <span class="tooltip" data-tooltip="The Cloud Resource connection used to call Vertex AI."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <input type="text" id="cfg-connection-name" placeholder="e.g. gemini">
+                                <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 200 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="number" id="cfg-max-bytes-billed" placeholder="200" min="1" max="10240" step="50">
+                                <small>Default: 200 GiB — increase for large orgs (max 10 TiB)</small>
+                            </div>
+                            <div class="form-group" style="grid-column: 1 / -1;">
+                                <label for="cfg-focus-projects">Focus Projects <span class="tooltip" data-tooltip="Comma-separated list of GCP project IDs to limit the analysis scope. When set, only data from these projects will be included in all queries. Leave empty for org-wide analysis."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-focus-projects" placeholder="e.g. project-a, project-b, project-c">
+                                <small>Optional — leave empty for full org-wide analysis</small>
                             </div>
                         </div>
                         <button id="save-settings-btn" class="btn-primary">Save Config</button>
@@ -513,7 +531,8 @@
 
                 <!-- Storage Optimizer View -->
                 <section id="view-storage" class="view" data-view="storage">
-                    <h1 class="view-title">Storage cost optimizer</h1>
+                    <h1 class="view-title">Storage cost optimizer <span class="scope-indicator"></span></h1>
+                    <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Note: This analysis evaluates physical vs logical billing specifically for <strong>BASE TABLE</strong> storage (excluding materialized views and external tables).</p>
                     
                     <div class="glass-card params-panel">
                         <h2>Pricing & parameters</h2>
@@ -624,6 +643,41 @@
                             </table>
                         </div>
                     </div>
+                </section>
+
+                <!-- Schema Optimizer View -->
+                <section id="view-schema-optimizer" class="view" data-view="schema-optimizer">
+                    <h1 class="view-title">Schema Optimizer <span class="scope-indicator"></span></h1>
+                    <p class="view-subtitle" style="margin-bottom: 1.5rem; color: var(--text-secondary);"><i class="fa-solid fa-circle-info" style="margin-right: 0.5rem;"></i>Partitioning and clustering recommendations from two complementary engines: Google Active Assist (compute-optimized) and our Static Schema Auditor (bytes-scanned-optimized).</p>
+
+                    <!-- Educational Section: Methodology & Scope -->
+                    <div class="glass-card" style="background: rgba(15, 23, 42, 0.4); border: 1px dashed rgba(255, 255, 255, 0.15);">
+                        <h2 style="margin: 0 0 1rem 0; font-size: 1.1rem; color: #f1f5f9; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fa-solid fa-graduation-cap" style="color: #a78bfa;"></i> Methodology &amp; Scope: A Complementary Approach
+                        </h2>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; font-size: 0.9rem;">
+                            <!-- Active Assist -->
+                            <div style="padding: 1rem; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px;">
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8; display: flex; align-items: center; gap: 0.5rem;">
+                                    <i class="fa-solid fa-wand-magic-sparkles"></i> Active Assist (Dynamic)
+                                </h3>
+                                <p style="color: #cbd5e1; margin-bottom: 0.75rem;"><strong>Optimizes for Compute (Slot-ms).</strong> Analyzes the last 30 days of query history to calculate the net compute savings of clustering/partitioning.</p>
+                                <div style="padding: 0.5rem; background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; color: #bae6fd; font-size: 0.85rem;">
+                                    <strong><i class="fa-solid fa-circle-info"></i> Methodology:</strong> Active Assist is designed to optimize for net compute efficiency. It may intentionally suppress recommendations for tables with heavy daily DML (inserts/updates) if estimated background maintenance costs outweigh the expected read savings.
+                                </div>
+                            </div>
+                            <!-- Static Schema Auditor -->
+                            <div style="padding: 1rem; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px;">
+                                <h3 style="margin: 0 0 0.5rem 0; color: #10b981; display: flex; align-items: center; gap: 0.5rem;">
+                                    <i class="fa-solid fa-shield-halved"></i> Static Guardrail (Structural)
+                                </h3>
+                                <p style="color: #cbd5e1; margin-bottom: 0.75rem;"><strong>Optimizes for Storage &amp; On-Demand Costs (Bytes Scanned).</strong> Performs a structural analysis of tables &gt;1GB to enforce clustering/partitioning best practices.</p>
+                                <div style="padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-left: 3px solid #10b981; color: #6ee7b7; font-size: 0.85rem;">
+                                    <strong><i class="fa-solid fa-handshake"></i> Better Together:</strong> Complements Active Assist by serving as a structural safety net for tables undergoing heavy DML. Essential for preventing On-Demand cost spikes during migration.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
                     <!-- Google Active Assist Recommender Section -->
                     <div class="glass-card active-assist-panel" style="margin-top: 2.5rem;">
@@ -693,7 +747,7 @@
 
                 <!-- Compute / Jobs View -->
                 <section id="view-jobs" class="view" data-view="jobs">
-                    <h1 class="view-title">Query cost & routing optimization</h1>
+                    <h1 class="view-title">Query cost & routing optimization <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -823,7 +877,10 @@
                     <div class="glass-card results-panel">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                             <h2 style="margin: 0;">Top Inefficient Queries</h2>
-                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <div style="display: flex; align-items: center; gap: 1rem; margin-top: 0.25rem;">
+                                <label style="font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); display: flex; align-items: center; gap: 0.35rem; cursor: pointer; user-select: none;">
+                                    <input type="checkbox" id="hide-optimized-jobs" checked style="cursor: pointer; width: 14px; height: 14px;"> Hide Optimized Workloads
+                                </label>
                                 <label for="profile-filter" style="font-size: 0.8rem; font-weight: 500; color: var(--text-secondary);">Profile:</label>
                                 <select id="profile-filter" style="background: hsl(var(--input)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-sm); padding: 0.375rem 0.5rem; color: var(--text-primary); font-size: 0.85rem;">
                                     <option value="">All Types</option>
@@ -857,7 +914,7 @@
 
                 <!-- Slots Optimizer View -->
                 <section id="view-slots" class="view" data-view="slots">
-                    <h1 class="view-title">Slots autoscaler optimizer</h1>
+                    <h1 class="view-title">Slots autoscaler optimizer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card" style="margin-bottom: 1.5rem; padding: 1.5rem;">
                         <h3 style="margin-top: 0; color: #60a5fa;">Understanding slot recommendations</h3>
@@ -1153,7 +1210,7 @@
 
 <!-- Fluid Scaling Estimate View -->
 <section id="view-fluid-scaling" class="view" data-view="fluid-scaling">
-  <h1 class="view-title">Fluid scaling</h1>
+  <h1 class="view-title">Fluid scaling <span class="scope-indicator"></span></h1>
   <p class="view-subtitle">Estimate savings from enabling Fluid Scaling (per-second billing).</p>
 
   <div class="glass-card section-explanation" style="margin-bottom: 1.5rem; padding: 1.5rem;">
@@ -1313,7 +1370,7 @@
 
                 <!-- Slots Simulator View -->
                 <section id="view-slots-simulator" class="view" data-view="slots-simulator">
-                    <h1 class="view-title">Edition Matrix Simulation</h1>
+                    <h1 class="view-title">Edition Matrix Simulation <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card params-panel">
                         <h2>Simulation parameters</h2>
@@ -1486,7 +1543,7 @@
 
                 <!-- Cost Attribution View -->
                 <section id="view-cost-attribution" class="view" data-view="cost-attribution">
-                    <h1 class="view-title">Cost attribution</h1>
+                    <h1 class="view-title">Cost attribution <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1603,7 +1660,7 @@
 
                 <!-- Workload Profiler View -->
                 <section id="view-profiler" class="view" data-view="profiler">
-                    <h1 class="view-title">Workload profiler</h1>
+                    <h1 class="view-title">Workload profiler <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1756,7 +1813,7 @@
 
                 <!-- Top Spenders View -->
                 <section id="view-users" class="view" data-view="users">
-                    <h1 class="view-title">Top Spenders</h1>
+                    <h1 class="view-title">Top Spenders <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1811,7 +1868,7 @@
 
                 <!-- HBO Analyzer View -->
                 <section id="view-hbo" class="view" data-view="hbo">
-                    <h1 class="view-title">History-Based Optimization (HBO) Analyzer</h1>
+                    <h1 class="view-title">History-Based Optimization (HBO) Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -1912,7 +1969,7 @@
 
                 <!-- Storage Hygiene View -->
                 <section id="view-storage-hygiene" class="view" data-view="storage-hygiene">
-                    <h1 class="view-title">Storage Hygiene & Time Travel Auditor</h1>
+                    <h1 class="view-title">Storage Hygiene & Time Travel Auditor <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2012,7 +2069,7 @@
 
                 <!-- Anti-Patterns View -->
                 <section id="view-antipatterns" class="view" data-view="antipatterns">
-                    <h1 class="view-title">Architectural Anti-Pattern Scanner</h1>
+                    <h1 class="view-title">Architectural Anti-Pattern Scanner <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2040,13 +2097,7 @@
                         </div>
                     </div>
                     
-                    <div class="glass-card params-panel" style="margin-bottom: 2rem;">
-                        <h2>Scanner parameters</h2>
-                        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-                            Uses global settings for Project and Region. Lookback is fixed to 1 day as per anti-pattern definition.
-                        </p>
-                        <button id="analyze-antipatterns-btn" class="btn-primary">Run Anti-Pattern Scan</button>
-                    </div>
+
 
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(245, 158, 11, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2064,7 +2115,10 @@
                     </div>
 
                     <div class="glass-card results-panel mb-8">
-                        <h2>Query Optimization Opportunities</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Query Optimization Opportunities</h2>
+                            <button id="analyze-linter-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table identifies expensive queries (>100 GB scanned) using inefficient patterns. Each row shows the impact, root cause, and suggested fix.
                         </p>
@@ -2090,7 +2144,15 @@
                     </div>
 
                     <div class="glass-card results-panel">
-                        <h2>Flagged Users (DML Abuse)</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem;">
+                                <div>
+                                    <h2 style="margin: 0;">High-Frequency Ingestion Cost Auditor</h2>
+                                    <p style="margin: 0.25rem 0 0 0; font-size: 0.8rem; color: var(--text-secondary); max-width: 750px; line-height: 1.4;">
+                                        Audits data ingestion pipelines for compute waste. Identifies service accounts running high-frequency SQL <code>INSERT</code> statements. Migrating these to the modern <strong>Storage Write API</strong> consumes zero query slots and cuts streaming costs by 50%.
+                                    </p>
+                                </div>
+                                <button id="analyze-dml-btn" class="btn-primary btn-sm" style="margin-top: 0.25rem;">Run scan</button>
+                            </div>
                         <div class="table-responsive">
                             <table id="antipatterns-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -2111,7 +2173,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Materialized View Refresh Costs</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Materialized View Refresh Costs</h2>
+                            <button id="analyze-mv-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table shows the compute cost (slot hours) consumed by background refreshes for each Materialized View. High refresh costs with low query usage indicate waste.
                         </p>
@@ -2134,7 +2199,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Data Skew Candidates</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Data Skew Candidates</h2>
+                            <button id="analyze-skew-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists jobs where a single worker node took 10x longer than average to process data, indicating unbalanced joins or grouping keys.
                         </p>
@@ -2159,7 +2227,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Interactive vs. Batch Candidates</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Interactive vs. Batch Candidates</h2>
+                            <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists heavy queries running with <code>INTERACTIVE</code> priority that are candidates for <code>BATCH</code> priority.
                         </p>
@@ -2183,7 +2254,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Datasets Missing Expiration Policy</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Datasets Missing Expiration Policy</h2>
+                            <button id="analyze-expiration-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             Temporary, dev, and sandbox datasets without expiration rules are one of the biggest sources of passive storage waste.
                         </p>
@@ -2204,7 +2278,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Partitioned Tables Missing Filter Guardrail</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Partitioned Tables Missing Filter Guardrail</h2>
+                            <button id="analyze-filter-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             If "Require Partition Filter" is off, users will accidentally run full-table scans on massive tables instead of filtering by date.
                         </p>
@@ -2226,7 +2303,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Materialized View Rejections</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Materialized View Rejections</h2>
+                            <button id="analyze-mv-rejections-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists queries where a Materialized View was considered but rejected by the optimizer.
                         </p>
@@ -2248,7 +2328,10 @@
                     </div>
 
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
-                        <h2>Proactive Resource Warnings</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Proactive Resource Warnings</h2>
+                            <button id="analyze-warnings-btn" class="btn-primary btn-sm">Run scan</button>
+                        </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists queries that triggered resource warnings (e.g., approaching limits).
                         </p>
@@ -2271,7 +2354,7 @@
 
                 <!-- Performance Insights View -->
                 <section id="view-performance-insights" class="view" data-view="performance-insights">
-                    <h1 class="view-title">BigQuery Execution Insights</h1>
+                    <h1 class="view-title">BigQuery Execution Insights <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2377,7 +2460,7 @@
 
                 <!-- BI Optimizer View -->
                 <section id="view-bi-optimizer" class="view" data-view="bi-optimizer">
-                    <h1 class="view-title">BI Engine ROI & Cache Miss Analyzer</h1>
+                    <h1 class="view-title">BI Engine ROI & Cache Miss Analyzer <span class="scope-indicator"></span></h1>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2449,7 +2532,40 @@
 
                 <!-- AI Doctor View -->
                 <section id="view-ai-reviewer" class="view" data-view="ai-reviewer">
-                    <h1 class="view-title">AI Doctor</h1>
+                    <h1 class="view-title">AI Doctor <span class="scope-indicator"></span></h1>
+                    <!-- Collapsible Detailed Learn More Drawer -->
+                    <div id="ddl-learn-more-drawer" class="glass-card" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(255, 255, 255, 0.08); padding: 1.5rem; background: rgba(15, 23, 42, 0.3);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 0.5rem;">
+                            <h3 style="margin: 0; color: #38bdf8; font-size: 1.05rem;"><i class="fa-solid fa-shield-halved"></i> Data Handling & Privacy Disclosure</h3>
+                            <button id="ddl-learn-more-close" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.2rem; padding: 0;"><i class="fa-solid fa-times"></i></button>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                            <div>
+                                <h4 style="color: var(--text-primary); margin: 0 0 0.5rem 0; font-size: 0.95rem;">Data Handling & Residency</h4>
+                                <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
+                                    <li><strong>What is sent:</strong> Query SQL text and the DDL structure of referenced tables (column names, types, partitioning, and descriptions).</li>
+                                    <li><strong>Where it goes:</strong> The configured remote model endpoint. Processing location is governed by your Vertex AI remote model location, <strong>not</strong> by your table location. An EU table does not guarantee EU LLM processing.</li>
+                                    <li><strong>What is NOT sent:</strong> <strong style="color: #38bdf8;">Row-level data is NEVER read, queried, or transmitted.</strong> Only structural metadata is sent.</li>
+                                    <li><strong>Retention:</strong> Subject to standard Vertex AI data governance agreements.</li>
+                                </ul>
+                            </div>
+                            <div>
+                                <h4 style="color: var(--text-primary); margin: 0 0 0.5rem 0; font-size: 0.95rem;">IAM & Permissions Disclosure</h4>
+                                <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin: 0 0 0.75rem 0;">
+                                    Enabling schema context requires the executing service account/identity to hold:
+                                </p>
+                                <code style="display: block; background: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; color: #a5f3fc; line-height: 1.4; margin-bottom: 0.5rem; font-family: monospace;">
+                                    - bigquery.tables.get<br>
+                                    - bigquery.tables.list<br>
+                                    - bigquery.jobs.listAll (if auditing other users)
+                                </code>
+                                <p style="color: #f59e0b; font-size: 0.8rem; line-height: 1.4; margin: 0;">
+                                    <i class="fa-solid fa-circle-exclamation"></i> <strong>Admin Note:</strong> Treat the shared service account as having broad metadata-read access across the project and scope permissions accordingly.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
                     
                     <div class="glass-card info-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
@@ -2461,9 +2577,10 @@
                                 </p>
                                 <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 1rem;">
                                     <strong>Prerequisites:</strong>
-                                    <ul style="margin-top: 0.5rem; padding-left: 1.5rem; color: var(--text-secondary);">
-                                        <li>Configure your <strong>GCP Project ID</strong> and <strong>BigQuery Connection Name</strong> in the Global Settings panel.</li>
-                                        <li>Ensure that you have granted the <strong>Vertex AI User</strong> role to your BigQuery connection service account (format: <code>bqcx-PROJECT_NUMBER-XYZ@gcp-sa-bigquery-condel.iam.gserviceaccount.com</code>) following the <a href="https://docs.cloud.google.com/bigquery/docs/permissions-for-ai-functions" target="_blank" style="color: #38bdf8; text-decoration: underline;">Google Cloud Documentation</a>.</li>
+                                    <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
+                                        <li>Configure your <strong>GCP Project ID</strong> in the Global Settings panel.</li>
+                                        <li>No remote model or connection setup is required! The query runs serverlessly using your own GCP user credentials.</li>
+                                        <li>Your authenticated GCP account (or Cloud Run service account) must have the <strong>Vertex AI User</strong> (<code>roles/aiplatform.user</code>) role assigned on the project.</li>
                                     </ul>
                                 </div>
                                 
@@ -2483,18 +2600,10 @@
                         <h2>AI Analysis Parameters</h2>
                         
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem; line-height: 1.5;">
-                            Uses the <strong>BigQuery Connection Name</strong> from settings to audit your most expensive queries (Top 5, 10, or 20) based on slot usage. Gemini audits only these top queries for performance anti-patterns; perfectly optimized queries are automatically filtered out so you only see actionable recommendations.
+                            Audits your most expensive queries (Top 5, 10, or 20) based on slot usage. Gemini audits only these top queries for performance anti-patterns; perfectly optimized queries are automatically filtered out so you only see actionable recommendations.
                         </p>
                         
-                        <div style="margin-bottom: 1.5rem; display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 1rem;">
-                            <div>
-                                <label for="ai-model-endpoint" style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Select AI Model:</label>
-                                <select id="ai-model-endpoint" class="input-field" style="width: 100%; padding: 0.75rem; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.5rem; color: white; cursor: pointer;">
-                                    <option value="gemini-3.1-flash-lite" selected>Gemini 3.1 Flash Lite (Fast &amp; Cheap)</option>
-                                    <option value="gemini-3.5-flash">Gemini 3.5 Flash (Balanced)</option>
-                                    <option value="gemini-2.5-pro">Gemini 2.5 Pro (Deep Reasoning)</option>
-                                </select>
-                            </div>
+                        <div style="margin-bottom: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                             <div>
                                 <label for="ai-limit" style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Analyze Top N Queries:</label>
                                 <select id="ai-limit" class="input-field" style="width: 100%; padding: 0.75rem; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.5rem; color: white; cursor: pointer;">
@@ -2553,6 +2662,57 @@
             <p><i class="fa-solid fa-circle-exclamation" style="margin-right: 6px; color: #f59e0b;"></i> BQ FinOps Optimizer can make mistakes. Consider double-checking its responses.</p>
         </div>
     </footer>
+
+    <!-- Pre-Run Consent Modal (Blocking) -->
+    <div id="ddl-consent-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(8px); z-index: 10000; align-items: center; justify-content: center;">
+        <div class="glass-card modal-content" style="max-width: 600px; width: 90%; padding: 2rem; border: 1px solid rgba(245, 158, 11, 0.4); background: rgba(30, 41, 59, 0.95); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); border-radius: 12px;">
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                <i class="fa-solid fa-triangle-exclamation" style="color: #f59e0b; font-size: 2rem;"></i>
+                <h2 style="margin: 0; color: #f59e0b; font-size: 1.3rem; font-weight: 600;">Data Access &amp; Security Consent</h2>
+            </div>
+            
+            <p style="color: var(--text-primary); font-weight: 600; margin-bottom: 0.75rem; font-size: 0.95rem;">
+                ⚠️ Schema Context Will Be Sent to Vertex AI
+            </p>
+            
+            <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.6; margin-bottom: 1rem;">
+                To provide deeper, metadata-aware optimization advice (like checking partition and cluster keys), this tool reads the <strong>DDL (table definitions)</strong> of tables referenced in your queries and includes them in prompts sent to Vertex AI.
+            </p>
+            
+            <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
+                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0 0 0.5rem 0;">
+                    <strong>DDLs may contain sensitive information, including:</strong>
+                </p>
+                <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5;">
+                    <li>Column names revealing business logic or data structure</li>
+                    <li>Table/column descriptions and comments (<code>OPTIONS</code>)</li>
+                    <li>Partitioning and clustering strategies</li>
+                </ul>
+            </div>
+            
+            <div style="background: rgba(56, 189, 248, 0.08); border-left: 4px solid #38bdf8; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
+                <p style="color: #38bdf8; font-size: 0.8rem; font-weight: 600; margin: 0;">
+                    <i class="fa-solid fa-shield-halved"></i> Reassurance: Row-level data is NEVER read, processed, or transmitted. Only structural metadata and query text are analyzed.
+                </p>
+            </div>
+            
+            <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 1.25rem;">
+                By proceeding, you confirm you are authorized to send this metadata to Vertex AI. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
+            </p>
+            
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem;">
+                <input type="checkbox" id="ddl-consent-checkbox" style="width: 18px; height: 18px; cursor: pointer;">
+                <label for="ddl-consent-checkbox" style="color: var(--text-primary); font-size: 0.85rem; font-weight: 500; cursor: pointer; user-select: none;">
+                    I understand and have the authority to proceed.
+                </label>
+            </div>
+            
+            <div style="display: flex; justify-content: flex-end; gap: 1rem;">
+                <button id="ddl-consent-cancel" class="btn-secondary" style="padding: 0.5rem 1.2rem; font-size: 0.85rem; border-radius: 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: white; cursor: pointer;">Cancel</button>
+                <button id="ddl-consent-proceed" class="btn-primary" style="padding: 0.5rem 1.2rem; font-size: 0.85rem; border-radius: 6px; background: #f59e0b; border: 1px solid #f59e0b; color: #0f172a; cursor: pointer; font-weight: 600;" disabled>Proceed</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Notification Container -->
     <div id="notification-container"></div>
