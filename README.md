@@ -138,16 +138,19 @@ pip install -r requirements-dev.txt   # pytest, pytest-cov
 ```
 
 ### 2. Run the Server
-This service has no application-level authentication — every endpoint can
-return org-wide BigQuery job text, user emails, and project identifiers. It
-refuses to start unless `AUTH_ENFORCED_UPSTREAM=true` is set, as a reminder
-that it **must** run behind Cloud Run IAM (`--no-allow-unauthenticated`) or
-Identity-Aware Proxy (IAP) in any shared/deployed environment. For local,
-single-user development behind your own machine's network boundary:
+
+> **⚠️ IMPORTANT: The app will refuse to start without the `AUTH_ENFORCED_UPSTREAM=true` environment variable.**
+>
+> This is a security guardrail — the service exposes org-wide BigQuery metadata (query text, user emails, project identifiers) with no application-level authentication. It **must** run behind Cloud Run IAM (`--no-allow-unauthenticated`) or Identity-Aware Proxy (IAP) in any shared/deployed environment. Setting this variable confirms you understand this.
+
 ```bash
+# Option A: Inline (recommended for quick local runs)
 AUTH_ENFORCED_UPSTREAM=true uvicorn src.main:app --reload --port 8080
+
+# Option B: Add to .env file (loaded automatically on every start)
+echo 'AUTH_ENFORCED_UPSTREAM=true' >> .env
+uvicorn src.main:app --reload --port 8080
 ```
-(or add `AUTH_ENFORCED_UPSTREAM=true` to your `.env` file, which is loaded automatically).
 
 Open your browser to [http://127.0.0.1:8080](http://127.0.0.1:8080) to view the interface.
 
@@ -157,7 +160,6 @@ In the browser, open the **Settings** panel (gear icon) and set:
 *   **Region**: The BigQuery region to analyze (e.g., `us-east4`).
 *   **Focus Projects** *(optional)*: A comma-separated list of up to 50 specific project IDs to scope the analysis. When set, all org-level endpoints filter queries to only those projects using parameterized `IN UNNEST(@focus_projects)` clauses. When empty, the full organization is analyzed.
 *   **Max Bytes Billed (GiB)**: Safety cap for query costs (default: 200 GiB, max: 10 TiB). Applied to every single BigQuery query execution, including fluid scaling status checks.
-*   **Connection Name** *(optional)*: A BigQuery Cloud Resource Connection for AI Doctor (e.g., `us.vertexai`). Leave empty to use end-user credentials.
 
 **Input Validation:** All project ID fields are validated on save against the GCP project ID specification (`^[a-z][a-z0-9\-]{5,29}$`). Whitespace is stripped automatically (handles bad copy-paste). Invalid values block the save and show specific error messages. When settings change, all cached module results are flushed from `localStorage` to prevent stale data from a previous scope.
 
@@ -338,10 +340,10 @@ Startup logs (emitted before any request) show `[--------]` as the request ID.
 
 ```bash
 # Normal operation (default) — shows progress, timing, BQ URLs
-uvicorn src.main:app --reload
+AUTH_ENFORCED_UPSTREAM=true uvicorn src.main:app --reload
 
 # Troubleshooting — also shows full SQL for every query
-LOG_LEVEL=DEBUG uvicorn src.main:app --reload
+AUTH_ENFORCED_UPSTREAM=true LOG_LEVEL=DEBUG uvicorn src.main:app --reload
 ```
 
 ---
