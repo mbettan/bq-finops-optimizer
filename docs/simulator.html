@@ -128,12 +128,12 @@
                 if (urlStr.includes('/api/about')) {
                     return new Response(JSON.stringify({
                         "name": "BigQuery FinOps Optimizer",
-                        "version": "1.2.0",
+                        "version": "1.2.1",
                         "release_date": "July 2026",
                         "repo_url": "https://github.com/mbettan/bq-finops-optimizer",
                         "changelog_url": "https://github.com/mbettan/bq-finops-optimizer/blob/main/RELEASE_NOTES.md",
                         "demo_url": "https://mbettan.github.io/bq-finops-optimizer/simulator.html",
-                        "releases": [{"version": "1.2.0", "release_date": "July 2026", "highlights": ["Simulator Mode"]}]
+                        "releases": [{"version": "1.2.1", "release_date": "July 2026", "highlights": ["AI Doctor UI Terminology Update", "AI Doctor Strict 0-DDL Frontend Handling", "AI Doctor Project Scan Performance", "AI Doctor System View 403 Access Denied"]}, {"version": "1.2.0", "release_date": "July 2026", "highlights": ["Simulator Mode"]}]
                     }), {
                         status: 200,
                         headers: { 'Content-Type': 'application/json' }
@@ -246,6 +246,8 @@
               <i class="fa-solid fa-chart-pie"></i>
               <span>Dashboard</span>
             </a>
+            <!-- fix safari summary bug: non-display-none sibling -->
+            <span style="display: block; height: 0; margin: 0; padding: 0;"></span>
 
             <details class="nav-hub" open>
               <summary>
@@ -2600,7 +2602,7 @@
                         <h2>AI Analysis Parameters</h2>
                         
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem; line-height: 1.5;">
-                            Audits your most expensive queries (Top 5, 10, or 20) based on slot usage. Gemini audits only these top queries for performance anti-patterns; perfectly optimized queries are automatically filtered out so you only see actionable recommendations.
+                            Audits your most expensive queries (Top 5, 10, or 20) based on slot usage. The system dynamically over-fetches the highest-cost jobs from BigQuery, automatically filtering out queries containing deleted tables or system views that lack sufficient schema context, ensuring you only receive the precise number of valid, actionable recommendations you requested. Gemini then audits the final list for performance anti-patterns, hiding perfectly optimized queries.
                         </p>
                         
                         <div style="margin-bottom: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
@@ -2676,7 +2678,7 @@
             </p>
             
             <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.6; margin-bottom: 1rem;">
-                To provide deeper, metadata-aware optimization advice (like checking partition and cluster keys), this tool reads the <strong>DDL (table definitions)</strong> of tables referenced in your queries and includes them in prompts sent to Vertex AI.
+                To provide deeper, metadata-aware optimization advice (like checking partition and cluster keys), this tool reads the <strong>DDL (table definitions)</strong> of tables referenced in your queries and includes them in prompts sent to <a href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start" target="_blank" style="color: #38bdf8; text-decoration: underline;">Agent Platform</a>.
             </p>
             
             <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
@@ -2697,7 +2699,7 @@
             </div>
             
             <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 1.25rem;">
-                By proceeding, you confirm you are authorized to send this metadata to Vertex AI. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
+                By proceeding, you confirm you are authorized to send this metadata to Agent Platform. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
             </p>
             
             <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem;">

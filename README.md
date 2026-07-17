@@ -145,6 +145,7 @@ pip install -r requirements-dev.txt   # pytest, pytest-cov
 
 ```bash
 # Option A: Inline (recommended for quick local runs)
+source venv/bin/activate
 AUTH_ENFORCED_UPSTREAM=true uvicorn src.main:app --reload --port 8080
 
 # Option B: Add to .env file (loaded automatically on every start)
