@@ -33,7 +33,7 @@ import time
 import uuid
 
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -1568,12 +1568,7 @@ class AIResult(BaseModel):
     tables_found_count: int
 
 TABLE_PATTERN = re.compile(
-    r"\b(?:FROM|JOIN)\s+(?:"
-    r"`([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)`|"  # `project.dataset.table`
-    r"`([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)`|"                     # `dataset.table`
-    r"([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)|"     # project.dataset.table
-    r"([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)"                         # dataset.table
-    r")",
+    r"\b(?:FROM|JOIN)\s+((?:`?[a-zA-Z0-9_\-]+`?\.){1,3}`?[a-zA-Z0-9_\-]+`?)",
     re.IGNORECASE
 )
 
@@ -1584,15 +1579,17 @@ def extract_table_names(sql: str, default_project: str) -> List[str]:
     
     tables = []
     for match in TABLE_PATTERN.finditer(sql_clean):
-        groups = match.groups()
-        if groups[0] and groups[1] and groups[2]:
-            tables.append(f"{groups[0]}.{groups[1]}.{groups[2]}")
-        elif groups[3] and groups[4]:
-            tables.append(f"{default_project}.{groups[3]}.{groups[4]}")
-        elif groups[5] and groups[6] and groups[7]:
-            tables.append(f"{groups[5]}.{groups[6]}.{groups[7]}")
-        elif groups[8] and groups[9]:
-            tables.append(f"{default_project}.{groups[8]}.{groups[9]}")
+        raw_table = match.group(1)
+        # Normalize by stripping all backticks
+        clean_table = raw_table.replace("`", "")
+        parts = clean_table.split(".")
+        
+        if len(parts) in (3, 4):
+            # project.dataset.table or project.region.dataset.table
+            tables.append(clean_table)
+        elif len(parts) == 2:
+            # dataset.table -> prepend default project
+            tables.append(f"{default_project}.{clean_table}")
             
     seen = set()
     unique_tables = []
@@ -1626,7 +1623,7 @@ def analyze_ai_query(params: AIParams):
           {focus_clause}
         ORDER BY
           total_slot_ms DESC
-        LIMIT {params.limit}
+        LIMIT {params.limit * 5}
         """
         
         logger.info("Executing AI Query Discovery stage")
@@ -1647,6 +1644,7 @@ def analyze_ai_query(params: AIParams):
             SELECT job_id, query 
             FROM `{safe_pid}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
+            AND job_id IN UNNEST(@job_ids)
             """
             try:
                 q_results = run_query_and_log(
@@ -1692,6 +1690,9 @@ def analyze_ai_query(params: AIParams):
             parts = table_ref.split('.')
             if len(parts) == 3:
                 p, d, t = parts
+                # System views do not have schemas in INFORMATION_SCHEMA.TABLES, skip them entirely
+                if d.upper() == 'INFORMATION_SCHEMA':
+                    continue
                 if p not in tables_by_project:
                     tables_by_project[p] = []
                 tables_by_project[p].append(f"{d}.{t}")
@@ -1829,6 +1830,10 @@ def analyze_ai_query(params: AIParams):
                 f"If the query is perfectly optimized, reply exactly with \"NO_ANTI_PATTERNS_FOUND\"."
             )
             
+            # Skip this query if we couldn't fetch DDLs for ANY of its referenced tables (e.g., deleted tables or system views)
+            if tables_referenced_count > 0 and tables_found_count == 0:
+                continue
+                
             audits_to_run.append({
                 "job_id": item["job_id"],
                 "user_email": item["user_email"],
@@ -1838,6 +1843,10 @@ def analyze_ai_query(params: AIParams):
                 "tables_found_count": tables_found_count,
                 "prompt_content": prompt_content
             })
+            
+            # Stop once we have reached the requested limit of valid queries
+            if len(audits_to_run) == params.limit:
+                break
             
         # Step 3: Chunk Audits & Execute Parameterized Queries (C1 & H2: Safety & Reliability)
         output = []

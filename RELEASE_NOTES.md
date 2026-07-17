@@ -2,6 +2,27 @@
 
 ---
 
+## v1.2.1 — 2026-07-17
+
+This release focuses on optimizing AI Doctor performance and addressing edge cases related to system queries and missing DDL schemas.
+
+### 🔑 Key Highlights
+
+#### 1. AI Doctor UI Terminology Update
+Replaced references to "Vertex AI" with "Agent Platform" in the frontend and linked to the official Gemini Enterprise Agent Platform documentation.
+
+#### 2. AI Doctor Strict 0-DDL Frontend Handling
+Improved empty-state clarity in the UI when the backend correctly filters out queries that solely interact with system tables or ML functions (like `INFORMATION_SCHEMA` or `AI.GENERATE_TEXT`) without physical DDL schemas.
+
+#### 3. AI Doctor Project Scan Performance
+Radically improved the secondary SQL extraction query speed (`JOBS_BY_PROJECT`) by enforcing `AND job_id IN UNNEST(@job_ids)` filtering, preventing it from performing full historical table scans across all project jobs.
+
+#### 4. AI Doctor System View 403 Access Denied
+Fixed a bug in the AI Doctor schema extraction engine where 3-part system queries (`region-us.INFORMATION_SCHEMA...`) tricked the table parser into treating the region as a project ID, resulting in 403 errors. `INFORMATION_SCHEMA` paths are now properly excluded from physical DDL lookups.
+
+
+---
+
 ## v1.2.0 — 2026-07-13
 
 This release consolidates multiple enhancements, security hardening updates, and critical bug fixes to ensure data correctness, cost safety compliance, and comprehensive org-wide auditing.
