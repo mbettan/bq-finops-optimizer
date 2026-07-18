@@ -2185,3 +2185,15 @@ th.num {
             padding: 2.5rem 1rem 1.25rem;
         }
 }
+/* Screen Reader Only (For SEO/Accessibility without breaking visual design) */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+}
