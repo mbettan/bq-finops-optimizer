@@ -1287,7 +1287,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (force) showNotification('Active Assist recommendations synced.', 'success');
         } catch (error) {
             console.warn('Failed to fetch Active Assist recommendations:', error);
-            if (force) showNotification('Failed to sync recommendations. Check organization permissions.', 'warning');
+            showNotification('Active Assist unavailable — BigQuery returned an internal error. Try again later.', 'warning');
+            // Show inline error in the results area so the user sees feedback
+            const tableEl = document.getElementById('active-assist-table');
+            if (tableEl) {
+                const tbody = tableEl.querySelector('tbody');
+                if (tbody) tbody.innerHTML = `<tr><td colspan="100%" style="text-align:center; color: #facc15; padding: 1.5rem;">
+                    <i class="fa-solid fa-triangle-exclamation" style="margin-right: 0.5rem;"></i>
+                    Active Assist recommendations could not be loaded. BigQuery encountered an internal error. Please retry.
+                </td></tr>`;
+            }
         } finally {
             if (btn) setLoading(btn, false);
         }
@@ -5441,6 +5450,7 @@ const FluidScaling = (() => {
     const text   = document.getElementById('fs-org-rec-text');
     const output = document.getElementById('fs-ddl-output');
     const container = document.getElementById('fs-ddl-container');
+    const builder = document.getElementById('fs-config-builder');
 
     if (!panel || !configStatus) return;
 
@@ -5451,13 +5461,111 @@ const FluidScaling = (() => {
       text.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80;"></i> Fluid Scaling is already enabled for all active reservations in this region. No action needed.`;
       if (container) container.style.display = 'none';
       if (output) output.value = '';
+      if (builder) builder.innerHTML = '';
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = 'none';
     } else {
       panel.style.borderColor = 'rgba(234, 179, 8, 0.5)'; // Yellow
       const missingList = configStatus.missing_reservations.join(', ');
-      text.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15;"></i> Fluid Scaling is NOT enabled for the following active reservations: <strong>${UIState.escapeHtml(missingList)}</strong>. We recommend enabling it to get per-second billing and avoid the 60-second cooldown window.`;
-      if (container && output) {
+      text.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15;"></i> Fluid Scaling is NOT enabled for the following active reservations: <strong>${UIState.escapeHtml(missingList)}</strong>. Select which reservations to include and copy the generated DDL.`;
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = '';
+
+      if (container && output && builder) {
         container.style.display = 'block';
-        output.value = configStatus.ddl || '';
+
+        // Read admin project / region from localStorage (same source as checkStatus)
+        const adminProject = localStorage.getItem('bq_admin_project') || localStorage.getItem('bq_org_project') || '';
+        const region = localStorage.getItem('bq_region') || 'region-us';
+        const regionNorm = region.startsWith('region-') ? region : 'region-' + region;
+
+        // Build reservation list: configured (pre-checked) + missing (unchecked)
+        const allReservations = [];
+        (configStatus.configured_reservations || []).forEach(r => allReservations.push({ name: r, enabled: true }));
+        (configStatus.missing_reservations || []).forEach(r => allReservations.push({ name: r, enabled: false }));
+        allReservations.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Regenerate DDL based on checked reservations
+        function regenerateDDL() {
+          const checked = [];
+          builder.querySelectorAll('input[type="checkbox"][data-res-name]').forEach(cb => {
+            if (cb.checked) checked.push(cb.dataset.resName);
+          });
+          checked.sort();
+          if (checked.length === 0) {
+            output.value = '-- No reservations selected';
+          } else {
+            const listStr = checked.map(r => `'${r}'`).join(', ');
+            output.value = `ALTER PROJECT \`${adminProject}\`\nSET OPTIONS (\n  \`${regionNorm}.preflight_fluid_autoscaling_reservations\` = [${listStr}]\n);`;
+          }
+        }
+
+        // Render checkbox table
+        let html = `<table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.15);">
+              <th style="padding: 0.5rem; text-align: left; width: 40px;">
+                <input type="checkbox" id="fs-select-all" title="Select / Deselect All"
+                  style="accent-color: #38bdf8; cursor: pointer; width: 16px; height: 16px;">
+              </th>
+              <th style="padding: 0.5rem; text-align: left; color: #94a3b8;">Reservation</th>
+              <th style="padding: 0.5rem; text-align: left; color: #94a3b8;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        allReservations.forEach(r => {
+          const statusColor = r.enabled ? '#4ade80' : '#64748b';
+          const statusIcon  = r.enabled ? 'fa-circle-check' : 'fa-circle-minus';
+          const statusText  = r.enabled ? 'Enabled' : 'Not Enabled';
+          html += `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.15s;"
+                onmouseenter="this.style.background='rgba(255,255,255,0.04)'"
+                onmouseleave="this.style.background='transparent'">
+              <td style="padding: 0.5rem;">
+                <input type="checkbox" data-res-name="${UIState.escapeHtml(r.name)}" ${r.enabled ? 'checked' : ''}
+                  style="accent-color: #38bdf8; cursor: pointer; width: 16px; height: 16px;">
+              </td>
+              <td style="padding: 0.5rem; color: #e2e8f0; font-family: monospace;">${UIState.escapeHtml(r.name)}</td>
+              <td style="padding: 0.5rem;">
+                <i class="fa-solid ${statusIcon}" style="color: ${statusColor}; margin-right: 0.3rem;"></i>
+                <span style="color: ${statusColor};">${statusText}</span>
+              </td>
+            </tr>`;
+        });
+
+        html += `</tbody></table>`;
+        builder.innerHTML = html;
+
+        // Wire up Select All and individual checkboxes
+        const selectAll = builder.querySelector('#fs-select-all');
+        const allBoxes = builder.querySelectorAll('input[data-res-name]');
+
+        // Pre-check all by default (user came here to enable missing ones)
+        allBoxes.forEach(cb => { cb.checked = true; });
+        if (selectAll) selectAll.checked = true;
+
+        function updateSelectAll() {
+          if (selectAll) selectAll.checked = Array.from(allBoxes).every(c => c.checked);
+        }
+
+        if (selectAll) {
+          selectAll.addEventListener('change', () => {
+            allBoxes.forEach(cb => { cb.checked = selectAll.checked; });
+            regenerateDDL();
+          });
+        }
+
+        allBoxes.forEach(cb => {
+          cb.addEventListener('change', () => {
+            updateSelectAll();
+            regenerateDDL();
+          });
+        });
+
+        // Generate initial DDL (all checked by default)
+        if (selectAll) selectAll.checked = true;
+        regenerateDDL();
       }
     }
   }
@@ -5823,20 +5931,30 @@ Router.register('fluid-scaling', {
       if (releasesContainer) {
         releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
           const isLatest = index === 0;
+          const showDate = release.version !== release.release_date;
           return `
             <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
                     <h3 style="margin: 0; font-size: 1.1rem; color: #38bdf8; ${isLatest ? '' : 'opacity: 0.8;'}">
                         ${isLatest ? '<i class="fa-solid fa-sparkles" style="margin-right: 0.5rem;"></i>' : ''}${release.version}
                     </h3>
-                    <span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>
+                    ${showDate ? `<span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>` : ''}
                 </div>
                 <ul style="list-style: none; padding: 0; margin: 0;">
-                    ${(release.highlights || []).map(h => 
-                        `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
-                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${h}
-                        </li>`
-                    ).join('')}
+                    ${(release.highlights || []).map(h => {
+                        // Bold and color-code [Tag] prefixes
+                        let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
+                            const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
+                            const c = colors[tag] || '#94a3b8';
+                            return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
+                        });
+                        // Convert markdown bold and inline code to HTML
+                        formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                        formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
+                        return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
+                        </li>`;
+                    }).join('')}
                 </ul>
             </div>
           `;

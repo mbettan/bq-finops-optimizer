@@ -49,7 +49,7 @@ import time
 import uuid
 
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -152,6 +152,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy third-party loggers even under LOG_LEVEL=DEBUG
+for _noisy in (
+    'urllib3', 'urllib3.connectionpool',
+    'google.auth', 'google.auth.transport',
+    'google.api_core', 'google.cloud',
+    'httpcore', 'httpx',
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 if _log_level <= logging.DEBUG:
     logger.warning(
         "LOG_LEVEL=DEBUG is active: full SQL text for every query — including "
@@ -250,11 +259,14 @@ def get_scope_map():
 def _parse_release_notes() -> dict:
     """Parse RELEASE_NOTES.md once at startup to build the About payload.
 
-    Extracts all releases and their highlights.
+    Supports the BQ-style date-based format:
+        ## July 21, 2026
+        **Feature** / **Fixed** / **Change** / **Security**
+
+    Extracts all dated sections and their tagged entries as highlights.
     """
     releases = []
     current_release = None
-    in_highlights_section = False
 
     rn_path = Path(__file__).resolve().parent.parent / "RELEASE_NOTES.md"
     try:
@@ -265,57 +277,62 @@ def _parse_release_notes() -> dict:
 
     lines = text.splitlines()
 
+    # Match date headings like "## July 21, 2026" or legacy "## v1.2.2 — 2026-07-21"
+    import re
+    date_heading_re = re.compile(
+        r"^##\s+"
+        r"(?:"
+        r"(?P<month>[A-Z][a-z]+)\s+(?P<day>\d{1,2}),\s+(?P<year>\d{4})(?:\s*—\s*v(?P<dver>[\d.]+))?"  # July 21, 2026 — v1.2.2
+        r"|"
+        r"v(?P<ver>[\d.]+)\s*—\s*(?P<date>.+)"                            # v1.2.2 — 2026-07-21
+        r")$"
+    )
+
     for line in lines:
         stripped = line.strip()
 
-        # Detect the version heading: ## v1.1.0 — 2026-07-08
-        if stripped.startswith("## v") and "—" in stripped:
+        m = date_heading_re.match(stripped)
+        if m:
             if current_release:
                 releases.append(current_release)
-            
-            parts = stripped.split("—", 1)
-            version = parts[0].replace("##", "").strip()
-            date_str = parts[1].strip() if len(parts) == 2 else "—"
-            
+
+            if m.group("ver"):
+                # Legacy format: ## v1.2.2 — 2026-07-21
+                version = m.group("ver")
+                date_str = m.group("date").strip()
+            else:
+                # BQ-style: ## July 21, 2026 — v1.2.2  (version is optional)
+                date_str = f'{m.group("month")} {m.group("day")}, {m.group("year")}'
+                version = m.group("dver")  # None if no version suffix
+
             current_release = {
-                "version": version.lstrip("v"),
+                "version": version,
                 "release_date": date_str,
                 "highlights": [],
-                "_has_highlights_section": False
             }
-            in_highlights_section = False
             continue
 
         if not current_release:
             continue
 
-        # Detect the Key Highlights subsection
+        # Legacy: Detect Key Highlights subsection with #### entries
         if stripped.startswith("### ") and "Key Highlights" in stripped:
-            in_highlights_section = True
-            current_release["_has_highlights_section"] = True
             continue
 
-        # If we're in highlights and hit the next ### section, stop collecting
-        if in_highlights_section and stripped.startswith("### "):
-            in_highlights_section = False
-            continue
-
-        # Collect #### N. Title lines inside Key Highlights
-        if in_highlights_section and stripped.startswith("#### "):
-            # Strip "#### ", the number prefix "N. ", and any leading emoji
-            title = stripped[5:]  # remove "#### "
-            # Remove leading "N. " pattern (e.g., "1. ", "12. ")
+        if stripped.startswith("#### "):
+            title = stripped[5:]
+            # Remove leading "N. " pattern
             if len(title) > 2 and title[0].isdigit():
                 dot_pos = title.find(". ")
                 if dot_pos != -1:
                     title = title[dot_pos + 2:]
-            # Strip leading emoji (1-2 code points + optional variation selector + space)
+            # Strip leading emoji
             cleaned = []
             skip_leading = True
             for ch in title:
                 if skip_leading and (
-                    unicodedata.category(ch).startswith("So")  # Symbol, other (emoji)
-                    or ch == "\ufe0f"  # variation selector
+                    unicodedata.category(ch).startswith("So")
+                    or ch == "\ufe0f"
                     or ch == " "
                 ):
                     continue
@@ -324,32 +341,48 @@ def _parse_release_notes() -> dict:
             title = "".join(cleaned).strip()
             if title:
                 current_release["highlights"].append(title)
+            continue
 
-        # Fallback: capture top-level bullet points for releases without Key Highlights
-        if (not current_release["_has_highlights_section"]
-                and stripped.startswith("* ")
-                and not stripped.startswith("*   **")):
-            title = stripped[2:].strip()
-            if title:
-                current_release["highlights"].append(title)
+        # BQ-style: bold tag on its own line (**Feature**, **Fixed**, etc.)
+        # Body follows on the next non-empty line.
+        _bq_tags = {"Feature", "Fixed", "Change", "Security", "Issue",
+                     "Announcement", "Breaking", "Deprecated"}
+        if stripped.startswith("**") and stripped.endswith("**") and stripped[2:-2] in _bq_tags:
+            # Store the tag; grab body from the next line
+            current_release.setdefault("_pending_tag", stripped[2:-2])
+            continue
+
+        # If we have a pending tag, the current line is the body
+        if current_release.get("_pending_tag") and stripped:
+            tag = current_release.pop("_pending_tag")
+            # Take first sentence for the highlight
+            dot_pos = stripped.find(". ")
+            summary = stripped[:dot_pos + 1] if dot_pos != -1 else stripped.rstrip(".")
+            current_release["highlights"].append(f"[{tag}] {summary}")
+            continue
+        # Clear pending tag on blank lines
+        if not stripped:
+            current_release.pop("_pending_tag", None)
 
     if current_release:
         releases.append(current_release)
 
-    # Strip internal parsing flags before returning
+    # For date-only releases, use the date as the display version
     for r in releases:
+        if r["version"] is None:
+            r["version"] = r["release_date"]
         r.pop("_has_highlights_section", None)
+        r.pop("_pending_tag", None)
 
     return _build_about(releases)
 
 
 def _build_about(releases: list[dict]) -> dict:
-    latest_version = releases[0]["version"] if releases else __version__
     latest_date = releases[0]["release_date"] if releases else "—"
-    
+
     return {
         "name": "BigQuery FinOps Optimizer",
-        "version": latest_version,
+        "version": __version__,
         "release_date": latest_date,
         "repo_url": "https://github.com/mbettan/bq-finops-optimizer",
         "changelog_url": "https://github.com/mbettan/bq-finops-optimizer/blob/main/RELEASE_NOTES.md",
@@ -1802,9 +1835,17 @@ def analyze_ai_query(params: AIParams):
                 if table_obj:
                     num_rows = table_obj["num_rows"]
                     num_bytes = table_obj["num_bytes"]
+                    try:
+                        rows_str = f"{int(num_rows):,}"
+                    except (ValueError, TypeError):
+                        rows_str = str(num_rows)
+                    try:
+                        bytes_str = f"{float(num_bytes) / (1024**2):.2f} MB"
+                    except (ValueError, TypeError):
+                        bytes_str = f"{num_bytes} bytes"
                     schemas_context.append(
                         f"Table `{table_ref}`:\n"
-                        f"- Row count: {num_rows:,} | Size: {num_bytes / (1024**2):.2f} MB\n"
+                        f"- Row count: {rows_str} | Size: {bytes_str}\n"
                         f"- {table_obj['part_info']}\n"
                         f"- {table_obj['clust_info']}\n"
                         f"- Schema size: {table_obj['num_columns']} columns"

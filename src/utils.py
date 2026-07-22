@@ -319,8 +319,8 @@ def run_query_with_retry_limit(
     while True:
         attempt += 1
         try:
-            query_job = client.query(sql, job_config=job_config, retry=None)
-            results = query_job.result(retry=None)
+            query_job = client.query(sql, job_config=job_config, retry=None, job_retry=None)
+            results = query_job.result(retry=None, job_retry=None)
             if fetch_df:
                 res_data = results.to_dataframe(create_bqstorage_client=True)
             else:

@@ -16,7 +16,16 @@ def test_ai_doctor_schema_aware_analysis():
         query="SELECT * FROM `acme-sandbox.dataset.table` LIMIT 10",
         ai_struct={"result": "- Avoid SELECT * and specify columns to prune bytes.\n- Add partition filter for date."},
         tables_referenced_count=3,
-        tables_found_count=2
+        tables_found_count=2,
+        table_schema="dataset",
+        table_name="table",
+        total_rows=1000000,
+        size_bytes=104857600,
+        partition_column="created_date",
+        require_partition_filter="false",
+        clustering_fields="user_id",
+        num_columns=10,
+        ddl=""
     )
 
     # Mocking the BigQuery client and resolution helper

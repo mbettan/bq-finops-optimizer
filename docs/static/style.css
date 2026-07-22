@@ -335,6 +335,10 @@ textarea {
   align-items: center;
   justify-content: space-between;
 }
+.sidebar__footer .nav-link {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+}
 .kbd {
   font-family: ui-monospace, monospace;
   font-size: 0.7rem;
@@ -593,8 +597,11 @@ input:checked + .slider:before {
 
 .nav-anchor.is-active,
 .nav-link.is-active {
-  background: hsla(var(--primary), 0.1);
+  background: hsla(var(--primary), 0.12);
   color: hsl(var(--primary));
+  font-weight: 600;
+  pointer-events: none;
+  cursor: default;
 }
 
 .view-title {

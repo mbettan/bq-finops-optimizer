@@ -363,7 +363,7 @@ def check_hbo_status(params: HBOStatusParams):
                 logger.debug("Checking HBO Status for project %s", prj)
                 # Create client per thread to avoid connection pool exhaustion (Claude Option 1)
                 job_config = bigquery.QueryJobConfig(maximum_bytes_billed=get_max_bytes_billed(params))
-                results = local_client.query(sql_status, job_config=job_config).result()
+                _, results = run_query_with_retry_limit(local_client, sql_status, job_config, description=f"HBO Status ({prj})", max_attempts=3)
                 
                 enabled = True # Default is enabled
                 for row in results:

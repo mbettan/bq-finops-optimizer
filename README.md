@@ -8,7 +8,7 @@
 An enterprise-grade BigQuery FinOps diagnostic suite and interactive simulation engine. It analyzes historical telemetry, query workloads, and storage configurations across Google Cloud Organizations to maximize cost efficiency, reduce compute waste, and implement automated governance.
 
 🚀 **Visit the official website:** [BQ FinOps Optimizer](https://mbettan.github.io/bq-finops-optimizer/)
-🚀 **Try the Interactive Demo:** [BQ FinOps Simulator](https://mbettan.github.io/bq-finops-optimizer/simulator.html)
+🚀 **Try the Simulator:** [BQ FinOps Simulator](https://mbettan.github.io/bq-finops-optimizer/simulator.html)
 
 ---
 
