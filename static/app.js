@@ -92,6 +92,29 @@ function safeParseJSON(raw, fallback) {
     }
 }
 
+// Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+    }
+    // Fallback: hidden textarea + execCommand
+    return new Promise((resolve, reject) => {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            resolve();
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
 // State
 const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
@@ -465,7 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (copyBtn) {
             const jobId = copyBtn.getAttribute('data-job-id');
             if (jobId) {
-                navigator.clipboard.writeText(jobId).then(() => {
+                copyToClipboard(jobId).then(() => {
                     showNotification('Job ID copied to clipboard', 'success');
                 }).catch(err => {
                     console.error('Failed to copy Job ID', err);
@@ -712,7 +735,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (elements.copyEdDdlBtn) {
         elements.copyEdDdlBtn.addEventListener('click', () => {
             if (elements.edDdlOutput && elements.edDdlOutput.value) {
-                navigator.clipboard.writeText(elements.edDdlOutput.value).then(() => {
+                copyToClipboard(elements.edDdlOutput.value).then(() => {
                     showNotification('DDL copied to clipboard!', 'success');
                 }).catch(err => {
                     logger_error(err);
@@ -727,7 +750,7 @@ document.addEventListener('DOMContentLoaded', () => {
         copyOrgDdlBtn.addEventListener('click', () => {
             const output = document.getElementById('org-ddl-output');
             if (output && output.value) {
-                navigator.clipboard.writeText(output.value).then(() => {
+                copyToClipboard(output.value).then(() => {
                     showNotification('Organization DDL copied to clipboard!', 'success');
                 }).catch(err => {
                     console.error(err);
@@ -1059,7 +1082,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.addEventListener('click', (e) => {
                 const jobId = e.target.getAttribute('data-id');
                 if (jobId) {
-                    navigator.clipboard.writeText(jobId).then(() => {
+                    copyToClipboard(jobId).then(() => {
                         showNotification('Job ID copied!', 'success');
                     }).catch(err => {
                         console.error(err);
@@ -1148,7 +1171,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const index = e.target.getAttribute('data-index');
                 const rowData = state.storageData[index];
                 if (rowData && rowData.ddl) {
-                    navigator.clipboard.writeText(rowData.ddl).then(() => {
+                    copyToClipboard(rowData.ddl).then(() => {
                         showNotification('DDL copied to clipboard!', 'success');
                     }).catch(err => {
                         logger_error(err);
@@ -1871,7 +1894,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Recommend Fluid Scaling if disabled
                 if (!row.fluid_scaling_enabled) {
                     const tr = document.createElement('tr');
-                    const ddl = `ALTER PROJECT \`${adminProj}\` SET OPTIONS (\`${region}.preflight_fluid_autoscaling_reservations\` = ['${resId}']);`;
+                    // Build the full reservation set: already-enabled + this one
+                    const allRes = new Set();
+                    data.current_reservations.forEach(r => {
+                        if (r.fluid_scaling_enabled) allRes.add(r.reservation_id);
+                    });
+                    allRes.add(resId);
+                    const listStr = Array.from(allRes).sort().map(r => `'${r}'`).join(', ');
+                    const ddl = `ALTER PROJECT \`${adminProj}\` SET OPTIONS (\`${region}.preflight_fluid_autoscaling_reservations\` = [${listStr}]);`;
                     
                     tr.innerHTML = `
                         <td>${resId}</td>
@@ -1920,7 +1950,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             btn.addEventListener('click', (e) => {
                 const ddl = e.target.getAttribute('data-ddl');
                 if (ddl) {
-                    navigator.clipboard.writeText(ddl).then(() => {
+                    copyToClipboard(ddl).then(() => {
                         showNotification('DDL copied to clipboard!', 'success');
                     }).catch(err => {
                         console.error(err);
@@ -2062,7 +2092,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         
         const ddl = `ALTER RESERVATION \`${adminProj}.${region}.${cleanResId}\` SET OPTIONS (slot_capacity = ${slots});`;
 
-        navigator.clipboard.writeText(ddl)
+        copyToClipboard(ddl)
           .then(() => {
             const original = fresh.textContent;
             fresh.textContent = '✓ COPIED';
@@ -2928,7 +2958,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     copyBtn.textContent = 'Copy';
                     copyBtn.title = 'Copy DDL';
                     copyBtn.addEventListener('click', () => {
-                        navigator.clipboard.writeText(item.ddl).then(() => {
+                        copyToClipboard(item.ddl).then(() => {
                             copyBtn.textContent = 'Copied!';
                             setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
                         });
@@ -5146,7 +5176,7 @@ const FluidScaling = (() => {
         copyBtn.addEventListener('click', () => {
             const output = document.getElementById('fs-ddl-output');
             if (output && output.value) {
-                navigator.clipboard.writeText(output.value).then(() => {
+                copyToClipboard(output.value).then(() => {
                     showNotification('DDL copied to clipboard!', 'success');
                 }).catch(err => {
                     console.error('Failed to copy DDL', err);

@@ -11,7 +11,21 @@ from fastapi import APIRouter, HTTPException
 from google.api_core import exceptions as gax_exc
 from google.cloud import bigquery
 from pydantic import BaseModel, Field
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, get_max_bytes_billed, FocusMixin, OrgParams, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, DAYS_PER_MONTH
+from .utils import (
+    init_bq_client_and_resolve_project,
+    reject_dummy_project,
+    _safe_ident,
+    _normalize_region,
+    get_max_bytes_billed,
+    FocusMixin,
+    OrgParams,
+    validate_focus_projects,
+    build_project_filter,
+    log_endpoint_start,
+    log_endpoint_end,
+    DAYS_PER_MONTH,
+    run_query_with_retry_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +121,7 @@ def _run_and_log(client, sql, label, params=None, query_parameters=None):
     logger.debug("%s SQL:\n%s", label, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
     t0 = time.time()
-    query_job = client.query(sql, job_config=job_config)
-    results = query_job.result()
+    query_job, results = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5)
     elapsed = time.time() - t0
     proc = query_job.total_bytes_processed
     billed = query_job.total_bytes_billed
@@ -427,12 +440,7 @@ def _run_query_to_df(
     logger.info("⏳ %s — submitting query (lookback=%d days, safety cap: %s GiB)…", label, lookback_days, max_bytes // (1024**3))
     logger.debug("%s SQL:\n%s", label.upper(), sql)
     t0 = time.time()
-    query_job = client.query(sql, job_config=job_config)
-    try:
-        df = query_job.result().to_dataframe(create_bqstorage_client=True)
-    except Exception:
-        logger.warning("BigQuery Storage API failed or unavailable. Falling back to REST API for to_dataframe().")
-        df = query_job.result().to_dataframe()
+    query_job, df = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5, fetch_df=True)
     elapsed = time.time() - t0
     # Log profile with clickable BQ Console URL
     job_project = query_job.project

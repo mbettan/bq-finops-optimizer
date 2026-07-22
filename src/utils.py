@@ -274,17 +274,82 @@ def handle_endpoint_exception(e: Exception, service_name: str):
             f"Reference: {req_id} — check server logs for details."
         )
     elif isinstance(e, gax_exc.GoogleAPIError):
-        logger.error(f"{service_name} BigQuery error: {e}")
+        req_id = request_id_var.get()
+        logger.error(f"{service_name} BigQuery error [{req_id}]: {e}")
+        err_str = str(e)
+        detail_msg = f"BigQuery Query Failed (Reference: {req_id}). Check server logs for details."
+        if "internal error" in err_str.lower() or "33494873" in err_str:
+            detail_msg = (
+                f"BigQuery internal engine error occurred after retry attempts (Ref: {req_id}). "
+                "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
+            )
         raise HTTPException(
             status_code=400,
-            detail="BigQuery Query Failed: BigQuery service returned an error; check server logs."
+            detail=detail_msg
         )
     else:
-        logger.exception(f"Unexpected error in {service_name}")
+        req_id = request_id_var.get()
+        logger.exception(f"Unexpected error in {service_name} [{req_id}]")
         raise HTTPException(
             status_code=500,
-            detail=f"{service_name} failed; check server logs."
+            detail=f"{service_name} failed; check server logs (Ref: {req_id})."
         )
+
+
+def run_query_with_retry_limit(
+    client: bigquery.Client,
+    sql: str,
+    job_config: bigquery.QueryJobConfig,
+    description: str = "Query",
+    max_attempts: int = 5,
+    initial_delay: float = 1.0,
+    max_delay: float = 10.0,
+    fetch_df: bool = False
+):
+    """
+    Executes a BigQuery query with a strict limit of max_attempts (default 5).
+    Disables the SDK's default 10-minute retry policy (retry=None), retrying up to
+    max_attempts with exponential backoff and explicit per-attempt logging.
+    """
+    from google.api_core import exceptions as gax_exc
+
+    attempt = 0
+    delay = initial_delay
+
+    while True:
+        attempt += 1
+        try:
+            query_job = client.query(sql, job_config=job_config, retry=None)
+            results = query_job.result(retry=None)
+            if fetch_df:
+                res_data = results.to_dataframe(create_bqstorage_client=True)
+            else:
+                res_data = results
+            return query_job, res_data
+        except (gax_exc.GoogleAPIError, Exception) as e:
+            err_msg = str(e)
+            # Permanent errors: no amount of retrying will fix a missing
+            # IAM permission or a non-existent resource.
+            if isinstance(e, (gax_exc.Forbidden, gax_exc.NotFound)):
+                logger.error(
+                    "❌ %s failed with permanent error (no retry): %s",
+                    description, err_msg.splitlines()[0]
+                )
+                raise
+            if attempt >= max_attempts:
+                logger.error(
+                    "❌ %s failed permanently after %d/%d attempts. Final error: %s",
+                    description, attempt, max_attempts, err_msg
+                )
+                raise
+            
+            logger.warning(
+                "⚠️ %s attempt %d/%d failed: %s. Retrying in %.1fs...",
+                description, attempt, max_attempts, err_msg.splitlines()[0], delay
+            )
+            time.sleep(delay)
+            delay = min(delay * 2.0, max_delay)
+
 
 # Default safety cap for maximum_bytes_billed (200 GiB).
 DEFAULT_MAX_BYTES_BILLED = 200 * 1024**3

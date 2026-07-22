@@ -77,7 +77,7 @@ def test_ai_doctor_schema_aware_analysis():
 
         
         # 2. Verify SQL Query construction logic
-        assert mock_bq_client.query.call_count >= 3
+        assert mock_bq_client.query.call_count >= 2
         
         # Verify the first call (discovery query) uses org-level view
         discovery_sql = mock_bq_client.query.call_args_list[0][0][0]

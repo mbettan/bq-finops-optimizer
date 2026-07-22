@@ -358,7 +358,7 @@ def test_effective_options_empty_falls_back_to_project_options(monkeypatch):
             self.job_id = "test-job-id"
             self.cache_hit = False
 
-        def result(self): return self._rows
+        def result(self, *args, **kwargs): return self._rows
 
     class FakeClient:
         def query(self, sql, *args, **kwargs):

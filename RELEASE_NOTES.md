@@ -2,6 +2,24 @@
 
 ---
 
+## v1.2.2 — 2026-07-21
+
+Minor bug fixes for clipboard functionality and Fluid Scaling DDL correctness.
+
+### 🐛 Bug Fixes
+
+#### 1. Clipboard Copy Broken on Non-HTTPS Origins
+All "Copy DDL" and "Copy Job ID" buttons across the app relied on `navigator.clipboard.writeText()`, which is only available in secure contexts (HTTPS or localhost). Added a `copyToClipboard()` helper with a `document.execCommand('copy')` fallback so clipboard operations work in all environments (e.g. local dev on `0.0.0.0`). Affects 9 copy buttons across Storage, Slots, Edition Matrix, HBO, Fluid Scaling, and Cost Attribution pages.
+
+#### 2. Fluid Scaling DDL Overwrites Existing Reservations
+The "Configuration Recommendations" table on the Slots Optimizer page generated a `preflight_fluid_autoscaling_reservations` DDL containing **only** the single missing reservation. Executing this DDL would silently drop all already-enabled reservations from the property array. The DDL now correctly builds the full set (existing + new) before generating the `ALTER PROJECT` statement, matching the behavior already implemented in the Fluid Scaling tab and backend.
+
+#### 3. Retry Logic Wastes Time on Permanent Errors (403/404)
+The `run_query_with_retry_limit()` utility retried **all** errors 5 times with exponential backoff, including 403 Forbidden and 404 Not Found — which are permanent and will never succeed on retry. For org-scope scans, each inaccessible project wasted ~15 seconds and 5 BigQuery jobs. Permanent errors now fail immediately.
+
+---
+
+
 ## v1.2.1 — 2026-07-17
 
 This release focuses on optimizing AI Doctor performance and addressing edge cases related to system queries and missing DDL schemas.

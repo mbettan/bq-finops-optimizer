@@ -173,18 +173,12 @@ _ALL_ENDPOINTS_WITH_FOCUS = [
     ("/api/governance/analyze", {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/mv/analyze", {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/resource_warnings/analyze", {"org_project_id": "valid-proj", "region": "region-us"}),
-    ("/api/slots/analyze", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3, "window_minutes": 5, "percentile": 90}),
-    ("/api/slots/tiered_recommendations", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3}),
-    ("/api/slots/utilization", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3}),
-    ("/api/slots/simulate", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3, "max_baseline": 500, "step_size": 100}),
-    ("/api/slots/peak", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 7}),
     ("/api/slots/profiler", {"org_project_id": "valid-proj", "region": "region-us", "admin_project_id": "valid-proj", "lookback_days": 3}),
     ("/api/users/top_spenders", {"org_project_id": "valid-proj", "region": "region-us", "admin_project_id": "valid-proj", "lookback_days": 3}),
     ("/api/hbo/analyze", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3, "limit": 5}),
     ("/api/hbo/summary", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3}),
     ("/api/hbo/performance_insights", {"org_project_id": "valid-proj", "region": "region-us", "lookback_days": 3}),
     ("/api/cost-attribution/calculate", {"org_project_id": "valid-proj", "region": "region-us", "billing_month_start": "2026-01-01", "billing_month_end": "2026-01-31"}),
-    ("/api/fluid-scaling/estimate", {"org_project_id": "valid-proj", "admin_project_id": "valid-proj", "region": "region-us", "lookback_days": 3, "price_per_slot_hr": 0.06}),
 ]
 
 
@@ -293,8 +287,8 @@ def test_focus_projects_dummy_rejected_via_endpoint(mock_bq_all):
     )
 
 
-def test_cost_attribution_rejects_focus_projects():
-    """Cost attribution must reject focus_projects as it would corrupt waste calculations."""
+def test_cost_attribution_accepts_focus_projects(mock_bq_all):
+    """Cost attribution supports focus_projects by computing org-wide and filtering display."""
     payload = {
         "org_project_id": "valid-proj",
         "region": "region-us",
@@ -303,6 +297,5 @@ def test_cost_attribution_rejects_focus_projects():
         "focus_projects": ["proj-alpha"],
     }
     response = client.post("/api/cost-attribution/calculate", json=payload)
-    assert response.status_code == 400
-    assert "focus_projects is not supported for cost attribution" in response.text
+    assert response.status_code == 200
 

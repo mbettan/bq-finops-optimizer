@@ -28,7 +28,23 @@ from .fluid_scaling import (
     router as fluid_scaling_router,
     _strip_qualifier,
 )
-from .utils import init_bq_client_and_resolve_project, reject_dummy_project, _safe_ident, _normalize_region, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, OrgParams, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, request_id_var, RequestIdFilter
+from .utils import (
+    init_bq_client_and_resolve_project,
+    reject_dummy_project,
+    _safe_ident,
+    _normalize_region,
+    handle_endpoint_exception,
+    get_max_bytes_billed,
+    FocusMixin,
+    OrgParams,
+    validate_focus_projects,
+    build_project_filter,
+    log_endpoint_start,
+    log_endpoint_end,
+    request_id_var,
+    RequestIdFilter,
+    run_query_with_retry_limit,
+)
 import time
 import uuid
 
@@ -663,8 +679,7 @@ def run_query_and_log(scoped_client: bigquery.Client, sql: str, description: str
     logger.debug("%s SQL:\n%s", description, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", description, max_bytes // (1024**3))
     t0 = time.time()
-    query_job = scoped_client.query(sql, job_config=job_config)
-    results = query_job.result()
+    query_job, results = run_query_with_retry_limit(scoped_client, sql, job_config, description=description, max_attempts=5, fetch_df=False)
     elapsed = time.time() - t0
     bytes_processed = query_job.total_bytes_processed
     bytes_billed = query_job.total_bytes_billed
@@ -696,8 +711,7 @@ def run_query_to_df(scoped_client: bigquery.Client, sql: str, description: str =
     logger.debug("%s SQL:\n%s", description, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", description, max_bytes // (1024**3))
     t0 = time.time()
-    query_job = scoped_client.query(sql, job_config=job_config)
-    df = query_job.result().to_dataframe(create_bqstorage_client=True)
+    query_job, df = run_query_with_retry_limit(scoped_client, sql, job_config, description=description, max_attempts=5, fetch_df=True)
     elapsed = time.time() - t0
     proc = query_job.total_bytes_processed
     billed = query_job.total_bytes_billed

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH, request_id_var
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH, request_id_var, run_query_with_retry_limit
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -22,8 +22,7 @@ def _run_and_log(client, sql, label, params=None, query_parameters=None):
     logger.debug("%s SQL:\n%s", label, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
     t0 = time.time()
-    query_job = client.query(sql, job_config=job_config)
-    results = query_job.result()
+    query_job, results = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5)
     elapsed = time.time() - t0
     proc = query_job.total_bytes_processed
     billed = query_job.total_bytes_billed
