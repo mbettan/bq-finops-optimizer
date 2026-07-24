@@ -1287,7 +1287,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (force) showNotification('Active Assist recommendations synced.', 'success');
         } catch (error) {
             console.warn('Failed to fetch Active Assist recommendations:', error);
-            if (force) showNotification('Failed to sync recommendations. Check organization permissions.', 'warning');
+            showNotification('Active Assist unavailable — BigQuery returned an internal error. Try again later.', 'warning');
+            // Show inline error in the results area so the user sees feedback
+            const tableEl = document.getElementById('active-assist-table');
+            if (tableEl) {
+                const tbody = tableEl.querySelector('tbody');
+                if (tbody) tbody.innerHTML = `<tr><td colspan="100%" style="text-align:center; color: #facc15; padding: 1.5rem;">
+                    <i class="fa-solid fa-triangle-exclamation" style="margin-right: 0.5rem;"></i>
+                    Active Assist recommendations could not be loaded. BigQuery encountered an internal error. Please retry.
+                </td></tr>`;
+            }
         } finally {
             if (btn) setLoading(btn, false);
         }
@@ -5453,10 +5462,14 @@ const FluidScaling = (() => {
       if (container) container.style.display = 'none';
       if (output) output.value = '';
       if (builder) builder.innerHTML = '';
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = 'none';
     } else {
       panel.style.borderColor = 'rgba(234, 179, 8, 0.5)'; // Yellow
       const missingList = configStatus.missing_reservations.join(', ');
       text.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15;"></i> Fluid Scaling is NOT enabled for the following active reservations: <strong>${UIState.escapeHtml(missingList)}</strong>. Select which reservations to include and copy the generated DDL.`;
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = '';
 
       if (container && output && builder) {
         container.style.display = 'block';
@@ -5930,11 +5943,14 @@ Router.register('fluid-scaling', {
                 <ul style="list-style: none; padding: 0; margin: 0;">
                     ${(release.highlights || []).map(h => {
                         // Bold and color-code [Tag] prefixes
-                        const formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
+                        let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
                             const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
                             const c = colors[tag] || '#94a3b8';
                             return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
                         });
+                        // Convert markdown bold and inline code to HTML
+                        formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                        formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
                         return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
                             <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
                         </li>`;

@@ -303,11 +303,23 @@ textarea {
   color: hsla(var(--foreground), 0.75);
   text-decoration: none;
   font-size: 0.8125rem;
-  transition: all 0.12s ease;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 .nav-link:hover {
-  background: hsla(var(--foreground), 0.04);
-  color: hsl(var(--foreground));
+  background: hsla(var(--primary), 0.08);
+  color: hsl(var(--primary));
+  transform: translateX(3px);
+}
+.nav-link:hover i {
+  text-shadow: 0 0 8px hsla(var(--primary), 0.4);
+}
+.nav-link:focus {
+  outline: none;
+}
+.nav-link:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
 }
 .nav-link.active {
   background: hsla(var(--primary), 0.1);
@@ -338,6 +350,9 @@ textarea {
 .sidebar__footer .nav-link {
   padding: 0.35rem 0.5rem;
   border-radius: 6px;
+}
+.sidebar__footer .nav-link:hover {
+  transform: none;
 }
 .kbd {
   font-family: ui-monospace, monospace;
