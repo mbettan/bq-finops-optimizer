@@ -100,7 +100,7 @@ def test_ai_doctor_schema_aware_analysis():
         
         assert "AI.GENERATE" in called_sql
         assert "@prompt_c0_a0" in called_sql
-        assert "endpoint => 'https://aiplatform.googleapis.com/v1/projects/acme-sandbox/locations/global/publishers/google/models/gemini-3.1-flash-lite'" in called_sql
+        assert "endpoint => 'https://aiplatform.googleapis.com/v1/projects/acme-sandbox/locations/global/publishers/google/models/gemini-3.5-flash-lite'" in called_sql
         assert "connection_id" not in called_sql
         
         # Verify query parameters are passed securely
@@ -118,3 +118,53 @@ def test_ai_doctor_schema_aware_analysis():
         # Assert specific parameter values
         email_param = next(p for p in params if p.name == "email_c0_a0")
         assert email_param.value == "data_engineer@acme.com"
+
+
+def test_ai_doctor_custom_model_selection():
+    mock_ai_row = MagicMock(
+        job_id="job_456",
+        project_id="acme-sandbox",
+        user_email="data@acme.com",
+        total_slot_ms=50000,
+        query="SELECT 1",
+        ai_struct={"result": "Looks good"},
+        tables_referenced_count=0,
+        tables_found_count=0,
+        table_schema=None,
+        table_name=None,
+        total_rows=0,
+        size_bytes=0,
+        partition_column=None,
+        require_partition_filter="false",
+        clustering_fields=None,
+        num_columns=0,
+        ddl=""
+    )
+
+    with patch("src.main.init_bq_client_and_resolve_project") as mock_init:
+        mock_bq_client = MagicMock()
+        mock_init.return_value = (mock_bq_client, "acme-sandbox")
+        
+        mock_job = MagicMock()
+        mock_job.total_bytes_processed = 0
+        mock_job.total_bytes_billed = 0
+        mock_job.cache_hit = False
+        mock_job.job_id = "mock_job_002"
+        mock_job.result.return_value = [mock_ai_row]
+        mock_bq_client.query.return_value = mock_job
+        
+        payload = {
+            "org_project_id": "acme-sandbox",
+            "region": "region-us",
+            "limit": 5,
+            "lookback_days": 7,
+            "model": "gemini-3.6-flash"
+        }
+        
+        response = client.post("/api/ai/analyze", json=payload)
+        assert response.status_code == 200
+        
+        called_args, _ = mock_bq_client.query.call_args
+        called_sql = called_args[0]
+        assert "gemini-3.6-flash" in called_sql
+

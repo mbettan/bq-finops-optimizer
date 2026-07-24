@@ -52,7 +52,7 @@ BigQuery HBO automatically optimizes queries over time. Since it is enabled by d
 > **Note:** The AI Doctor is the **only module in this entire application that uses AI/GenAI**. All other modules (Storage, Compute, Slots, HBO, Cost Attribution, Governance, Anti-Patterns, etc.) are powered exclusively by SQL queries and Python analytics — no AI, no LLM, no external model calls.
 
 Uses BigQuery's native `AI.GENERATE` scalar function to perform semantic SQL review **directly inside BigQuery**, with zero infrastructure setup:
-*   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.1-flash-lite`) directly.
+*   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.5-flash-lite`) directly.
 *   **No Cloud Resource Connection required** (by default) — works with your existing end-user ADC credentials out of the box. A connection is only needed if deploying on Cloud Run with a service account.
 *   **No additional APIs to enable** beyond the Vertex AI API on your project.
 *   Retrieves the most expensive queries by slot consumption from `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION`, scanning the entire organization.
@@ -64,7 +64,7 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 
 | Parameter | Value | Rationale |
 | :--- | :--- | :--- |
-| **Model** | `gemini-3.1-flash-lite` | Lowest cost, fastest inference. Sufficient for structured pattern-matching. |
+| **Model** | `gemini-3.5-flash-lite` | Lowest cost, fastest inference. Sufficient for structured pattern-matching. |
 | **Temperature** | `0.1` | Near-deterministic output for consistent anti-pattern detection. |
 | **Max Output Tokens** | `1024` | Provides headroom for 5–7 bullet-point findings. Previous value of `300` caused silent `NULL` returns (`finish_reason: MAX_TOKENS`) when the model's internal reasoning consumed the entire budget. |
 | **Thinking Level** | `MINIMAL` | Gemini 3.x parameter. Constrains thinking tokens to preserve budget for output. |

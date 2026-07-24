@@ -587,7 +587,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit'),
-        aiLookback: document.getElementById('ai-lookback')
+        aiLookback: document.getElementById('ai-lookback'),
+        aiModel: document.getElementById('ai-model')
     };
 
     // Custom Filter for DataTables
@@ -4221,7 +4222,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 region: state.region,
                 focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
-                lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7')
+                lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7'),
+                model: elements.aiModel ? elements.aiModel.value : 'gemini-3.5-flash-lite'
             };
 
             try {
