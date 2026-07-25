@@ -100,7 +100,7 @@ def test_ai_doctor_schema_aware_analysis():
         
         assert "AI.GENERATE" in called_sql
         assert "@prompt_c0_a0" in called_sql
-        assert "endpoint => 'https://aiplatform.googleapis.com/v1/projects/acme-sandbox/locations/global/publishers/google/models/gemini-3.5-flash-lite'" in called_sql
+        assert "endpoint => 'https://aiplatform.googleapis.com/v1/projects/acme-sandbox/locations/global/publishers/google/models/gemini-3.6-flash'" in called_sql
         assert "connection_id" not in called_sql
         
         # Verify query parameters are passed securely

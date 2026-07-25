@@ -4223,7 +4223,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
                 lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7'),
-                model: elements.aiModel ? elements.aiModel.value : 'gemini-3.5-flash-lite'
+                model: elements.aiModel ? elements.aiModel.value : 'gemini-3.6-flash'
             };
 
             try {

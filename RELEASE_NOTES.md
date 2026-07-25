@@ -9,7 +9,7 @@ For architecture details and tech stack information, see the [README](README.md)
 ## July 24, 2026 — v1.2.3
 
 **Feature**
-Updated the AI Doctor module backend to use the `gemini-3.5-flash-lite` model for semantic SQL anti-pattern analysis and optimization recommendations.
+Updated the AI Doctor module to use `gemini-3.6-flash` as the default model in the dropdown and backend, with `gemini-3.5-flash-lite` as the secondary option for semantic SQL anti-pattern analysis and optimization recommendations.
 
 ---
 

@@ -1604,7 +1604,7 @@ class AIParams(FocusMixin):
     lookback_days: int = Field(default=7, ge=1, le=90)
     limit: int = Field(20, ge=1, le=100)
     max_bytes_billed_gb: Optional[int] = None
-    model: str = Field(default="gemini-3.5-flash-lite")
+    model: str = Field(default="gemini-3.6-flash")
 
 class AIResult(BaseModel):
     job_id: str
@@ -1819,7 +1819,7 @@ def analyze_ai_query(params: AIParams):
                 logger.warning(f"Failed to fetch schemas for project {p} via INFORMATION_SCHEMA: {e}")
         # Build Audits Data
         ALLOWED_AI_MODELS = {"gemini-3.5-flash-lite", "gemini-3.6-flash"}
-        selected_model = params.model if params.model in ALLOWED_AI_MODELS else "gemini-3.5-flash-lite"
+        selected_model = params.model if params.model in ALLOWED_AI_MODELS else "gemini-3.6-flash"
         endpoint_url = (
             f"https://aiplatform.googleapis.com/v1/projects/{target_project}"
             f"/locations/global/publishers/google/models/{selected_model}"
