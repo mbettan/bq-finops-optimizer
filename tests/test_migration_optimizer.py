@@ -33,7 +33,7 @@ def test_synthesize_optimizer_yaml():
     """
     yaml_str = synthesize_optimizer_yaml(sql, [])
     assert yaml_str is not None
-    assert "experimental_optimizer" in yaml_str
+    assert "type: optimizer" in yaml_str
     assert "REWRITE_CTE_TO_TEMP_TABLE" in yaml_str
     assert "REGEXP_CONTAINS_TO_LIKE" in yaml_str
     assert "ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON" in yaml_str
@@ -41,6 +41,7 @@ def test_synthesize_optimizer_yaml():
 
 def test_synthesize_yaml_anti_join_and_merge():
     """Verify anti-join and MERGE transformations are auto-detected."""
+    from src.migration_optimizer import MigrationIssue
     sql = """
     MERGE INTO target t
     USING source s ON t.id = s.id
@@ -50,7 +51,11 @@ def test_synthesize_yaml_anti_join_and_merge():
     LEFT JOIN t2 ON t1.id = t2.id
     WHERE t2.id IS NULL
     """
-    yaml_str = synthesize_optimizer_yaml(sql, [])
+    issues = [
+        MigrationIssue(category="OPTIMIZATION", message="Consider ANTI_JOIN_EXPLICIT_NOT_NULL"),
+        MigrationIssue(category="OPTIMIZATION", message="Consider MERGE_PRECOMPUTE_PRUNING_BOUNDARIES"),
+    ]
+    yaml_str = synthesize_optimizer_yaml(sql, issues)
     assert yaml_str is not None
     assert "ANTI_JOIN_EXPLICIT_NOT_NULL" in yaml_str
     assert "MERGE_PRECOMPUTE_PRUNING_BOUNDARIES" in yaml_str

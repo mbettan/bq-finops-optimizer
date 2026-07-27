@@ -463,7 +463,8 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
         "PRECOMPUTE_INDEPENDENT_SUBSELECTS", "REWRITE_CTE_TO_TEMP_TABLE",
         "REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER", "DROP_TEMP_TABLE",
         "REGEXP_CONTAINS_TO_LIKE", "ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON",
-        "APPROXIMATE_RANGE_PARTITIONS",
+        "APPROXIMATE_RANGE_PARTITIONS", "ANTI_JOIN_EXPLICIT_NOT_NULL",
+        "MERGE_PRECOMPUTE_PRUNING_BOUNDARIES",
     }
     for name in public_transformations:
         if name in issue_text:
