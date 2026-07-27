@@ -412,7 +412,19 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
 
     Covers all 7 public stable transformations per:
     https://docs.cloud.google.com/bigquery/docs/config-yaml-translation#optimize_and_improve_the_performance_of_translated_sql
-    Uses both SQL pattern matching and Pass 1 diagnostic issue analysis."""
+
+    Transformations are conditionally enabled via SQL pattern matching and
+    Pass 1 diagnostic analysis. Per engineering guidance (Tom Wall, 2026-07-27):
+      - These optimizations have domain-specific tradeoffs and aren't universally
+        a good thing to do — only opt in when evidence suggests they'll help.
+      - CTE threshold default is 4 (not 1). Threshold=1 converts every CTE to
+        CTAS + temp table reference, which can hurt more than it helps.
+      - ANTI_JOIN_EXPLICIT_NOT_NULL and MERGE_PRECOMPUTE_PRUNING_BOUNDARIES are
+        only meaningful when Pass 1 diagnostics explicitly recommend them.
+      - REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER: safe no-op for BQ-to-BQ when
+        types are already INT64 (only activates for NUMERIC(N,0) columns).
+      - APPROXIMATE_RANGE_PARTITIONS: never triggers on BQ inputs (BQ uses
+        fixed range partitions), but safe to include when diagnostics recommend it."""
     transformations = []
     seen_names: set[str] = set()
     sql_upper = sql.upper()
@@ -428,8 +440,10 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
             transformations.append(entry)
 
     # 1. CTE Rewriting → Temp Tables + cleanup
+    #    Threshold=4 (compiler default) to avoid aggressive conversion of simple CTEs.
+    #    Per Tom Wall: threshold=1 converts every CTE to CTAS which can hurt performance.
     if "WITH " in sql_upper and " AS (" in sql_upper:
-        _add("REWRITE_CTE_TO_TEMP_TABLE", {"threshold": 1})
+        _add("REWRITE_CTE_TO_TEMP_TABLE", {"threshold": 4})
         _add("DROP_TEMP_TABLE")
 
     # 2. Scalar Subquery Precomputation
@@ -446,7 +460,7 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
     if has_projection_subselect:
         _add("PRECOMPUTE_INDEPENDENT_SUBSELECTS", {"scope": "PROJECTION"})
 
-    # 3. Zero-Scale Numeric → INT64 (cross-dialect: Snowflake NUMBER(38,0) → INT64)
+    # 3. Zero-Scale Numeric → INT64
     if re.search(r"\bNUMERIC\b|\bBIGNUMERIC\b|\bNUMBER\s*\(\s*\d+\s*,\s*0\s*\)", sql_upper) or "ZERO_SCALE" in issue_text or "NUMERIC" in issue_text:
         _add("REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER", {"bigint": 18})
 
@@ -458,7 +472,8 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
     if "REGEXP_CONTAINS" in sql_upper:
         _add("REGEXP_CONTAINS_TO_LIKE")
 
-    # 6. Pass 1 diagnostic-driven: auto-opt-in to any public transformations the API recommends
+    # 6. Pass 1 diagnostic-driven: auto-opt-in to any public transformations the API recommends.
+    #    Per Tom Wall: ANTI_JOIN and MERGE are only meaningful when diagnostics detect an opportunity.
     public_transformations = {
         "PRECOMPUTE_INDEPENDENT_SUBSELECTS", "REWRITE_CTE_TO_TEMP_TABLE",
         "REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER", "DROP_TEMP_TABLE",

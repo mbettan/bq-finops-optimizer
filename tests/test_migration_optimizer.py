@@ -76,6 +76,32 @@ def test_synthesize_yaml_numeric_and_diagnostics():
     assert "APPROXIMATE_RANGE_PARTITIONS" in yaml_str2
 
 
+def test_synthesize_yaml_cte_threshold_is_4():
+    """CTE rewriting threshold must be 4 (compiler default), not 1.
+
+    Per Tom Wall (2026-07-27): threshold=1 converts every CTE to CTAS + temp
+    table reference, which can hurt more than it helps. The compiler default
+    threshold is 4.
+    """
+    sql = "WITH cte AS (SELECT 1) SELECT * FROM cte"
+    yaml_str = synthesize_optimizer_yaml(sql, [])
+    assert yaml_str is not None
+    assert "REWRITE_CTE_TO_TEMP_TABLE" in yaml_str
+    assert "threshold: 4" in yaml_str
+    assert "threshold: 1" not in yaml_str
+
+
+def test_synthesize_yaml_minimal_sql_returns_none():
+    """Minimal SQL with no patterns and no diagnostics should return None.
+
+    Per Tom Wall (2026-07-27): these optimizations have domain-specific
+    tradeoffs and aren't universally a good thing to do. Only opt in
+    when evidence suggests they'll help.
+    """
+    yaml_str = synthesize_optimizer_yaml("SELECT 1", [])
+    assert yaml_str is None
+
+
 def test_sql_injection_validation_in_schema_fetcher():
     fetcher = SchemaFetcher(project="valid-project")
     # Malformed table ref with quotes/backticks
