@@ -19,6 +19,7 @@ client = TestClient(app)
 # ---------------------------------------------------------------------------
 
 LOOKBACK_ENDPOINTS = [
+    ("/api/ai/analyze",                {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/jobs/analyze",              {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/antipatterns/dml",          {"org_project_id": "valid-proj", "region": "region-us"}),
     ("/api/antipatterns/linter",       {"org_project_id": "valid-proj", "region": "region-us"}),

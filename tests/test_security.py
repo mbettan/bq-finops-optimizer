@@ -124,3 +124,34 @@ def test_limit_validation_bounds():
     response = client.post("/api/ai/analyze", json=payload)
     assert response.status_code == 422  # Pydantic validation error
 
+
+# ---------------------------------------------------------------------------
+# AI Doctor strategy-aware injection tests
+# ---------------------------------------------------------------------------
+
+AI_DOCTOR_STRATEGIES = ["composite", "cumulative_cost", "execution_frequency", "memory_spill", "slot_ms"]
+
+
+@pytest.mark.parametrize("strategy", AI_DOCTOR_STRATEGIES)
+def test_ai_doctor_region_injection_all_strategies(strategy):
+    """SQL-injection-like region values must be rejected across all strategies."""
+    response = client.post("/api/ai/analyze", json={
+        "org_project_id": "valid-proj",
+        "region": "region-us`.evil",
+        "discovery_strategy": strategy,
+    })
+    assert response.status_code == 400
+    assert "Invalid region" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("strategy", AI_DOCTOR_STRATEGIES)
+def test_ai_doctor_org_project_injection_with_strategy(strategy):
+    """Backtick injection in org_project_id must be rejected for every strategy."""
+    response = client.post("/api/ai/analyze", json={
+        "org_project_id": "proj`ect",
+        "region": "region-us",
+        "discovery_strategy": strategy,
+    })
+    assert response.status_code == 400
+    assert "Invalid org_project_id" in response.json()["detail"]
+

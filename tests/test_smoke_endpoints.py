@@ -223,6 +223,12 @@ SIMPLE_POST_ENDPOINTS = [
         {**_BASE},
         "Fluid scaling status",
     ),
+    # --- AI Doctor ---
+    (
+        "/api/ai/analyze",
+        {**_BASE, "lookback_days": 7, "limit": 5},
+        "AI Doctor analyzer",
+    ),
 ]
 
 
