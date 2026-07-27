@@ -268,6 +268,16 @@ def handle_endpoint_exception(e: Exception, service_name: str):
         # client report back to the full server-side detail.
         req_id = request_id_var.get()
         logger.error(f"{service_name} bad request [{req_id}]: {e}")
+        err_str = str(e)
+        # F6: surface a specific message when the bytes-billed safety cap
+        # is exceeded so users know to raise max_bytes_billed_gb.
+        if "bytesBilledLimitExceeded" in err_str or "exceeds the maximum" in err_str.lower():
+            raise HTTPException(
+                400,
+                f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
+                f"or narrow scope with focus_projects / shorter lookback. "
+                f"Reference: {req_id} — check server logs for details."
+            )
         raise HTTPException(
             400,
             f"BigQuery rejected the request (invalid parameters or malformed query). "
@@ -282,6 +292,15 @@ def handle_endpoint_exception(e: Exception, service_name: str):
             detail_msg = (
                 f"BigQuery internal engine error occurred after retry attempts (Ref: {req_id}). "
                 "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
+            )
+        # bytesBilledLimitExceeded often arrives as a 500, not a 400.
+        # Detect it here so the user gets an actionable message.
+        if "bytesBilledLimitExceeded" in err_str or "exceeds the maximum" in err_str.lower():
+            raise HTTPException(
+                400,
+                f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
+                f"or narrow scope with focus_projects / shorter lookback. "
+                f"Reference: {req_id} — check server logs for details."
             )
         raise HTTPException(
             status_code=400,
@@ -326,13 +345,22 @@ def run_query_with_retry_limit(
             else:
                 res_data = results
             return query_job, res_data
-        except (gax_exc.GoogleAPIError, Exception) as e:
+        except Exception as e:
             err_msg = str(e)
             # Permanent errors: no amount of retrying will fix a missing
-            # IAM permission or a non-existent resource.
-            if isinstance(e, (gax_exc.Forbidden, gax_exc.NotFound)):
+            # IAM permission, a non-existent resource, or a malformed query.
+            if isinstance(e, (gax_exc.Forbidden, gax_exc.NotFound, gax_exc.BadRequest)):
                 logger.error(
                     "❌ %s failed with permanent error (no retry): %s",
+                    description, err_msg.splitlines()[0]
+                )
+                raise
+            # bytesBilledLimitExceeded comes back as a 500 InternalServerError,
+            # not a 400 BadRequest, so isinstance checks miss it. Detect by
+            # message — the query will never fit under the cap on retry.
+            if "bytesBilledLimitExceeded" in err_msg:
+                logger.error(
+                    "❌ %s exceeded bytes-billed cap (no retry): %s",
                     description, err_msg.splitlines()[0]
                 )
                 raise
@@ -372,3 +400,50 @@ def get_max_bytes_billed(params=None) -> int:
     # Clamp: minimum 1 GiB, maximum 10 TiB (10240 GiB)
     gb = max(1, min(gb, 10240))
     return gb * 1024**3
+
+
+def run_query_and_log(client: bigquery.Client, sql: str, label: str = "Query",
+                      params=None, query_parameters=None, fetch_df: bool = False):
+    """Run a BigQuery query with timing, BQ Console URL, and structured logging.
+
+    This is the single, canonical query-execution path used by all modules.
+
+    Args:
+        client: An authenticated BigQuery client (project-scoped).
+        sql: The SQL string to execute.
+        label: A human-readable description for log messages.
+        params: An API params object carrying ``max_bytes_billed_gb``.
+        query_parameters: Optional list of ``bigquery.ScalarQueryParameter``.
+        fetch_df: If True, return a DataFrame via BQ Storage API instead of a
+            row iterator.
+
+    Returns:
+        A BigQuery row iterator (default) or a pandas DataFrame when
+        ``fetch_df=True``.
+    """
+    max_bytes = get_max_bytes_billed(params)
+    job_config = bigquery.QueryJobConfig(
+        maximum_bytes_billed=max_bytes,
+        query_parameters=query_parameters or []
+    )
+    logger.debug("%s SQL:\n%s", label, sql)
+    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    t0 = time.time()
+    query_job, results = run_query_with_retry_limit(
+        client, sql, job_config, description=label, max_attempts=5, fetch_df=fetch_df
+    )
+    elapsed = time.time() - t0
+    proc = query_job.total_bytes_processed
+    billed = query_job.total_bytes_billed
+    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
+    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
+    loc = query_job.location or "us"
+    bq_url = (
+        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
+        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
+    )
+    logger.info(
+        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
+        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
+    )
+    return results

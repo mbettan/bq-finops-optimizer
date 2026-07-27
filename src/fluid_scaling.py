@@ -24,7 +24,7 @@ from .utils import (
     log_endpoint_start,
     log_endpoint_end,
     DAYS_PER_MONTH,
-    run_query_with_retry_limit,
+    run_query_and_log as _run_and_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,32 +111,6 @@ def _strip_qualifier(reservation_id: Optional[str]) -> str:
     return re.split(r"[.:]", reservation_id)[-1]
 
 
-def _run_and_log(client, sql, label, params=None, query_parameters=None):
-    """Run a query with timing, BQ URL, and structured logging."""
-    max_bytes = get_max_bytes_billed(params)
-    job_config = bigquery.QueryJobConfig(
-        maximum_bytes_billed=max_bytes,
-        query_parameters=query_parameters or []
-    )
-    logger.debug("%s SQL:\n%s", label, sql)
-    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
-    t0 = time.time()
-    query_job, results = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5)
-    elapsed = time.time() - t0
-    proc = query_job.total_bytes_processed
-    billed = query_job.total_bytes_billed
-    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
-    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
-    loc = query_job.location or "us"
-    bq_url = (
-        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
-        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
-    )
-    logger.info(
-        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
-        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
-    )
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -257,11 +231,11 @@ def check_fluid_scaling_status(params: FluidScalingParams):
 # Estimate endpoint
 # ---------------------------------------------------------------------------
 
-# Aggregates to the minute-grain inside BigQuery instead of returning every
-# per-second row to the client. A 90-day lookback would otherwise materialize
-# up to ~60x more rows per reservation (one per second) into a pandas
-# DataFrame — enough to OOM a memory-capped Cloud Run instance. Summing here
-# is mathematically identical to summing the same per-second rows client-side.
+# F18: Aggregates all the way down to ONE ROW PER RESERVATION inside BigQuery
+# rather than returning per-second rows to the client. A 90-day lookback would
+# otherwise materialize ~7.8M rows per reservation into a pandas DataFrame —
+# enough to OOM a memory-capped Cloud Run instance. Summing bounded per-second
+# values here is mathematically identical to summing the same rows client-side.
 _SQL_UNIFIED_FLUID_SCALING = """
 WITH capacity_per_sec AS (
   SELECT
@@ -283,10 +257,19 @@ WITH capacity_per_sec AS (
            ts AS start_time,
            autoscale.current_slots AS autoscale_current_slots,
            slots_assigned AS slots_assigned,
+           -- F9: RESERVATION_TIMELINE_BY_PROJECT exposes borrowed_slots only
+           -- inside per_second_details. When that array is empty we fabricate a
+           -- per-second series from the minute row, and borrowed slots are
+           -- genuinely unrecoverable at this grain.
+           --
+           -- 0 is the conservative choice: it means borrowed capacity is
+           -- attributed to the fluid autoscaler, which INFLATES
+           -- fluid_slot_seconds and therefore UNDERSTATES slot_hours_saved.
+           -- We prefer understating a savings claim to overstating one.
            0 AS borrowed_slots
          FROM UNNEST(GENERATE_TIMESTAMP_ARRAY(
            rt.period_start,
-           TIMESTAMP_ADD(rt.period_start, INTERVAL 59 SECOND),
+           (TIMESTAMP_ADD(rt.period_start, INTERVAL 59 SECOND)),
            INTERVAL 1 SECOND
          )) AS ts
        )
@@ -305,7 +288,7 @@ usage_per_sec AS (
   FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
   -- job_creation_time must have a wide slack (7 days) to ensure jobs that started BEFORE the
   -- lookback window but continued running INTO the window are not dropped by partition pruning.
-  WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_days + 7 DAY)
+  WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL (@lookback_days + 7) DAY)
     AND job_creation_time <  CURRENT_TIMESTAMP()
   -- period_start must be tight and strictly aligned with capacity_per_sec to prevent orphaned
   -- rows in the FULL OUTER JOIN. (Included at @start, excluded exactly at CURRENT_TIMESTAMP).
@@ -432,32 +415,8 @@ def _run_query_to_df(
     all_params = [
         bigquery.ScalarQueryParameter("lookback_days", "INT64", lookback_days),
     ] + (extra_query_params or [])
-    max_bytes = get_max_bytes_billed(params)
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=all_params,
-        maximum_bytes_billed=max_bytes,
-    )
-    logger.info("⏳ %s — submitting query (lookback=%d days, safety cap: %s GiB)…", label, lookback_days, max_bytes // (1024**3))
-    logger.debug("%s SQL:\n%s", label.upper(), sql)
-    t0 = time.time()
-    query_job, df = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5, fetch_df=True)
-    elapsed = time.time() - t0
-    # Log profile with clickable BQ Console URL
-    job_project = query_job.project
-    job_location = query_job.location or "us"
-    bq_url = (
-        f"https://console.cloud.google.com/bigquery?project={job_project}"
-        f"&j=bq:{job_location}:{query_job.job_id}&page=queryresults"
-    )
-    proc = query_job.total_bytes_processed
-    billed = query_job.total_bytes_billed
-    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
-    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
-    logger.info(
-        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
-        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
-    )
-    return df
+    return _run_and_log(client, sql, label, params=params,
+                        query_parameters=all_params, fetch_df=True)
 
 
 def _build_config_status(

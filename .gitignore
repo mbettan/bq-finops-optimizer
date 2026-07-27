@@ -12,6 +12,7 @@ myenv/
 # Scratch / Diagnostic scripts
 scratch/
 scratch_*
+.bqxlate-probe.json
 
 # Python
 __pycache__/

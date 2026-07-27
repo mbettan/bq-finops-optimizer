@@ -3833,7 +3833,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                lookback_days: 30
             };
             try {
                 const response = await fetch('/api/mv/analyze', {
@@ -3867,7 +3868,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                lookback_days: 30
             };
             try {
                 const response = await fetch('/api/resource_warnings/analyze', {

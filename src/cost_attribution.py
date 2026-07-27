@@ -3,7 +3,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_with_retry_limit
+from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
 from collections import defaultdict
 import json
 import os
@@ -21,32 +21,6 @@ CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"
 # _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 
 
-def _run_and_log(client, sql, label, params=None, query_parameters=None):
-    """Run a query with timing, BQ URL, and structured logging."""
-    max_bytes = get_max_bytes_billed(params)
-    job_config = bigquery.QueryJobConfig(
-        maximum_bytes_billed=max_bytes,
-        query_parameters=query_parameters or []
-    )
-    logger.debug("%s SQL:\n%s", label, sql)
-    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
-    t0 = time.time()
-    query_job, results = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5)
-    elapsed = time.time() - t0
-    proc = query_job.total_bytes_processed
-    billed = query_job.total_bytes_billed
-    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
-    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
-    loc = query_job.location or "us"
-    bq_url = (
-        f"https://console.cloud.google.com/bigquery?project={query_job.project}"
-        f"&j=bq:{loc}:{query_job.job_id}&page=queryresults"
-    )
-    logger.info(
-        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
-        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
-    )
-    return results
 
 
 class ReservationConfig(BaseModel):
@@ -138,11 +112,11 @@ def calculate_cost_attribution(params: CostAttributionParams):
         # Always query all projects — waste computation needs the full denominator.
         # Focus is applied to the DISPLAY, not the computation.
 
-        if target_project:
-            table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
-        else:
-            # Fallback to region-scoped view as in example
-            table_name = f"`{region}`.INFORMATION_SCHEMA.JOBS"
+        # F17b: target_project is always truthy here — it is set from
+        # params.admin_project_id or resolved_project, validated by _safe_ident
+        # and reject_dummy_project. The else branch (region-scoped
+        # INFORMATION_SCHEMA.JOBS) was unreachable dead code.
+        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
             
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)
@@ -188,7 +162,11 @@ def calculate_cost_attribution(params: CostAttributionParams):
             reservation_totals[row.reservation_id] += slot_hours
 
         final_attributions = []
-        
+        # F3: Track reservations that appear in job data but have no config entry.
+        # Previously these were silently skipped, making the panel look complete
+        # while potentially excluding the majority of slot-hours.
+        unconfigured = {}  # {reservation_id: total_slot_hours}
+
         for usage in project_usage:
             res_id = usage["reservation"]
             proj_id = usage["project"]
@@ -198,7 +176,12 @@ def calculate_cost_attribution(params: CostAttributionParams):
             short_res_id = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
             res_config = config.reservations.get(short_res_id) or config.reservations.get(res_id)
             if not res_config:
-                logger.warning(f"No configuration found for reservation {res_id} (short: {short_res_id}). Skipping.")
+                unconfigured[res_id] = unconfigured.get(res_id, 0.0) + slot_hours
+                logger.warning(
+                    "No configuration found for reservation %s (short: %s) — "
+                    "%.2f slot-hours unattributed",
+                    res_id, short_res_id, slot_hours,
+                )
                 continue
                 
             sku_rate_per_slot_hour = res_config.sku_rate
@@ -273,8 +256,24 @@ def calculate_cost_attribution(params: CostAttributionParams):
         )
 
         logger.info("Returning %d attribution records (scope: %s).", len(final_attributions), scope.mode)
+        if unconfigured:
+            logger.warning(
+                "%d reservation(s) unconfigured — %.2f slot-hours unattributed: %s",
+                len(unconfigured),
+                sum(unconfigured.values()),
+                list(unconfigured.keys()),
+            )
         log_endpoint_end("Cost Attribution", t0, _logger=logger)
-        return {"scope": scope.model_dump(), "attributions": final_attributions}
+        return {
+            "scope": scope.model_dump(),
+            "attributions": final_attributions,
+            "unattributed_reservations": [
+                {"reservation_id": rid, "slot_hours": round(sh, 2)}
+                for rid, sh in unconfigured.items()
+            ],
+            "total_unattributed_slot_hours": round(sum(unconfigured.values()), 2),
+            "is_complete": len(unconfigured) == 0,
+        }
         
     except Exception as e:
         handle_endpoint_exception(e, "Cost attribution")

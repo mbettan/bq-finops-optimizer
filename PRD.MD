@@ -223,13 +223,35 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` (using native array fields on `job_stages`) for jobs where max node compute time is >10x the average.
 - **Visualization:** List of skewed jobs with ratio and wasted slot hours.
 
-### 4.18 Module 17: AI Doctor (Semantic Query Review) `[STATUS: IMPLEMENTED]`
+### 4.18 Module 17: AI Doctor & BigQuery Migration Optimization Engine `[STATUS: IMPLEMENTED]`
 
-- **Objective:** Use BigQuery's native Vertex AI integration (`AI.GENERATE`) to analyze queries for semantic anti-patterns.
-- **Acceptance Criteria:**
-    - Pass top queries to Gemini via SQL and parse the result column.
-    - Ensure AI Doctor inputs are safely parameterized to prevent string interpolation risks.
-- **Visualization:** "AI Doctor" tab showing job details and Gemini's actionable optimization advice.
+- **Objective:** Provide automated, enterprise-grade SQL query review, FinOps ROI prioritization, and performance optimization by combining Gemini LLM semantic advice with Google Cloud's official **BigQuery Migration Service API v2** (`bigquerymigration.googleapis.com`).
+- **Multi-Strategy Query Selection & FinOps Prioritization Engine:**
+    - **Candidate Aggregation by Query Key:** Groups query executions across `JOBS_BY_ORGANIZATION` over 7–90 day lookback windows using `COALESCE(query_info.query_hashes.normalized_literals, CONCAT('job:', job_id))` to aggregate cumulative organizational waste.
+    - **5 Discovery Strategy Modes (`discovery_strategy`):**
+        1. *Balanced ROI Score (`composite`):* Ranks candidate query templates using a multi-factor score: $0.40 \cdot \log_{10}(GB + 1) + 0.30 \cdot \log_{10}(Execs + 1) + 0.20 \cdot \log_{10}(Slots + 1) + 0.10 \cdot SpillFlag$.
+        2. *Cumulative Cost (`cumulative_cost`):* Ranks query templates by aggregate bytes billed across all executions.
+        3. *High Frequency (`execution_frequency`):* Identifies high-frequency BI dashboard micro-offenders (`HAVING COUNT(*) > 1`), highlighting execution counts in the UI.
+        4. *Memory RAM Spill (`memory_spill`):* Surfaces memory-intensive queries that spill intermediate shuffle bytes to disk (`HAVING bytes_spilled > 0`).
+        5. *Total Slot Time (`slot_ms`):* Focuses on heavy slot-consuming query templates.
+    - **Multi-Stage Shuffle Spill Unnesting:** Unnests `job_stages` via `(SELECT SUM(s.shuffle_output_bytes_spilled) FROM UNNEST(job_stages) s)` to aggregate intermediate RAM-to-disk spills across all execution stages.
+    - **Deterministic Worst-Job Sampling:** Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload for AI auditing.
+    - **Script Execution Filtering:** Filters out procedural header jobs (`statement_type != 'SCRIPT'`) to eliminate double-counting.
+    - **Strict IAM 403 Authorization Guardrails:** Requires `roles/bigquery.resourceViewer` or `roles/bigquery.admin` for organization discovery. Intercepts IAM 403 `Forbidden` exceptions and returns a clean `HTTP 403 Access Denied` response with explicit role guidance, rejecting silent/degraded project-level fallbacks.
+- **Architecture & Workflow:**
+    - **BigQuery Migration Service API v2 Core:** Leverages native `v2` migration workflows with `BigQuery2BigQuery_Translation` task types to rewrite inefficient BigQuery SQL into high-performance, cost-optimized standard SQL.
+    - **Automated Schema Resolution (`SchemaFetcher`):** Automatically discovers referenced tables via BigQuery dry-runs and queries `INFORMATION_SCHEMA.TABLES` to fetch table DDL definitions (base tables, external tables, views), prepending them to the source payload for complete schema context.
+    - **Autonomous 2-Stage Discovery & Opt-in YAML Pipeline:**
+        1. *Stage 1 (Discovery Pass):* Executes a diagnostic workflow pass without a configuration file to inspect structural query opportunities and capture diagnostic report log messages (`reportLogMessages`).
+        2. *Stage 2 (Synthesis Pass):* Analyzes query constructs and API feedback to dynamically synthesize a targeted `optimizer.config.yaml` specifying `type: optimizer` and transformation rules (`REWRITE_CTE_TO_TEMP_TABLE`, `DROP_TEMP_TABLE`, `PRECOMPUTE_INDEPENDENT_SUBSELECTS`, `REGEXP_CONTAINS_TO_LIKE`, `ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON`).
+        3. *Stage 3 (Opt-in Optimization & Dry-Run Pass):* Re-runs the workflow WITH the synthesized `optimizer.config.yaml`, extracts target SQL literals, strips injected schema DDL (preserving multi-statement temp-table scripts), and executes BigQuery dry-run validation to compute byte savings percentage (`bytes_delta_pct`) and cost reduction.
+- **Safety & FinOps Guardrails:**
+    - **Guaranteed Resource Cleanup:** Uses `try ... finally` execution blocks to guarantee workflow deletion (`client.delete(workflow_name)`) on all exit paths (success, error, exception, or timeout).
+    - **Dry-Run Validation Gate:** Required translated SQL to pass BigQuery dry-run validation. If the translated query fails dry-run syntax/schema validation, the engine surfaces `success: False` with explicit error details.
+    - **SQL Injection Prevention:** Enforces strict identifier validation (`IDENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")`) before interpolating table and dataset names into `INFORMATION_SCHEMA` queries.
+    - **Timeout & Payload Clamping:** Clamps execution timeouts to `[10s, 300s]` and caps maximum input query size to 1 MB to prevent server thread pool exhaustion.
+- **Visualization & UI:**
+    - "AI Doctor" tab displaying Discovery Priority mode selector, job telemetry (slot-ms, user email, original query, execution count runs badge), Gemini LLM advice, synthesized `optimizer.config.yaml` rules, optimized SQL syntax, and one-click Dry-Run byte reduction validation.
 
 ### 4.19 Module 18: Active Assist Recommendations `[STATUS: IMPLEMENTED]`
 

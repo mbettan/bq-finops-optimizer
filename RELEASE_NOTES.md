@@ -6,6 +6,53 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## July 27, 2026 — v1.3.0
+
+**Feature (AI Doctor Multi-Strategy ROI Engine)**
+Introduced an aggregated multi-metric query selection and FinOps ROI prioritization engine for AI Doctor. Rather than selecting single un-grouped expensive jobs, AI Doctor groups query executions across `JOBS_BY_ORGANIZATION` over 7–90 day lookback windows. Added an interactive **Discovery Priority** dropdown to the UI with 5 distinct strategy modes:
+* ⚖️ **Balanced ROI Score (`composite`)**: Ranks workload templates using a multi-factor score: $0.40 \cdot \log_{10}(GB + 1) + 0.30 \cdot \log_{10}(Execs + 1) + 0.20 \cdot \log_{10}(Slots + 1) + 0.10 \cdot SpillFlag$.
+* 💰 **Cumulative Cost (`cumulative_cost`)**: Ranks workloads by On-Demand cost or On-Demand Equivalent cost for BigQuery Editions (using scanned bytes when billed bytes is 0).
+* 🔄 **High Frequency (`execution_frequency`)**: Targets dashboard micro-offenders executing repeatedly (`execution_count > 1`), rendering interactive execution run badges in the UI.
+* 💾 **Memory RAM Spill (`memory_spill`)**: Surfaces memory-intensive queries that spill intermediate shuffle bytes to disk (`HAVING bytes_spilled > 0`).
+* ⏱️ **Total Slot Time (`slot_ms`)**: Focuses on heavy slot-consuming query templates.
+
+**Feature (BigQuery Editions Hybrid Cost Fallback)**
+* **On-Demand Equivalent Cost (`effective_bytes`)**: Computed `effective_bytes = GREATEST(COALESCE(total_bytes_billed, 0), COALESCE(total_bytes_processed, 0))`. For queries running under BigQuery Editions (slot capacity reservations) where `total_bytes_billed = 0`, the discovery engine uses scanned data volume to rank workloads and calculate On-Demand Equivalent Costs instead of dropping them to $0.00.
+
+**Feature (Multi-Stage Unnesting & Atomic Sampling)**
+* **Stage Spill Aggregation**: Unnests `job_stages` via `(SELECT SUM(s.shuffle_output_bytes_spilled) FROM UNNEST(job_stages) s)` to capture intermediate RAM-to-disk spills across all execution stages.
+* **Deterministic Worst-Job Sampling**: Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload.
+* **Script Filtering**: Excludes procedural script headers (`statement_type != 'SCRIPT'`) to prevent double-counting slot time and processed bytes.
+
+**Security & Error Handling**
+* **Strict IAM 403 Enforcement**: Requires `roles/bigquery.resourceViewer` or `roles/bigquery.admin` for organization discovery. Intercepts IAM 403 `Forbidden` exceptions and returns a clear `HTTP 403 Access Denied` response with role guidance, eliminating silent or degraded project-level fallbacks.
+* **Pydantic Literal Validation**: Validates `discovery_strategy` parameters strictly via Pydantic `Literal` types (returning HTTP 422 for unrecognised options).
+
+**Fixed**
+* **High Frequency (`execution_frequency`) SQL HAVING Clause Fix**: Resolved BigQuery `400 Aggregate function COUNT(*) not allowed in WHERE clause` error by filtering on CTE column alias `execution_count > 1`.
+* **UI Empty Notification & Tooltips**: Updated toast messages when candidate queries pass clean with zero anti-patterns, and updated UI tooltips for the `cumulative_cost` strategy.
+* **`total_bytes_processed` Metric Correction**: Included `total_bytes_processed` in discovery SQL CTEs, ensuring `bytes_scanned_original` is accurately populated under BigQuery Editions.
+* **Strategy-Aware Re-Sorting**: Ensured secondary project query fetches preserve exact strategy ordering (`optimization_potential_score`, `total_effective_bytes`, `execution_count`, `annualized_cost_usd`, or `total_slot_ms`).
+* **Frontend Escaping Typo**: Fixed `escapeHtml` typo in `static/app.js` to ensure migration YAML badges render smoothly.
+
+---
+
+## July 25, 2026 — v1.2.4
+
+**Fixed**
+Removed inflated `bytes_billed_avg` and `bytes_processed_avg` columns from `/api/slots/utilization` — `JOBS_TIMELINE` rows are per-second slices, so summing job-level byte columns multiplied real values by the job's duration. Cost attribution now surfaces unconfigured reservations (`unattributed_reservations`, `total_unattributed_slot_hours`, `is_complete`) instead of silently skipping them.
+
+**Fixed**
+Governance partition audit now uses `INFORMATION_SCHEMA.COLUMNS` as primary detector (cheaper, covers empty tables, yields actual partition column name) with a supplementary `PARTITIONS` probe for ingestion-time tables. `BadRequest` errors (malformed SQL, bytes-billed cap exceeded) no longer retried; actionable error messages returned.
+
+**Fixed**
+Tiered slot recommendations now filter `job_type = 'QUERY'` and exclude parent `SCRIPT` jobs. `fairness_enabled` tracked per admin project instead of last-writer-wins. HBO slot-hour price parameterized (`price_per_slot_hr`), ranking fixed to sort by `saved_slot_hours`, and `limit` bounded (`1..1000`). Governance audit honours `audit_type` discriminator.
+
+**Change**
+Removed dead `reservations_sql` variable, unreachable cost attribution else branch, and three fabricated anomalies from `/api/dashboard/anomalies`. Fixed stale fluid-scaling comment and added `borrowed_slots = 0` rationale documentation.
+
+---
+
 ## July 24, 2026 — v1.2.3
 
 **Feature**

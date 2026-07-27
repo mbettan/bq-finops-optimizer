@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH, request_id_var, run_query_with_retry_limit
+from .utils import init_bq_client_and_resolve_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, _safe_ident, _normalize_region, DAYS_PER_MONTH, request_id_var, run_query_with_retry_limit, run_query_and_log as _run_and_log
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -12,29 +12,6 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def _run_and_log(client, sql, label, params=None, query_parameters=None):
-    """Run a query with timing, BQ URL, and structured logging."""
-    max_bytes = get_max_bytes_billed(params)
-    job_config = bigquery.QueryJobConfig(
-        maximum_bytes_billed=max_bytes,
-        query_parameters=query_parameters or []
-    )
-    logger.debug("%s SQL:\n%s", label, sql)
-    logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
-    t0 = time.time()
-    query_job, results = run_query_with_retry_limit(client, sql, job_config, description=label, max_attempts=5)
-    elapsed = time.time() - t0
-    proc = query_job.total_bytes_processed
-    billed = query_job.total_bytes_billed
-    proc_gib = f"{proc / (1024**3):.2f} GiB" if proc is not None else "N/A"
-    bill_gib = f"{billed / (1024**3):.2f} GiB" if billed is not None else "N/A"
-    loc = query_job.location or "us"
-    bq_url = f"https://console.cloud.google.com/bigquery?project={query_job.project}&j=bq:{loc}:{query_job.job_id}&page=queryresults"
-    logger.info(
-        "✅ %s — %.1fs | Job: %s | Processed: %s | Billed: %s | Cache: %s | %s",
-        label, elapsed, query_job.job_id, proc_gib, bill_gib, query_job.cache_hit, bq_url
-    )
-    return results
 
 router = APIRouter(prefix="/api/hbo", tags=["hbo"])
 
@@ -46,10 +23,14 @@ class HBOCommonParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
+    # F11: Parameterize slot-hour price — hardcoded $0.06 is the standard
+    # Editions PAYG rate; committed-use pricing is lower.
+    price_per_slot_hr: float = Field(default=0.06, gt=0, le=1.0)
     max_bytes_billed_gb: Optional[int] = None
 
 class HBOAnalyzeParams(HBOCommonParams):
-    limit: int = 10
+    # F13: Bound limit to prevent unbounded result sets
+    limit: int = Field(default=10, ge=1, le=1000)
 
 class HBOStatusParams(HBOCommonParams):
     pass
@@ -126,7 +107,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
                 percent_saved = 100 * (prev_exec_ms - row.duration_ms) / max(prev_exec_ms, 1)
                 
                 saved_slot_hours = (percent_saved / 100) * ((row.total_slot_ms or 0) / 3600000.0)
-                estimated_savings = saved_slot_hours * 0.06
+                estimated_savings = saved_slot_hours * params.price_per_slot_hr
                 
                 output.append(HBOResult(
                     job_id=row.job_id,
@@ -139,8 +120,9 @@ def analyze_hbo(params: HBOAnalyzeParams):
                     
 
                 
-        # Sort output by percent_saved descending
-        output.sort(key=lambda x: x.percent_execution_time_saved, reverse=True)
+        # F12: Sort by saved_slot_hours (actual savings impact) instead of
+        # percent_saved (which biased toward tiny jobs with high % improvement)
+        output.sort(key=lambda x: x.saved_slot_hours, reverse=True)
         log_endpoint_end("HBO Analyze", t0, _logger=logger)
         return output[:params.limit]
         
@@ -202,7 +184,7 @@ def get_hbo_summary(params: HBOCommonParams):
             
             # Calculate daily averages
             daily_slot_avg = total_saved_slot_hours / lookback
-            daily_usd_avg = (total_saved_slot_hours * 0.06) / lookback
+            daily_usd_avg = (total_saved_slot_hours * params.price_per_slot_hr) / lookback
             
             # Project to standard month (365.25/12 = 30.4375 days)
             monthly_saved_slot_hours = daily_slot_avg * DAYS_PER_MONTH

@@ -587,6 +587,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit'),
+        aiDiscoveryStrategy: document.getElementById('ai-discovery-strategy'),
         aiLookback: document.getElementById('ai-lookback'),
         aiModel: document.getElementById('ai-model')
     };
@@ -2106,6 +2107,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
           .then(() => {
             const original = fresh.textContent;
             fresh.textContent = '✓ COPIED';
+            showNotification('DDL copied to clipboard!', 'success');
             setTimeout(() => { fresh.textContent = original; }, 1500);
           })
           .catch(err => console.error('Clipboard write failed:', err));
@@ -2482,8 +2484,22 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const showNotification = (message, type = 'info') => {
+        // If an identical notification is already showing, flash it to acknowledge the click without stacking duplicate popups
+        if (elements.notificationContainer) {
+            const activeNotifs = elements.notificationContainer.querySelectorAll('.notification');
+            for (const notif of activeNotifs) {
+                const contentEl = notif.querySelector('.notif-content');
+                if (contentEl && contentEl.textContent.trim() === message.trim()) {
+                    notif.style.transform = 'scale(1.05)';
+                    setTimeout(() => { notif.style.transform = 'scale(1)'; }, 150);
+                    return;
+                }
+            }
+        }
+
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
+        notification.style.transition = 'transform 0.15s ease-out';
         
         let icon = 'fa-circle-info';
         if (type === 'success') icon = 'fa-circle-check';
@@ -2500,7 +2516,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         setTimeout(() => {
             notification.style.animation = 'fadeOut 0.3s ease-out forwards';
             setTimeout(() => notification.remove(), 300);
-        }, 4000);
+        }, 3000);
     };
 
     window.showNotification = showNotification;
@@ -3833,7 +3849,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                lookback_days: 30
             };
             try {
                 const response = await fetch('/api/mv/analyze', {
@@ -3867,7 +3884,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
                 region: state.region,
-                focus_projects: state.focusProjects
+                focus_projects: state.focusProjects,
+                lookback_days: 30
             };
             try {
                 const response = await fetch('/api/resource_warnings/analyze', {
@@ -4053,15 +4071,73 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached BI results", e); }
     }
 
+    // XSS-safe escape for untrusted model output [R3]
+    const escHtml = s => s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    // Module-scoped variable to hold current results for Copy/DryRun reference [2.8]
+    let currentAiResults = [];
+
     const renderAiResults = (data) => {
-        const tbody = document.querySelector('#ai-results-table tbody');
-        if (!tbody) return;
-        tbody.innerHTML = '';
+        const oldTbody = document.querySelector('#ai-results-table tbody');
+        if (!oldTbody) return;
+        const tbody = oldTbody.cloneNode(false);
+        oldTbody.parentNode.replaceChild(tbody, oldTbody);
+        currentAiResults = data;
+
+        // Severity badge config with numeric rank for DataTable sorting [R2]
+        const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+        const severityColors = {
+            HIGH:   { bg: 'rgba(239, 68, 68, 0.15)',  border: 'rgba(239, 68, 68, 0.4)',  text: '#ef4444', icon: 'fa-circle-exclamation' },
+            MEDIUM: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.4)', text: '#f59e0b', icon: 'fa-triangle-exclamation' },
+            LOW:    { bg: 'rgba(34, 197, 94, 0.15)',   border: 'rgba(34, 197, 94, 0.4)',  text: '#22c55e', icon: 'fa-circle-check' }
+        };
 
         data.forEach(row => {
             const tr = document.createElement('tr');
             
-            // Build Schema Coverage Badge
+            // --- Severity Badge [R2] ---
+            let severityBadge = '<span style="color: var(--text-secondary);">—</span>';
+            let severityOrder = 3;
+            if (row.severity) {
+                severityOrder = severityRank[row.severity] ?? 3;
+                const s = severityColors[row.severity] || severityColors.LOW;
+                severityBadge = `
+                    <span style="background: ${s.bg}; border: 1px solid ${s.border}; color: ${s.text};
+                        padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;
+                        display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;">
+                        <i class="fa-solid ${s.icon}" style="font-size: 0.85rem;"></i> ${row.severity}
+                    </span>`;
+            }
+
+            // --- Zero-Click Original Cost [R7] ---
+            const rate = row.on_demand_rate_usd_per_tb || 6.25;
+            const billedBytes = row.bytes_billed_original || 0;
+            const scannedBytes = row.bytes_scanned_original || 0;
+            const displayBytes = billedBytes > 0 ? billedBytes : scannedBytes;
+            const costLabel = billedBytes > 0 ? 'Billed' : 'Scanned';
+            let originalCost = '<span style="color: var(--text-secondary);">—</span>';
+            if (displayBytes > 0) {
+                const gb = (displayBytes / (1024**3)).toFixed(2);
+                const usd = ((displayBytes / (1024**4)) * rate).toFixed(4);
+                const execBadge = row.execution_count && row.execution_count > 1 
+                    ? `<div style="color: #38bdf8; font-size: 0.75rem; margin-top: 2px;"><i class="fa-solid fa-repeat"></i> ${row.execution_count.toLocaleString()} runs</div>`
+                    : '';
+                originalCost = `
+                    <div style="font-size: 0.85rem;">
+                        <div style="color: #e2e8f0; font-weight: 600;">${gb} GB</div>
+                        <div style="color: ${billedBytes > 0 ? '#f59e0b' : '#94a3b8'}; font-size: 0.8rem;">
+                            ~$${usd} <span style="font-size: 0.7rem;">(${costLabel})</span>
+                        </div>
+                        ${execBadge}
+                    </div>`;
+            }
+
+            // --- Schema Coverage Badge ---
             let coverageBadge = '<span style="color: var(--text-secondary); font-size: 0.85rem;">N/A</span>';
             const referenced = row.tables_referenced_count || 0;
             const found = row.tables_found_count || 0;
@@ -4089,7 +4165,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
             }
             
-            // Add inline notes at the bottom of the advice
+            // --- Inline Notes ---
             let inlineNote = '';
             if (referenced > 0) {
                 const missing = referenced - found;
@@ -4103,20 +4179,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const renderMarkdown = (text) => {
                 if (!text) return '';
-
-                // text is already HTML-escaped by the global sanitizeData()
-                // fetch wrapper — do not escape again here.
                 let html = text;
-
-                // 2. Extract and mask triple-backtick code blocks
                 const codeBlocks = [];
                 html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
                     const placeholder = `__CODE_BLOCK_PLACEHOLDER_${codeBlocks.length}__`;
                     codeBlocks.push(`<pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); padding: 1rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #e2e8f0; overflow-x: auto; margin: 0.75rem 0; line-height: 1.5; white-space: pre;"><code style="color: #38bdf8;">${code}</code></pre>`);
                     return placeholder;
                 });
-                
-                // 3. Do all other markdown replacements
                 html = html.replace(/^### (.*?)$/gm, '<h3 style="margin: 1rem 0 0.5rem 0; color: white; font-size: 1.05rem; font-weight: 600;">$1</h3>');
                 html = html.replace(/^#### (.*?)$/gm, '<h4 style="margin: 0.75rem 0 0.25rem 0; color: #94a3b8; font-size: 0.95rem; font-weight: 600;">$1</h4>');
                 html = html.replace(/`(.*?)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.15rem 0.35rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #38bdf8;">$1</code>');
@@ -4124,28 +4193,76 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
-                
-                // 4. Restore the masked code blocks
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
                 });
-                
                 return html;
             };
 
-            // row.query is already HTML-escaped by the global sanitizeData()
-            // fetch wrapper — do not escape again here.
+            // --- Query SQL Preview ---
             const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
             const escapedQuery = row.query || '';
             const escapedPreview = sqlPreview;
+
+            // --- Optimized Query Cell [R3] ---
+            let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (row.optimized_query) {
+                const escapedSqlPreview = escHtml(
+                    row.optimized_query.length > 200
+                        ? row.optimized_query.substring(0, 200) + '...'
+                        : row.optimized_query
+                );
+                let approxBadge = '';
+                if (row.approx_warning_flag) {
+                    approxBadge = `<div style="margin-top: 0.4rem; font-size: 0.7rem; color: #f59e0b;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Uses APPROX_COUNT_DISTINCT
+                    </div>`;
+                }
+                optimizedCell = `
+                    <div style="position: relative; min-width: 250px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #38bdf8; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedSqlPreview}</pre>
+                        ${approxBadge}
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <button class="copy-sql-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                            <button class="dry-run-btn" style="background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.3);
+                                color: #a855f7; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-flask"></i> Dry Run
+                            </button>
+                        </div>
+                        <div class="dry-run-result" style="display: none; margin-top: 0.5rem;"></div>
+                    </div>`;
+            }
+
+            let yamlBadge = '';
+            if (row.migration_applied_yaml) {
+                const escapedYaml = escHtml(row.migration_applied_yaml.trim());
+                yamlBadge = `
+                    <div style="margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8;">
+                        <div style="font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 4px;">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Migration API Config Applied
+                        </div>
+                        <pre style="margin: 0; font-family: monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; word-break: break-all;">${escapedYaml}</pre>
+                    </div>`;
+            }
 
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.user_email}</td>
                 <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td data-order="${severityOrder}">${severityBadge}</td>
+                <td>${originalCost}</td>
                 <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help;" title="${escapedQuery}">${escapedPreview}</td>
                 <td>${coverageBadge}</td>
-                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">${renderMarkdown(row.gemini_optimization_advice)}${inlineNote}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">${renderMarkdown(row.gemini_optimization_advice)}${yamlBadge}${inlineNote}</td>
+                <td>${optimizedCell}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -4153,7 +4270,104 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if ($.fn.DataTable.isDataTable('#ai-results-table')) {
             $('#ai-results-table').DataTable().destroy();
         }
-        $('#ai-results-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+        $('#ai-results-table').DataTable({ pageLength: 10, order: [[3, 'asc'], [2, 'desc']], responsive: true });
+
+        // --- Event Delegation for Copy SQL + Dry Run buttons ---
+        tbody.addEventListener('click', async (e) => {
+            // Copy SQL button [R-clipboard]
+            const copyBtn = e.target.closest('.copy-sql-btn');
+            if (copyBtn) {
+                const tr = copyBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const sql = rowData?.optimized_query || '';
+                
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
+                    } else {
+                        // Fallback for insecure contexts (plain HTTP) [R-clipboard]
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                    showNotification('Optimized SQL copied to clipboard.', 'success');
+                } catch (err) {
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
+                }
+                return;
+            }
+
+            // Dry Run button [R9]
+            const dryBtn = e.target.closest('.dry-run-btn');
+            if (dryBtn) {
+                const tr = dryBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const resultDiv = tr.querySelector('.dry-run-result');
+                
+                dryBtn.disabled = true;
+                dryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running...';
+                
+                try {
+                    const resp = await fetch('/api/ai/dry_run', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/ai/dry_run', {
+                            org_project_id: state.orgProject,
+                            query: rowData.optimized_query
+                        }))
+                    });
+                    const dryData = await resp.json();
+                    
+                    if (!dryData.valid) {
+                        // [R9] Show actual BQ error — useful signal for invalid rewrites
+                        resultDiv.innerHTML = `
+                            <div style="color: #ef4444; font-size: 0.78rem; padding: 0.5rem; background: rgba(239,68,68,0.1);
+                                border-radius: 6px; border: 1px solid rgba(239,68,68,0.3);">
+                                <i class="fa-solid fa-xmark"></i> Dry-run failed: ${escHtml(dryData.error || 'Unknown error')}
+                            </div>`;
+                    } else if (dryData.is_external) {
+                        resultDiv.innerHTML = `
+                            <div style="color: #94a3b8; font-size: 0.78rem; padding: 0.5rem;">
+                                <i class="fa-solid fa-cloud"></i> External/Federated Table — byte savings cannot be calculated via Dry-Run.
+                            </div>`;
+                    } else {
+                        const optGb = (dryData.total_bytes_processed / (1024**3)).toFixed(2);
+                        const optUsd = dryData.estimated_cost_usd.toFixed(4);
+                        const origBytes = rowData.bytes_billed_original || rowData.bytes_scanned_original || 0;
+
+                        let savingsHtml = '';
+                        if (origBytes > 0) {  // [R9] Guard division-by-zero
+                            const origGb = (origBytes / (1024**3)).toFixed(2);
+                            const pct = (((origBytes - dryData.total_bytes_processed) / origBytes) * 100).toFixed(1);
+                            savingsHtml = `
+                                <div style="color: #22c55e; margin-top: 0.25rem;">
+                                    ↓ ${pct}% reduction (${origGb} GB → ${optGb} GB)
+                                </div>`;
+                        }
+                        
+                        resultDiv.innerHTML = `
+                            <div style="font-size: 0.78rem; padding: 0.5rem; background: rgba(34,197,94,0.1);
+                                border-radius: 6px; border: 1px solid rgba(34,197,94,0.3);">
+                                <div style="color: #38bdf8;">Optimized: ${optGb} GB (~$${optUsd})</div>
+                                ${savingsHtml}
+                            </div>`;
+                    }
+                    resultDiv.style.display = 'block';
+                } catch (err) {
+                    resultDiv.innerHTML = `<div style="color: #ef4444; font-size: 0.78rem;">${escHtml(err.message)}</div>`;
+                    resultDiv.style.display = 'block';
+                } finally {
+                    dryBtn.disabled = false;
+                    dryBtn.innerHTML = '<i class="fa-solid fa-flask"></i> Dry Run';
+                }
+            }
+        });
     };
 
     // DDL Learn More Drawer Toggle
@@ -4222,6 +4436,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 region: state.region,
                 focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
+                discovery_strategy: elements.aiDiscoveryStrategy ? elements.aiDiscoveryStrategy.value : 'composite',
                 lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7'),
                 model: elements.aiModel ? elements.aiModel.value : 'gemini-3.6-flash'
             };
@@ -4245,7 +4460,20 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 renderAiResults(data);
                 safeSetLocalStorage('bq_ai_results', JSON.stringify(data));
-                showNotification('AI analysis completed.', 'success');
+
+                if (data.length === 0) {
+                    const strategy = params.discovery_strategy;
+                    const emptyMessages = {
+                        execution_frequency: 'All analyzed high-frequency queries passed clean with no anti-patterns found! Try increasing the lookback window or using a different strategy (e.g. Cumulative Cost or Composite ROI).',
+                        memory_spill: 'No queries with RAM spill anti-patterns detected in this lookback window. Your workloads are not spilling shuffle data to disk.',
+                        composite: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        cumulative_cost: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        slot_ms: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!'
+                    };
+                    showNotification(emptyMessages[strategy] || 'No query anti-patterns found to audit.', 'info');
+                } else {
+                    showNotification('AI analysis completed.', 'success');
+                }
             } catch (error) {
                 if (progress && progress.stop) progress.stop();
                 console.error("AI Error:", error);
@@ -4294,6 +4522,22 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             // Execute directly if consent has been accepted previously
             runActualAiAnalysis();
+        });
+    }
+
+    if (elements.aiDiscoveryStrategy) {
+        const strategyDescs = {
+            composite: '⚖️ Ranks candidates by Cost + Run Frequency + Slot Time + RAM Spill.',
+            cumulative_cost: '💰 Ranks workloads by On-Demand cost or On-Demand Equivalent cost for BigQuery Editions (using bytes scanned when bytes billed is 0).',
+            execution_frequency: '🔄 Targets dashboard micro-offenders executing repeatedly (COUNT(*) > 1).',
+            memory_spill: '💾 Filters for queries spilling intermediate shuffle data from RAM to disk.',
+            slot_ms: '⏱️ Focuses on heavy compute queries consuming the highest aggregate CPU slot milliseconds.'
+        };
+        elements.aiDiscoveryStrategy.addEventListener('change', (e) => {
+            const descEl = document.getElementById('ai-strategy-desc');
+            if (descEl && strategyDescs[e.target.value]) {
+                descEl.textContent = strategyDescs[e.target.value];
+            }
         });
     }
 

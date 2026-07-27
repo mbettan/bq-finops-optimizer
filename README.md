@@ -51,11 +51,18 @@ BigQuery HBO automatically optimizes queries over time. Since it is enabled by d
 ### 5. AI-Powered Query Analysis (AI Doctor)
 > **Note:** The AI Doctor is the **only module in this entire application that uses AI/GenAI**. All other modules (Storage, Compute, Slots, HBO, Cost Attribution, Governance, Anti-Patterns, etc.) are powered exclusively by SQL queries and Python analytics — no AI, no LLM, no external model calls.
 
-Uses BigQuery's native `AI.GENERATE` scalar function to perform semantic SQL review **directly inside BigQuery**, with zero infrastructure setup:
+*   **Multi-Strategy ROI Discovery Engine:** Rather than auditing single un-grouped job executions, AI Doctor aggregates query telemetry across `JOBS_BY_ORGANIZATION` by query hash over customizable lookback windows (7 to 90 days). It supports 5 distinct prioritization strategies:
+    *   **⚖️ Balanced ROI Score (`composite`)**: Multi-factor scoring formula: $0.40 \cdot \log_{10}(GB + 1) + 0.30 \cdot \log_{10}(Execs + 1) + 0.20 \cdot \log_{10}(Slots + 1) + 0.10 \cdot SpillFlag$.
+    *   **💰 Cumulative Cost (`cumulative_cost`)**: Ranks workload templates by aggregate bytes billed across all historical executions.
+    *   **🔄 High Frequency (`execution_frequency`)**: Focuses on micro-offender dashboard queries executed repeatedly (`HAVING COUNT(*) > 1`), rendering interactive execution run badges in the UI.
+    *   **💾 Memory RAM Spill (`memory_spill`)**: Surfaces memory-intensive queries that spill intermediate shuffle bytes to disk (`HAVING bytes_spilled > 0`).
+    *   **⏱️ Total Slot Time (`slot_ms`)**: Focuses on heavy aggregate slot-consuming query templates.
+*   **Multi-Stage Shuffle Spill Unnesting:** Unnests `job_stages` via `(SELECT SUM(s.shuffle_output_bytes_spilled) FROM UNNEST(job_stages) s)` to aggregate intermediate RAM-to-disk spills across all execution stages.
+*   **Deterministic Worst-Job Sampling:** Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload for AI auditing.
+*   **Strict IAM Guardrails:** Requires `roles/bigquery.resourceViewer` or `roles/bigquery.admin` for organization discovery. Intercepts IAM 403 `Forbidden` exceptions and raises an explicit `HTTP 403 Access Denied` response with clear role guidance.
 *   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.6-flash` by default, or `gemini-3.5-flash-lite`) directly.
 *   **No Cloud Resource Connection required** (by default) — works with your existing end-user ADC credentials out of the box. A connection is only needed if deploying on Cloud Run with a service account.
 *   **No additional APIs to enable** beyond the Vertex AI API on your project.
-*   Retrieves the most expensive queries by slot consumption from `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION`, scanning the entire organization.
 *   Sends each SQL statement to Gemini with a structured prompt that checks for 7 common anti-patterns (e.g., `SELECT *`, missing `WHERE` before `JOIN`, `CROSS JOIN`, `COUNT(DISTINCT)` vs. `APPROX_COUNT_DISTINCT`).
 *   **Required IAM permissions:** `roles/aiplatform.user` (Vertex AI User) on the execution project — see AI Doctor Permissions below.
 
@@ -71,10 +78,12 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 | **Safety Settings** | All 4 categories `OFF` | SQL text is never harmful content. Prevents false blocks from repeated literals or large token volumes. |
 
 #### AI Doctor Architecture
+*   **Multi-Strategy Candidate Aggregation:** Aggregates jobs by `COALESCE(query_hashes.normalized_literals, CONCAT('job:', job_id))` and applies multi-stage shuffle spill unnesting (`UNNEST(job_stages)`).
 *   **DDL Summarization:** Full column-level DDL dumps are replaced with structural metadata summaries (~150 chars per table): row count, byte size, partition/clustering keys, and column count. The LLM doesn't need column names to detect anti-patterns.
 *   **Newline-Aware Truncation:** SQL payloads exceeding 5,000 characters and DDL payloads exceeding 4,000 characters are truncated at the last newline boundary to prevent feeding malformed SQL fragments to the model.
 *   **Parallel Execution:** Queries are batched into `UNION ALL` chunks (5 per chunk), with each subquery independently calling `AI.GENERATE`. This enables parallel LLM evaluation within a single BigQuery job.
 *   **3-Tier Error Handling:** The backend extracts the full Vertex AI response struct (`result`, `status`, `full_response`) to distinguish between function-level failures (NULL struct), API errors (status populated), and model-level blocks (`finish_reason: MAX_TOKENS` or `SAFETY`).
+
 
 ### 6. Built-in Security & Access Guardrails
 *   **Defense-in-Depth Validation**: All BigQuery-derived identifiers (e.g., project IDs, reservation names) are actively sanitized via `_safe_ident()` before DDL generation or query interpolation to prevent second-order SQL injection.
