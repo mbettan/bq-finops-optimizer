@@ -522,6 +522,17 @@ def _execute_workflow_pass(client: MigrationClient, files: list[tuple[str, str]]
 
         # Extract target literals from final_payload and subtasks
         target_literals = walk_literals(final_payload)
+
+        # C3: walk_literals may pick up the SOURCE input literal echoed back
+        # under the same "input.sql" key. Compare against the submitted source:
+        # if they match, it's an echo (not a real translation) — remove it.
+        # If they differ, the API translated the SQL inline and we keep it.
+        source_input = dict(files).get("input.sql")
+        payload_sql = target_literals.get("input.sql")
+        if payload_sql and source_input and payload_sql.strip() == source_input.strip():
+            logger.debug("[BQ Migration API] C3: Stripped echoed source literal from walk_literals.")
+            target_literals.pop("input.sql", None)
+
         issues = extract_migration_issues(final_payload)
 
         sub_res = client.subtasks(workflow_name)
@@ -531,6 +542,7 @@ def _execute_workflow_pass(client: MigrationClient, files: list[tuple[str, str]]
             issues.extend(extract_migration_issues(sub_res.body))
 
         return target_literals, issues, True, None
+
 
     finally:
         # S1-5 Fix: Always delete workflow resource regardless of outcome/timeout
@@ -619,10 +631,13 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
 
         raw_translated = literals.get("input.sql")
         if not raw_translated:
-            logger.error("[BQ Migration API] Workflow completed but returned no target SQL literal.")
+            logger.info("[BQ Migration API] Compiler analyzed the query but no optimizations were applied.")
             return TranslationResponse(
                 translated_sql=query_sql, original_sql=query_sql,
-                success=False, error_message="Migration API returned no target SQL literal."
+                issues=issues,
+                applied_config_yaml=applied_yaml,
+                success=True,
+                error_message="Compiler analyzed the query — no optimizations were applicable."
             )
 
         translated = strip_leading_ddl(raw_translated) if not params.keep_ddl_in_output else raw_translated
@@ -658,7 +673,18 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
                 )
 
             if bytes_before is not None and bytes_after is not None and bytes_before > 0:
-                delta_pct = round((bytes_after - bytes_before) / bytes_before * 100.0, 2)
+                # C4: Guard against unreliable dry-run results. Multi-statement
+                # scripts (e.g. CTE-to-temp-table rewrites) report 0 bytes
+                # processed because BigQuery dry-runs scripts as 0. Reporting
+                # a -100% delta in that case is misleading.
+                if bytes_after == 0 and bytes_before > 0:
+                    logger.warning(
+                        "[BQ Migration API] Translated query dry-run returned 0 bytes "
+                        "(likely a multi-statement script). Skipping delta calculation."
+                    )
+                    # Leave delta_pct as None — caller sees "not measurable"
+                else:
+                    delta_pct = round((bytes_after - bytes_before) / bytes_before * 100.0, 2)
 
         logger.info(f"◼ [BQ Migration API] Workflow completed successfully! Byte Delta: {delta_pct}%")
 

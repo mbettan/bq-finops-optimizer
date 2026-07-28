@@ -1472,6 +1472,50 @@ table.dataTable tbody tr:last-child td {
         color: var(--accent-color);
         border: 1px solid hsla(217, 91%, 60%, 0.2);
     }
+
+    /* ─── HBO Optimization Badges ─── */
+    .opt-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+    }
+
+    .opt-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 500;
+        white-space: nowrap;
+        cursor: default;
+    }
+
+    .opt-badge--hbo {
+        background: rgba(96, 165, 250, 0.12);
+        color: #60a5fa;
+        border: 1px solid rgba(96, 165, 250, 0.25);
+    }
+
+    .opt-badge--engine {
+        background: rgba(45, 212, 191, 0.12);
+        color: #2dd4bf;
+        border: 1px solid rgba(45, 212, 191, 0.25);
+    }
+
+    .opt-badge--unknown {
+        background: rgba(148, 163, 184, 0.12);
+        color: #94a3b8;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+
+    .opt-none {
+        color: var(--text-secondary);
+        font-style: italic;
+        font-size: 0.8rem;
+    }
     
     /* ─── Utility Classes ─── */
     .text-success {

@@ -56,14 +56,12 @@
             const sanitized = {};
             for (const key in data) {
                 if (Object.prototype.hasOwnProperty.call(data, key)) {
-                    // `ddl` is synthesized server-side from already-validated
-                    // identifiers and fixed templates (never raw user input),
-                    // and is written into <textarea>.value / clipboard as literal
-                    // text, so escaping it would corrupt copy/paste. Every other
-                    // field — including raw SQL query text and AI-generated
-                    // advice, both of which can contain attacker-influenced
-                    // content — is escaped like everything else by default.
-                    if (key === 'ddl') {
+                    // Keys that are consumed as raw text (clipboard, textarea,
+                    // <pre>.textContent, or POST body) must NOT be HTML-escaped
+                    // by the global proxy — doing so corrupts SQL operators,
+                    // quoted identifiers, and YAML.  Escape at the render sink.
+                    const RAW_KEYS = new Set(['ddl', 'optimized_query', 'query', 'migration_applied_yaml']);
+                    if (RAW_KEYS.has(key)) {
                         sanitized[key] = data[key];
                     } else {
                         sanitized[key] = sanitizeData(data[key]);
@@ -90,6 +88,26 @@ function safeParseJSON(raw, fallback) {
         console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
         return fallback;
     }
+}
+
+// F-M4: Extracts a human-readable message from FastAPI error details.
+// FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
+// renders as [object Object] if used directly. This handles string,
+// array-of-{loc,msg}, and absent cases.
+function detailToMessage(detail, fallback = 'Unknown error') {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map(d => {
+            if (typeof d === 'string') return d;
+            if (d && d.msg) {
+                const loc = Array.isArray(d.loc) ? d.loc.join(' → ') : '';
+                return loc ? `${loc}: ${d.msg}` : d.msg;
+            }
+            return String(d);
+        }).join('; ');
+    }
+    return String(detail);
 }
 
 // Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
@@ -175,9 +193,13 @@ async function loadScopeMap() {
 function buildPayload(endpoint, basePayload) {
     const scope = FOCUS_SCOPE_MAP[endpoint];
     if (!scope) {
-        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — focus_projects passed unchanged`);
+        // F-M6: Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // When the scope map fails to load (502, timeout), every endpoint is
+        // unmapped. Passing focus_projects to endpoints with extra='forbid'
+        // causes a hard 422. Defaulting to 'org' is the safer fallback.
+        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — defaulting to org scope`);
     }
-    if (scope === 'org') {
+    if (scope !== 'focus') {
         const { focus_projects, ...rest } = basePayload;
         return rest;
     }
@@ -374,7 +396,11 @@ const Snapshot = (() => {
       const sanitize = window.sanitizeData || (v => v);
       return JSON.stringify(sanitize(parsed));
     } catch {
-      return raw;
+      // F-L4: Bare strings (e.g. project IDs from scalar settings keys)
+      // must also be escaped — they bypass the JSON parse above and were
+      // returned raw, which is the XSS delivery path for H1.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      return escHtml(raw);
     }
   }
 
@@ -563,7 +589,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeHbo: document.getElementById('analyze-hbo-btn'),
         hboStatusPanel: document.getElementById('hbo-status-panel'),
-        hboStatusList: document.getElementById('hbo-status-list'),
+        hboStatusList: document.getElementById('hbo-status-tbody'),
+        hboStatusSummary: document.getElementById('hbo-status-summary'),
+        hboStatusPagination: document.getElementById('hbo-status-pagination'),
         
         // Storage Hygiene
 
@@ -649,72 +677,83 @@ document.addEventListener('DOMContentLoaded', () => {
         const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
         const validationErrors = [];
 
-        // --- Strip & validate Org Project ---
-        state.orgProject = elements.cfgOrgProject.value.trim();
-        elements.cfgOrgProject.value = state.orgProject;
-        if (state.orgProject && !PROJECT_ID_RE.test(state.orgProject)) {
-            validationErrors.push(`Invalid Organization Project ID "${state.orgProject}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
+        // --- F-M1: Validate into local variables FIRST, return before
+        // touching state or localStorage to prevent half-mutated scope. ---
+        const newOrg = elements.cfgOrgProject.value.trim();
+        elements.cfgOrgProject.value = newOrg;
+        if (newOrg && !PROJECT_ID_RE.test(newOrg)) {
+            validationErrors.push(`Invalid Organization Project ID "${newOrg}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
         }
 
-        // --- Strip & validate Admin Project ---
+        let newAdmin = '';
         if (elements.cfgAdminProject) {
-            state.adminProject = elements.cfgAdminProject.value.trim();
-            elements.cfgAdminProject.value = state.adminProject;
-            if (state.adminProject && !PROJECT_ID_RE.test(state.adminProject)) {
-                validationErrors.push(`Invalid Admin Project ID "${state.adminProject}". Must be 6-30 lowercase chars, starting with a letter.`);
+            newAdmin = elements.cfgAdminProject.value.trim();
+            elements.cfgAdminProject.value = newAdmin;
+            if (newAdmin && !PROJECT_ID_RE.test(newAdmin)) {
+                validationErrors.push(`Invalid Admin Project ID "${newAdmin}". Must be 6-30 lowercase chars, starting with a letter.`);
             }
-            localStorage.setItem('bq_admin_project', state.adminProject);
         }
 
-        // --- Region (dropdown, no validation needed — just trim) ---
-        state.region = elements.cfgRegion.value;
+        const newRegion = elements.cfgRegion.value;
 
-        // --- Strip & validate Max Bytes Billed ---
+        let newMaxBytes = null;
         if (elements.cfgMaxBytesBilled) {
             const val = parseInt(elements.cfgMaxBytesBilled.value);
-            state.maxBytesBilledGb = (val && val > 0) ? val : null;
-            if (state.maxBytesBilledGb) {
-                localStorage.setItem('bq_max_bytes_billed_gb', state.maxBytesBilledGb);
-            } else {
-                localStorage.removeItem('bq_max_bytes_billed_gb');
-            }
+            newMaxBytes = (val && val > 0) ? val : null;
         }
 
-        // --- Strip & validate Focus Projects ---
+        let newFocus = [];
         if (elements.cfgFocusProjects) {
             const raw = elements.cfgFocusProjects.value;
-            state.focusProjects = raw.split(',').map(s => s.trim()).filter(Boolean);
-            // Validate each focus project ID
-            const invalidProjects = state.focusProjects.filter(p => !PROJECT_ID_RE.test(p));
+            newFocus = raw.split(',').map(s => s.trim()).filter(Boolean);
+            const invalidProjects = newFocus.filter(p => !PROJECT_ID_RE.test(p));
             if (invalidProjects.length > 0) {
                 validationErrors.push(`Invalid Focus Project ID(s): ${invalidProjects.map(p => `"${p}"`).join(', ')}. Each must be 6-30 lowercase chars, starting with a letter.`);
             }
-            // Write back cleaned values to the input field
-            elements.cfgFocusProjects.value = state.focusProjects.join(', ');
-            if (state.focusProjects.length > 0) {
-                safeSetLocalStorage('bq_focus_projects', JSON.stringify(state.focusProjects));
-            } else {
-                localStorage.removeItem('bq_focus_projects');
-            }
         }
 
-        // --- Abort on validation errors ---
+        // --- Abort on validation errors (before any state mutation) ---
         if (validationErrors.length > 0) {
             showNotification(validationErrors.join('\n'), 'error');
             return;
         }
 
+        // --- Commit validated values to state and localStorage ---
+        state.orgProject = newOrg;
+        state.region = newRegion;
+        if (elements.cfgAdminProject) {
+            state.adminProject = newAdmin;
+            localStorage.setItem('bq_admin_project', newAdmin);
+        }
+        state.maxBytesBilledGb = newMaxBytes;
+        if (newMaxBytes) {
+            localStorage.setItem('bq_max_bytes_billed_gb', newMaxBytes);
+        } else {
+            localStorage.removeItem('bq_max_bytes_billed_gb');
+        }
+        state.focusProjects = newFocus;
+        if (elements.cfgFocusProjects) {
+            elements.cfgFocusProjects.value = newFocus.join(', ');
+        }
+        if (newFocus.length > 0) {
+            safeSetLocalStorage('bq_focus_projects', JSON.stringify(newFocus));
+        } else {
+            localStorage.removeItem('bq_focus_projects');
+        }
+
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
-        // Flush all cached module results — stale data from a previous scope
-        // (e.g., org-wide results before focus_projects was set) must not persist.
+        // F-M2: Flush ALL scope-dependent caches. Use an allow-list of
+        // scope-independent keys rather than a fragile deny-list.
+        const SCOPE_INDEPENDENT = new Set([
+            'bq_org_project', 'bq_admin_project', 'bq_region',
+            'bq_max_bytes_billed_gb', 'bq_focus_projects',
+            'bq_version_dismissed',
+        ]);
         const allKeys = Object.keys(localStorage);
-        const resultKeys = allKeys.filter(k => k.startsWith('bq_') && k.endsWith('_results'));
-        resultKeys.forEach(k => localStorage.removeItem(k));
-        // Also clear any cached summaries/timelines/status that are scope-dependent
-        ['bq_hbo_status', 'bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries',
-         'bq_top_spenders', 'bq_cost_attr_results', 'bq_cost_attr_config'].forEach(k => localStorage.removeItem(k));
+        allKeys.filter(k => k.startsWith('bq_') && !SCOPE_INDEPENDENT.has(k))
+            .forEach(k => localStorage.removeItem(k));
 
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -1324,6 +1363,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const formatNumber = (num) => {
+            // F-L1: Guard null/undefined/NaN from snapshot import
+            if (num == null || isNaN(num)) return '0';
             return num.toLocaleString();
         };
 
@@ -1704,7 +1745,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Simulation failed');
+                    throw new Error(detailToMessage(err.detail, 'Simulation failed'));
                 }
 
                 const data = await response.json();
@@ -1726,6 +1767,12 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#simulation-table').DataTable().destroy();
         }
         
+        // F-M9: Guard against empty simulation response (brand-new reservation, no jobs).
+        if (!data || data.length === 0) {
+            showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
+            return;
+        }
+
         // Find optimums for the summary table
         let bestPayg = data.reduce((prev, curr) => prev.total_payg < curr.total_payg ? prev : curr);
         let best1Yr = data.reduce((prev, curr) => prev.total_1yr < curr.total_1yr ? prev : curr);
@@ -2465,6 +2512,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const formatNumber = (num) => {
+        // F-L1: Guard null/undefined/NaN from snapshot import
+        if (num == null || isNaN(num)) return '0';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
 
@@ -2506,10 +2555,16 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (type === 'error') icon = 'fa-circle-exclamation';
         if (type === 'warning') icon = 'fa-triangle-exclamation';
 
-        notification.innerHTML = `
-            <i class="fa-solid ${icon}"></i>
-            <div class="notif-content">${message}</div>
-        `;
+        // H1: Build the node with textContent to prevent XSS — message
+        // can contain DOM input values (e.g. project IDs from validation)
+        // that bypass the global fetch sanitizer.
+        const iconEl = document.createElement('i');
+        iconEl.className = `fa-solid ${icon}`;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'notif-content';
+        contentEl.textContent = message;
+        notification.appendChild(iconEl);
+        notification.appendChild(contentEl);
 
         elements.notificationContainer.appendChild(notification);
 
@@ -2647,11 +2702,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     reservations: getReservationsFromForm()
                 };
 
-                await fetch('/api/cost-attribution/config', {
+                const configResp = await fetch('/api/cost-attribution/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config)
                 });
+                if (!configResp.ok) {
+                    const errBody = await configResp.json().catch(() => ({}));
+                    throw new Error(errBody.detail || `Config save failed (HTTP ${configResp.status})`);
+                }
 
                 // Then calculate
                 const params = {
@@ -2672,7 +2731,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Calculation failed');
+                    throw new Error(detailToMessage(err.detail, 'Calculation failed'));
                 }
 
                 const data = await response.json();
@@ -2887,7 +2946,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             tr.innerHTML = `
                 <td>${row.user_email}</td>
                 <td>${formatNumber(row.query_count)}</td>
-                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TB</td>
+                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
                 <td>${formatNumber(row.total_slot_hours)}</td>
                 <td>${formatCurrency(row.est_on_demand_cost)}</td>
                 <td>${formatCurrency(row.est_editions_cost)}</td>
@@ -2902,7 +2961,59 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         $('#top-spenders-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
     };
 
+    // Build a DOM node for the optimization badges cell.
+    // Uses createElement + textContent to avoid XSS (§6.2).
+    const _buildBadgeCell = (optimizations) => {
+        const container = document.createElement('div');
+        container.className = 'opt-badges';
+
+        // null = undetermined
+        if (optimizations === null || optimizations === undefined) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = '—';
+            span.title = 'Could not determine (permissions or scope)';
+            container.appendChild(span);
+            return container;
+        }
+
+        // [] = checked, none applied
+        if (Array.isArray(optimizations) && optimizations.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = 'None detected';
+            container.appendChild(span);
+            return container;
+        }
+
+        // Array of badge objects
+        if (Array.isArray(optimizations)) {
+            optimizations.forEach(badge => {
+                const chip = document.createElement('span');
+                // Validate category to a CSS class — whitelist only
+                const validCats = ['hbo', 'engine', 'unknown'];
+                const cat = validCats.includes(badge.category) ? badge.category : 'unknown';
+                chip.className = `opt-badge opt-badge--${cat}`;
+                chip.textContent = badge.label || badge.key || 'Unknown';
+                chip.title = badge.description || '';
+                container.appendChild(chip);
+            });
+            return container;
+        }
+
+        // Fallback — loading state
+        const span = document.createElement('span');
+        span.className = 'opt-none';
+        span.textContent = 'Loading…';
+        container.appendChild(span);
+        return container;
+    };
+
+    // Store the last analyze data so enrichment can correlate
+    let _lastAnalyzeData = null;
+
     const renderHboResults = (data) => {
+        _lastAnalyzeData = data;
         let table;
         if ($.fn.DataTable.isDataTable('#hbo-results-table')) {
             table = $('#hbo-results-table').DataTable();
@@ -2910,12 +3021,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#hbo-results-table').DataTable({
                 pageLength: 10,
                 order: [[1, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [
+                    { targets: 4, orderable: false }
+                ]
             });
         }
-        
+
         table.clear();
-        
+
         let totalSlotsSaved = 0;
         let totalDollarsSaved = 0;
 
@@ -2923,80 +3037,160 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             totalSlotsSaved += row.saved_slot_hours || 0;
             totalDollarsSaved += row.estimated_savings_usd || 0;
 
+            // Show a loading placeholder until enrichment resolves
+            const badgeNode = _buildBadgeCell('_loading');
             table.row.add([
                 row.job_id,
                 `${row.percent_execution_time_saved.toFixed(2)}%`,
                 row.new_elapsed_ms.toLocaleString(),
-                row.original_elapsed_ms.toLocaleString()
+                row.original_elapsed_ms.toLocaleString(),
+                badgeNode
             ]);
         });
 
         table.draw();
 
-        const slotsEl = document.getElementById('hbo-total-slots');
-        const dollarsEl = document.getElementById('hbo-total-dollars');
+        // F-M3: Tile writing moved out of renderHboResults. The live handler
+        // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
+        // Keeping tile writes here caused a ~300× discrepancy on reload.
+    };
 
-        if (slotsEl) slotsEl.textContent = totalSlotsSaved.toFixed(2);
-        if (dollarsEl) dollarsEl.textContent = formatCurrency(totalDollarsSaved);
+    // Apply enrichment badges to the existing table rows.
+    const applyOptimizationBadges = (enrichmentData) => {
+        if (!enrichmentData || !enrichmentData.jobs) return;
+
+        // Build lookup: job_id -> optimizations
+        const lookup = {};
+        enrichmentData.jobs.forEach(j => {
+            lookup[j.job_id] = j.optimizations;
+        });
+
+        // Update table cells
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        const rows = tableEl.querySelectorAll('tbody tr');
+        rows.forEach(tr => {
+            const jobIdCell = tr.querySelector('td:first-child');
+            const badgeCell = tr.querySelector('td:last-child');
+            if (!jobIdCell || !badgeCell) return;
+
+            const jobId = jobIdCell.textContent.trim();
+            if (jobId in lookup) {
+                badgeCell.innerHTML = '';
+                badgeCell.appendChild(_buildBadgeCell(lookup[jobId]));
+            }
+        });
+
+        // Show coverage warning if any projects were inaccessible
+        if (enrichmentData.coverage && enrichmentData.coverage.inaccessible_projects &&
+            enrichmentData.coverage.inaccessible_projects.length > 0) {
+            const names = enrichmentData.coverage.inaccessible_projects
+                .map(p => p.project_id).join(', ');
+            console.warn(`HBO enrichment: inaccessible projects: ${names}. ` +
+                `Grant roles/bigquery.resourceViewer on each project for full coverage.`);
+        }
     };
 
     const renderHboStatus = (data) => {
         const panel = elements.hboStatusPanel;
-        const list = elements.hboStatusList;
-        if (!panel || !list) return;
+        const tbody = elements.hboStatusList;
+        const summary = elements.hboStatusSummary;
+        const pagination = elements.hboStatusPagination;
+        if (!panel || !tbody) return;
 
         panel.style.display = 'block';
-        list.innerHTML = '';
 
-        data.forEach(item => {
-            const div = document.createElement('div');
-            div.style.marginBottom = '0.5rem';
+        const PAGE_SIZE = 10;
+        let currentPage = 1;
+        const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
 
-            if (item.error) {
-                div.innerHTML = `<i class="fa-solid fa-circle-question" style="color: #94a3b8; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: ${item.error}`;
-            } else if (item.enabled) {
-                div.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Enabled.`;
-            } else {
-                div.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Disabled.`;
-                if (item.ddl) {
-                    const ddlContainer = document.createElement('div');
-                    ddlContainer.style.marginTop = '0.5rem';
-                    ddlContainer.style.display = 'flex';
-                    ddlContainer.style.alignItems = 'flex-start';
-                    ddlContainer.style.gap = '0.5rem';
-                    
-                    const ddlDiv = document.createElement('textarea');
-                    ddlDiv.readOnly = true;
-                    ddlDiv.style.flex = '1';
-                    ddlDiv.style.height = '40px';
-                    ddlDiv.style.background = 'rgba(15, 23, 42, 0.5)';
-                    ddlDiv.style.border = '1px solid rgba(255, 255, 255, 0.1)';
-                    ddlDiv.style.borderRadius = '0.25rem';
-                    ddlDiv.style.color = '#e2e8f0';
-                    ddlDiv.style.fontFamily = 'monospace';
-                    ddlDiv.style.fontSize = '0.85rem';
-                    ddlDiv.style.padding = '0.5rem';
-                    ddlDiv.style.resize = 'none';
-                    ddlDiv.value = item.ddl;
+        // Summary counts
+        const enabled = data.filter(d => d.enabled === true).length;
+        const disabled = data.filter(d => d.enabled === false).length;
+        const errors = data.filter(d => d.error).length;
+        if (summary) {
+            summary.textContent = `${enabled} enabled · ${disabled} disabled${errors ? ` · ${errors} errors` : ''} — ${data.length} projects`;
+        }
 
-                    const copyBtn = document.createElement('button');
-                    copyBtn.className = 'btn-action';
-                    copyBtn.textContent = 'Copy';
-                    copyBtn.title = 'Copy DDL';
-                    copyBtn.addEventListener('click', () => {
+        function renderPage(page) {
+            currentPage = page;
+            tbody.innerHTML = '';
+            const start = (page - 1) * PAGE_SIZE;
+            const slice = data.slice(start, start + PAGE_SIZE);
+
+            slice.forEach(item => {
+                const tr = document.createElement('tr');
+
+                // Project cell
+                const tdProject = document.createElement('td');
+                tdProject.style.fontWeight = '500';
+                tdProject.textContent = item.project_id;
+
+                // Status cell
+                const tdStatus = document.createElement('td');
+                if (item.error) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(148,163,184,0.15);color:#94a3b8;"><i class="fa-solid fa-circle-question" style="font-size:0.7rem;"></i> Error</span>`;
+                } else if (item.enabled) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(74,222,128,0.12);color:#4ade80;"><i class="fa-solid fa-circle-check" style="font-size:0.7rem;"></i> Enabled</span>`;
+                } else {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(250,204,21,0.12);color:#facc15;"><i class="fa-solid fa-circle-exclamation" style="font-size:0.7rem;"></i> Disabled</span>`;
+                }
+
+                // Action cell
+                const tdAction = document.createElement('td');
+                if (item.error) {
+                    tdAction.innerHTML = `<span style="color:#94a3b8;font-size:0.8rem;" title="${item.error}">Permission error</span>`;
+                } else if (item.enabled) {
+                    tdAction.innerHTML = `<span style="color:#64748b;font-size:0.8rem;">—</span>`;
+                } else if (item.ddl) {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-action';
+                    btn.style.fontSize = '0.75rem';
+                    btn.style.padding = '4px 10px';
+                    btn.textContent = 'Copy Enable DDL';
+                    btn.title = item.ddl;
+                    btn.addEventListener('click', () => {
                         copyToClipboard(item.ddl).then(() => {
-                            copyBtn.textContent = 'Copied!';
-                            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+                            btn.textContent = 'Copied!';
+                            setTimeout(() => { btn.textContent = 'Copy Enable DDL'; }, 2000);
                         });
                     });
-
-                    ddlContainer.appendChild(ddlDiv);
-                    ddlContainer.appendChild(copyBtn);
-                    div.appendChild(ddlContainer);
+                    tdAction.appendChild(btn);
+                } else {
+                    tdAction.innerHTML = `<span style="color:#64748b;font-size:0.8rem;">—</span>`;
                 }
+
+                tr.appendChild(tdProject);
+                tr.appendChild(tdStatus);
+                tr.appendChild(tdAction);
+                tbody.appendChild(tr);
+            });
+
+            renderPagination();
+        }
+
+        function renderPagination() {
+            if (!pagination) return;
+            pagination.innerHTML = '';
+            if (totalPages <= 1) return;
+
+            const btnStyle = (active) => `
+                padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+                background: ${active ? 'rgba(56,189,248,0.2)' : 'rgba(15,23,42,0.5)'};
+                color: ${active ? '#38bdf8' : '#94a3b8'}; cursor: pointer; font-size: 0.8rem;
+                font-weight: ${active ? '600' : '400'};
+            `;
+
+            for (let p = 1; p <= totalPages; p++) {
+                const btn = document.createElement('button');
+                btn.textContent = p;
+                btn.style.cssText = btnStyle(p === currentPage);
+                btn.addEventListener('click', () => renderPage(p));
+                pagination.appendChild(btn);
             }
-            list.appendChild(div);
-        });
+        }
+
+        renderPage(1);
     };
 
     if (elements.btnAnalyzeHbo) {
@@ -3008,7 +3202,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHbo, true);
-            clearModuleCache(['bq_hbo_results', 'bq_hbo_status'], ['#hbo-results-table']);
+            clearModuleCache(['bq_hbo_results', 'bq_hbo_status', 'bq_hbo_summary', 'bq_hbo_optimizations'], ['#hbo-results-table']);
 
             const projectOverride = document.getElementById('hbo-project-override')?.value;
             const lookbackOverride = document.getElementById('hbo-lookback-override')?.value;
@@ -3052,7 +3246,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const statusData = await statusRes.json();
                 const summaryData = await summaryRes.json();
 
-                renderHboResults(analyzeData.slice(0, 10));
+                const slicedData = analyzeData.slice(0, 10);
+                renderHboResults(slicedData);
                 renderHboStatus(statusData);
 
                 // Update tiles
@@ -3061,8 +3256,37 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
                 if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
 
-                safeSetLocalStorage('bq_hbo_results', JSON.stringify(analyzeData.slice(0, 10)));
+                safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
+                // F-M3: Cache the summary so tiles survive reload.
+                safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
+
+                // Non-blocking: enrich jobs with optimization type badges.
+                // This is progressive enhancement — the table is already
+                // rendered and usable without it.
+                const refs = slicedData
+                    .filter(r => r.project_id && r.job_id && r.creation_time)
+                    .map(r => ({
+                        project_id: r.project_id,
+                        job_id: r.job_id,
+                        creation_time: r.creation_time
+                    }));
+                if (refs.length > 0) {
+                    fetch('/api/hbo/optimizations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/optimizations', {
+                            ...params,
+                            jobs: refs
+                        }))
+                    })
+                    .then(r => r.ok ? r.json() : Promise.reject(r))
+                    .then(optData => {
+                        applyOptimizationBadges(optData);
+                        safeSetLocalStorage('bq_hbo_optimizations', JSON.stringify(optData));
+                    })
+                    .catch(e => console.warn('Optimization badges unavailable:', e));
+                }
 
                 showNotification('HBO analysis completed for the organization.', 'success');
             } catch (error) {
@@ -3189,6 +3413,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     if (cachedHboResults) {
         try {
             renderHboResults(JSON.parse(cachedHboResults));
+            // Restore cached optimization badges
+            const cachedOptBadges = localStorage.getItem('bq_hbo_optimizations');
+            if (cachedOptBadges) {
+                try {
+                    applyOptimizationBadges(JSON.parse(cachedOptBadges));
+                } catch (e2) { console.warn('Failed to restore optimization badges', e2); }
+            }
         } catch (e) { console.warn("Failed to parse cached HBO results", e); }
     }
     const cachedHboStatus = localStorage.getItem('bq_hbo_status');
@@ -3196,6 +3427,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         try {
             renderHboStatus(JSON.parse(cachedHboStatus));
         } catch (e) { console.warn("Failed to parse cached HBO status", e); }
+    }
+    // F-M3: Restore tiles from cached summary instead of recomputing from top-10.
+    const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
+    if (cachedHboSummary) {
+        try {
+            const summaryData = JSON.parse(cachedHboSummary);
+            const slotsEl = document.getElementById('hbo-total-slots');
+            const dollarsEl = document.getElementById('hbo-total-dollars');
+            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
+            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+        } catch (e) { console.warn("Failed to parse cached HBO summary", e); }
     }
 
     const renderHygieneResults = (data) => {
@@ -3367,10 +3609,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         tbody.innerHTML = '';
 
         const formatDataSize = (gb) => {
-            if (gb >= 1000) {
-                return `${formatNumber(gb / 1024)} TB`;
+            // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+            if (gb >= 1024) {
+                return `${formatNumber(gb / 1024)} TiB`;
             }
-            return `${formatNumber(gb)} GB`;
+            return `${formatNumber(gb)} GiB`;
         };
 
         const getAbuseBadge = (type) => {
@@ -3598,7 +3841,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan query linter');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan query linter'));
                 }
                 const data = await response.json();
                 renderLinterResults(data);
@@ -3634,7 +3877,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan DML abuse');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan DML abuse'));
                 }
                 const data = await response.json();
                 renderAntiPatternsResults(data);
@@ -3669,7 +3912,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan MV costs');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV costs'));
                 }
                 const data = await response.json();
                 renderMvResults(data);
@@ -3705,7 +3948,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan data skew');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan data skew'));
                 }
                 const data = await response.json();
                 renderSkewResults(data);
@@ -3741,7 +3984,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan batch candidates');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan batch candidates'));
                 }
                 const data = await response.json();
                 renderBatchCandidatesResults(data);
@@ -3760,7 +4003,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
-            clearModuleCache(['bq_gov_results'], ['#expiration-results-table']);
+            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Clearing the key wipes the sibling scan's cached data.
+            clearModuleCache([], ['#expiration-results-table']);
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -3776,7 +4021,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan governance');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
                 }
                 const govData = await response.json();
                 renderExpirationResults(govData.expiration_issues || []);
@@ -3802,7 +4047,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
-            clearModuleCache(['bq_gov_results'], ['#filter-results-table']);
+            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            clearModuleCache([], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -3818,7 +4064,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan governance');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
                 }
                 const govData = await response.json();
                 renderFilterResults(govData.filter_issues || []);
@@ -3860,7 +4106,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan MV rejections');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV rejections'));
                 }
                 const data = await response.json();
                 renderMvRejectionResults(data);
@@ -3895,7 +4141,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan resource warnings');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan resource warnings'));
                 }
                 const data = await response.json();
                 renderWarningResults(data);
@@ -4071,8 +4317,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached BI results", e); }
     }
 
-    // XSS-safe escape for untrusted model output [R3]
-    const escHtml = s => s
+    // XSS-safe escape for raw (un-proxy-escaped) fields like optimized_query,
+    // query, and migration_applied_yaml, which are now exempted from the
+    // global sanitizeData proxy so they remain usable for clipboard / POST.
+    // Apply this helper when interpolating them into innerHTML.  [R3]
+    const escHtml = s => String(s)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
@@ -4122,14 +4371,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const costLabel = billedBytes > 0 ? 'Billed' : 'Scanned';
             let originalCost = '<span style="color: var(--text-secondary);">—</span>';
             if (displayBytes > 0) {
-                const gb = (displayBytes / (1024**3)).toFixed(2);
-                const usd = ((displayBytes / (1024**4)) * rate).toFixed(4);
+                const gib = displayBytes / (1024**3);
+                const sizeLabel = gib >= 1024
+                    ? `${Math.round(gib / 1024)} TiB`
+                    : `${Math.round(gib)} GiB`;
+                const usd = Math.round((displayBytes / (1024**4)) * rate);
                 const execBadge = row.execution_count && row.execution_count > 1 
                     ? `<div style="color: #38bdf8; font-size: 0.75rem; margin-top: 2px;"><i class="fa-solid fa-repeat"></i> ${row.execution_count.toLocaleString()} runs</div>`
                     : '';
                 originalCost = `
                     <div style="font-size: 0.85rem;">
-                        <div style="color: #e2e8f0; font-weight: 600;">${gb} GB</div>
+                        <div style="color: #e2e8f0; font-weight: 600;">${sizeLabel}</div>
                         <div style="color: ${billedBytes > 0 ? '#f59e0b' : '#94a3b8'}; font-size: 0.8rem;">
                             ~$${usd} <span style="font-size: 0.7rem;">(${costLabel})</span>
                         </div>
@@ -4309,6 +4561,19 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
                 const rowData = currentAiResults[rowIdx];
                 const resultDiv = tr.querySelector('.dry-run-result');
+
+                // Quick check: dry-run only supports SELECT/WITH — detect DML client-side
+                const sqlTrimmed = (rowData.optimized_query || '').trim();
+                const isDml = /^\s*(INSERT|UPDATE|DELETE|MERGE|CREATE|DROP|ALTER|TRUNCATE)\b/i.test(sqlTrimmed);
+                if (isDml) {
+                    resultDiv.innerHTML = `
+                        <div style="color: #94a3b8; font-size: 0.78rem; padding: 0.5rem; background: rgba(148,163,184,0.08);
+                            border-radius: 6px; border: 1px solid rgba(148,163,184,0.2);">
+                            <i class="fa-solid fa-circle-info"></i> Dry-run is only available for SELECT/WITH queries. DML statements (INSERT, UPDATE, etc.) cannot be validated without execution.
+                        </div>`;
+                    resultDiv.style.display = 'block';
+                    return;
+                }
                 
                 dryBtn.disabled = true;
                 dryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running...';
@@ -4324,7 +4589,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     });
                     const dryData = await resp.json();
                     
-                    if (!dryData.valid) {
+                    // F-M5: Check response.ok — backend returns 400 for non-SELECT/WITH.
+                    if (!resp.ok) {
+                        resultDiv.innerHTML = `
+                            <div style="color: #ef4444; font-size: 0.78rem; padding: 0.5rem; background: rgba(239,68,68,0.1);
+                                border-radius: 6px; border: 1px solid rgba(239,68,68,0.3);">
+                                <i class="fa-solid fa-xmark"></i> Dry-run failed: ${escHtml(detailToMessage(dryData.detail, 'Server error'))}
+                            </div>`;
+                        resultDiv.style.display = 'block';
+                    } else if (!dryData.valid) {
                         // [R9] Show actual BQ error — useful signal for invalid rewrites
                         resultDiv.innerHTML = `
                             <div style="color: #ef4444; font-size: 0.78rem; padding: 0.5rem; background: rgba(239,68,68,0.1);
@@ -4337,24 +4610,30 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                                 <i class="fa-solid fa-cloud"></i> External/Federated Table — byte savings cannot be calculated via Dry-Run.
                             </div>`;
                     } else {
-                        const optGb = (dryData.total_bytes_processed / (1024**3)).toFixed(2);
-                        const optUsd = dryData.estimated_cost_usd.toFixed(4);
+                        const optGib = dryData.total_bytes_processed / (1024**3);
+                        const optLabel = optGib >= 1024
+                            ? `${Math.round(optGib / 1024)} TiB`
+                            : `${Math.round(optGib)} GiB`;
+                        const optUsd = Math.round(dryData.estimated_cost_usd);
                         const origBytes = rowData.bytes_billed_original || rowData.bytes_scanned_original || 0;
 
                         let savingsHtml = '';
                         if (origBytes > 0) {  // [R9] Guard division-by-zero
-                            const origGb = (origBytes / (1024**3)).toFixed(2);
+                            const origGib = origBytes / (1024**3);
+                            const origLabel = origGib >= 1024
+                                ? `${Math.round(origGib / 1024)} TiB`
+                                : `${Math.round(origGib)} GiB`;
                             const pct = (((origBytes - dryData.total_bytes_processed) / origBytes) * 100).toFixed(1);
                             savingsHtml = `
                                 <div style="color: #22c55e; margin-top: 0.25rem;">
-                                    ↓ ${pct}% reduction (${origGb} GB → ${optGb} GB)
+                                    ↓ ${pct}% reduction (${origLabel} → ${optLabel})
                                 </div>`;
                         }
                         
                         resultDiv.innerHTML = `
                             <div style="font-size: 0.78rem; padding: 0.5rem; background: rgba(34,197,94,0.1);
                                 border-radius: 6px; border: 1px solid rgba(34,197,94,0.3);">
-                                <div style="color: #38bdf8;">Optimized: ${optGb} GB (~$${optUsd})</div>
+                                <div style="color: #38bdf8;">Optimized: ${optLabel} (~$${optUsd})</div>
                                 ${savingsHtml}
                             </div>`;
                     }
@@ -5007,9 +5286,14 @@ const Dashboard = (() => {
     const cached = !force ? readCache() : null;
 
     if (cached) {
-      render(cached.data);
-      updateFreshness(cached.fetchedAt);
-      return;
+      try {
+        render(cached.data);
+        updateFreshness(cached.fetchedAt);
+        return;
+      } catch (cacheErr) {
+        console.warn('Cached dashboard data failed to render — refetching', cacheErr);
+        // Fall through to fresh fetch
+      }
     }
 
     renderSkeletons();
@@ -5031,8 +5315,8 @@ const Dashboard = (() => {
         anomalies: settled(anomalies)
       };
 
-      writeCache(data);
       render(data);
+      writeCache(data);  // only cache after successful render
       updateFreshness(Date.now());
     } catch (err) {
       console.error('Dashboard load failed', err);
@@ -5097,7 +5381,7 @@ const Dashboard = (() => {
 
   function renderKpis(kpis) {
     const container = document.getElementById('dashboard-kpis');
-    if (!kpis) {
+    if (!kpis || kpis.stub === true) {
       UIState.renderError(container, {
         title: 'KPIs unavailable',
         message: 'Could not load summary metrics.',
@@ -5109,27 +5393,27 @@ const Dashboard = (() => {
     container.innerHTML = `
       ${kpiCard({
         label: 'Month-to-Date Spend',
-        value: formatCurrency(kpis.mtdSpend),
+        value: formatCurrency(kpis.mtdSpend ?? 0),
         delta: kpis.mtdSpendDelta,
         deltaLabel: 'vs last month',
-        deltaDirection: kpis.mtdSpendDelta > 0 ? 'up' : 'down'
+        deltaDirection: (kpis.mtdSpendDelta ?? 0) > 0 ? 'up' : 'down'
       })}
       ${kpiCard({
         label: 'Forecast (EOM)',
-        value: formatCurrency(kpis.forecastSpend),
+        value: formatCurrency(kpis.forecastSpend ?? 0),
         delta: null,
-        deltaLabel: `vs ${formatCurrency(kpis.lastMonthSpend)} last month`
+        deltaLabel: `vs ${formatCurrency(kpis.lastMonthSpend ?? 0)} last month`
       })}
       ${kpiCard({
         label: 'Potential Savings',
-        value: formatCurrency(kpis.potentialSavings),
+        value: formatCurrency(kpis.potentialSavings ?? 0),
         delta: null,
-        deltaLabel: `${kpis.opportunityCount} opportunities`,
+        deltaLabel: `${kpis.opportunityCount ?? 0} opportunities`,
         savings: true
       })}
       ${kpiCard({
         label: 'Anomalies Detected',
-        value: kpis.anomalyCount.toString(),
+        value: (kpis.anomalyCount ?? 0).toString(),
         delta: null,
         deltaLabel: 'last 7 days'
       })}

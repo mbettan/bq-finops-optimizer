@@ -170,7 +170,7 @@ In the browser, open the **Settings** panel (gear icon) and set:
 *   **GCP Organization Project**: The admin project with access to organization-level `INFORMATION_SCHEMA` views.
 *   **Region**: The BigQuery region to analyze (e.g., `us-east4`).
 *   **Focus Projects** *(optional)*: A comma-separated list of up to 50 specific project IDs to scope the analysis. When set, all org-level endpoints filter queries to only those projects using parameterized `IN UNNEST(@focus_projects)` clauses. When empty, the full organization is analyzed.
-*   **Max Bytes Billed (GiB)**: Safety cap for query costs (default: 200 GiB, max: 10 TiB). Applied to every single BigQuery query execution, including fluid scaling status checks.
+*   **Max Bytes Billed (GiB)**: Safety cap for query costs (default: 800 GiB). Applied to every single BigQuery query execution, including fluid scaling status checks.
 
 **Input Validation:** All project ID fields are validated on save against the GCP project ID specification (`^[a-z][a-z0-9\-]{5,29}$`). Whitespace is stripped automatically (handles bad copy-paste). Invalid values block the save and show specific error messages. When settings change, all cached module results are flushed from `localStorage` to prevent stale data from a previous scope.
 
@@ -307,7 +307,7 @@ The AI Doctor is the **only module that uses AI**. It calls BigQuery's `AI.GENER
 2. **Input Validation (Backend)**: All API parameters are validated through Pydantic `Field` constraints and `@field_validator` decorators. SQL identifiers pass through `_safe_ident()` regex validation. Date parameters use parameterized queries to prevent SQL injection.
 3. **Input Validation (Frontend)**: All project ID text inputs are validated against the GCP project ID regex (`^[a-z][a-z0-9\-]{5,29}$`) before saving. Whitespace is stripped on save, and invalid values block persistence.
 4. **Error Handling**: All endpoints use a centralized `handle_endpoint_exception()` function that maps GCP error types to safe HTTP responses without leaking internal details.
-5. **Large-Scale Quotas**: Querying organization-wide metrics on high-volume environments (10,000+ datasets) can cause query timeout or quota limits. All `lookback_days` parameters are capped at 90 days, and query byte limits are enforced via `maximum_bytes_billed`. The default cap is **200 GiB** — for very large organizations, increase the **Max Bytes Billed (GiB)** setting in the Global Configuration panel (up to 10 TiB).
+5. **Large-Scale Quotas**: Querying organization-wide metrics on high-volume environments (10,000+ datasets) can cause query timeout or quota limits. All `lookback_days` parameters are capped at 90 days, and query byte limits are enforced via `maximum_bytes_billed`. The default cap is **800 GiB** — for very large organizations, increase the **Max Bytes Billed (GiB)** setting in the Global Configuration panel.
 6. **AI Doctor Cost Control**: `AI.GENERATE` calls are rate-limited by BigQuery's built-in generative AI quotas. The default query limit is 20 queries per analysis run (configurable up to 100). Each Gemini call uses `thinking_budget: 0` and `max_output_tokens: 300` to minimize token costs.
 
 ---
@@ -318,8 +318,8 @@ Every API endpoint and BigQuery query produces structured logs designed for real
 
 | Icon | Meaning | Example |
 |:----:|:--------|:--------|
-| `▶` | **Endpoint started** — project, region, scope, lookback, safety cap | `▶ Job Analysis — project=example-org \| scope=1 projects (example-project) \| safety_cap=200 GiB` |
-| `⏳` | **Query submitted** — which query is running and the active safety cap | `⏳ Storage Metrics — submitting query (safety cap: 200 GiB)…` |
+| `▶` | **Endpoint started** — project, region, scope, lookback, safety cap | `▶ Job Analysis — project=example-org \| scope=1 projects (example-project) \| safety_cap=800 GiB` |
+| `⏳` | **Query submitted** — which query is running and the active safety cap | `⏳ Storage Metrics — submitting query (safety cap: 800 GiB)…` |
 | `✅` | **Query completed** — elapsed time, bytes processed/billed, cache hit, BQ Console URL | `✅ Storage Metrics — 2.1s \| Processed: 0.42 GiB \| Cache: False \| https://…` |
 | `◼` | **Endpoint completed** — total elapsed time for the full request | `◼ Job Analysis — completed in 4.3s` |
 
@@ -338,8 +338,8 @@ Each log line follows this format:
 
 Example output with interleaved requests:
 ```
-2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ▶ Storage Analysis — project=example-org | region=us | scope=full organization | safety_cap=200 GiB
-2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ⏳ Storage Metrics — submitting query (safety cap: 200 GiB)…
+2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ▶ Storage Analysis — project=example-org | region=us | scope=full organization | safety_cap=800 GiB
+2026-07-08 04:14:00 - src.main - INFO - [a3f1b2c4] ⏳ Storage Metrics — submitting query (safety cap: 800 GiB)…
 2026-07-08 04:14:02 - src.main - INFO - [b7e9d0f1] ▶ HBO Analyze — project=example-org | region=us | ...
 2026-07-08 04:14:03 - src.main - INFO - [a3f1b2c4] ✅ Storage Metrics — 3.2s | Job: bqjob_r123 | Processed: 0.42 GiB | Billed: 0.42 GiB | Cache: False | https://...
 2026-07-08 04:14:03 - src.main - INFO - [a3f1b2c4] ◼ Storage Analysis — completed in 3.4s

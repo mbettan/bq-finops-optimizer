@@ -24,16 +24,79 @@ Introduced an aggregated multi-metric query selection and FinOps ROI prioritizat
 * **Deterministic Worst-Job Sampling**: Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload.
 * **Script Filtering**: Excludes procedural script headers (`statement_type != 'SCRIPT'`) to prevent double-counting slot time and processed bytes.
 
+**Feature (Fluid Scaling Edition-Aware Pricing)**
+* Per-edition slot pricing: Standard ($0.04/slot-hr), Enterprise ($0.06), and Enterprise Plus ($0.10) are now applied per-reservation instead of a flat $0.06 rate. The `edition` column from `RESERVATION_TIMELINE_BY_PROJECT` is captured and mapped to a rate table, with the user-supplied `price_per_slot_hr` as fallback for unknown editions.
+
+**Feature (HBO Per-Job Optimization Type Badges)**
+* **Per-Job Enrichment**: New `POST /api/hbo/optimizations` endpoint enriches org-wide HBO results with the exact optimization types BigQuery applied to each job (Semi-Join Reduction, Join Commutation, Join Pushdown, Parallelism Adjustment, Enhanced Vectorization, Short Query Optimization). Sources data from per-project `JOBS_BY_PROJECT` views since `optimization_details` is not available in `JOBS_BY_ORGANIZATION`.
+* **Fault-Isolated Fan-Out**: Uses `ThreadPoolExecutor` with one BigQuery query per project — never `UNION ALL` across projects. A single 403 Forbidden on one project never blanks the results for other readable projects (§9.7).
+* **Optimization Catalog**: 6 known optimization types mapped to `hbo` (history-based) or `engine` (runtime) categories with tooltip descriptions. Unknown future types render with an "unknown" badge — they never disappear.
+* **listAll Redaction Awareness**: Distinguishes `None` (undetermined — row absent, permissions issue) from `[]` (checked, no optimizations applied). This prevents IAM `listAll` redaction from being misreported as "no optimizations."
+* **Progressive Enhancement**: The enrichment call is non-blocking — the HBO table renders immediately with "Loading…" badges, which upgrade to real badges when the per-project fan-out resolves.
+* **XSS-Safe Rendering**: Badge cells built with `document.createElement` + `textContent` (never `innerHTML`), preventing injection through server-returned optimization keys.
+* **`test_hbo_optimizations.py` (27 tests)**: Covers JSON parsing (4+ shapes), badge building, per-project fan-out isolation, UNION ALL prevention, partition pruning, listAll redaction semantics, and empty exception guard (P12).
+
 **Security & Error Handling**
 * **Strict IAM 403 Enforcement**: Requires `roles/bigquery.resourceViewer` or `roles/bigquery.admin` for organization discovery. Intercepts IAM 403 `Forbidden` exceptions and returns a clear `HTTP 403 Access Denied` response with role guidance, eliminating silent or degraded project-level fallbacks.
 * **Pydantic Literal Validation**: Validates `discovery_strategy` parameters strictly via Pydantic `Literal` types (returning HTTP 422 for unrecognised options).
+* **Retryable 403 Classification**: BigQuery quota/rate-limit 403s (`rateLimitExceeded`, `quotaExceeded`) are now distinguished from IAM denials by inspecting the structured error `reason` field. These map to HTTP 429 with `Retry-After` instead of the permanent "Access Denied" message, and are retried by `run_query_with_retry_limit`.
+* **Precise Bytes-Billed Detection**: Replaced broad `"exceeds the maximum"` substring match with the structured `bytesBilledLimitExceeded` reason code, preventing unrelated partition-count errors from recommending users raise their safety cap.
+* **Proper 5xx Status Codes**: BigQuery server errors (`InternalServerError`, `ServiceUnavailable`, `TooManyRequests`, `DeadlineExceeded`) now return HTTP 429/502 instead of being lumped into the generic HTTP 400 path.
+* **Non-Root Container**: Dockerfile now runs as `USER 10001` (`appuser`) with `COPY --chown`, `PYTHONUNBUFFERED=1`, and dynamic port binding via `${PORT:-8080}`.
+* **Reproducible Builds (P2)**: Base image digest-pinned (`python:3.11-slim@sha256:...`). Dependencies locked with `pip-compile --generate-hashes` into `requirements.lock`, installed with `--require-hashes` for supply chain integrity. Two builds of the same SHA now produce identical images.
+* **`.dockerignore` (P3)**: Excludes `*.md` (including the 154 KB `CODEREVIEW.md` with exact file:line reproduction detail), `*.json` (prevents baking runtime config that a rebuild silently reverts), tests, caches, `.env`, and logs from the production image. `CODEREVIEW.md` also removed from the repository.
+
+**Test Coverage (§1 Money-Math)**
+* **`test_cost_attribution.py` (30 tests)**: Dedicated unit tests for chargeback financial math — slot-hour conversion (÷ 3,600,000), Rule A proportional waste allocation, Rule B central dump, negative-waste clamp (C1a), zero-denominator guard (C1b), rounding consistency (M6: `direct + waste == total` to the cent), reservation-ID normalization (short/dotted/colon formats), unconfigured reservation accounting, Pydantic field validation (M7), focus filter isolation, and the master invariant (`Σ attributions == Σ bill`). Includes explicit mutation detectors for §1 mutations #2 and #5.
+* **`test_hbo.py` (19 tests)**: Dedicated unit tests for HBO savings formula — M1 proportionality (`saved_slots = post_slots × (prev − dur) / dur`), monthly projection via `DAYS_PER_MONTH`, edition-aware pricing, null/zero guards, sorting, and empty-result handling. Includes explicit mutation detector for §1 mutation #1 (the ÷ 3,600,000 → ÷ 360,000 10× inflation).
 
 **Fixed**
-* **High Frequency (`execution_frequency`) SQL HAVING Clause Fix**: Resolved BigQuery `400 Aggregate function COUNT(*) not allowed in WHERE clause` error by filtering on CTE column alias `execution_count > 1`.
+* **AI Doctor TiB/TB Pricing**: Cost figures used `POW(10, 12)` (decimal TB) instead of `POW(1024, 4)` (TiB), overstating every dollar figure by ~10%. Also replaced hardcoded `6.25` with the `ON_DEMAND_USD_PER_TB` constant.
+* **Dashboard Null Crash**: KPI panel crashed on `.toString()` of null metrics. Cached the broken payload, causing a permanent spinner. Now guards all values with `?? 0`, wraps cached render in try/catch, and only caches after successful render.
+* **Copy SQL / Dry Run Broken**: The global fetch sanitizer HTML-escaped `optimized_query` and `query` fields, corrupting SQL operators. Exempted raw-SQL keys from the sanitizer proxy with `escHtml` retained at render sinks.
+* **Active Assist Focus Filter**: Focus branch omitted `AND state = 'ACTIVE'`, causing actioned/dismissed recommendations to inflate savings in focus mode.
+* **Profiler Null Guard**: `avg_duration_seconds` can be `NULL` for cancelled queries; `None < 5` raised `TypeError` and 500'd the profiler panel.
+* **Fluid Scaling False "Fully Enabled"**: Empty result set (wrong admin project, wrong region) produced `is_fully_enabled: true`. Now returns `null` to distinguish "no data" from "genuinely enabled."
+* **HBO Client Construction**: `bigquery.Client(project=prj)` outside the `try` block meant one bad project ID killed an entire 300-project HBO check. Moved inside `try` with context manager.
+* **Chargeback Config Save**: `POST /config` response was never checked — a failed save silently ran `/calculate` against the previous config. Now checks `.ok` and aborts with the backend error detail.
+* **Empty Exception Crash**: `splitlines()[0]` raised `IndexError` on exceptions with empty `str()`, destroying the original error and preventing retries.
+* **High Frequency SQL HAVING Clause Fix**: Resolved BigQuery `400 Aggregate function COUNT(*) not allowed in WHERE clause` error by filtering on CTE column alias `execution_count > 1`.
 * **UI Empty Notification & Tooltips**: Updated toast messages when candidate queries pass clean with zero anti-patterns, and updated UI tooltips for the `cumulative_cost` strategy.
 * **`total_bytes_processed` Metric Correction**: Included `total_bytes_processed` in discovery SQL CTEs, ensuring `bytes_scanned_original` is accurately populated under BigQuery Editions.
 * **Strategy-Aware Re-Sorting**: Ensured secondary project query fetches preserve exact strategy ordering (`optimization_potential_score`, `total_effective_bytes`, `execution_count`, `annualized_cost_usd`, or `total_slot_ms`).
 * **Frontend Escaping Typo**: Fixed `escapeHtml` typo in `static/app.js` to ensure migration YAML badges render smoothly.
+* **Chargeback Over-Recovery**: `max(0, bill − direct)` silently dropped over-recovery when measured usage exceeded the invoice (e.g. CUD discount). Attribution totals exceeded the actual bill by up to 20%.
+* **Chargeback Zero Denominator**: When all jobs were cache hits (`SUM(slot_ms) = 0`), every project's share was `0` while `waste_cost` was the full bill — $50k vanished silently with `is_complete: true`.
+* **Chargeback Waste Rule Validation**: `waste_rule` accepted any string (`"a"`, `"Proportional"`) — neither branch matched, silently dropping 100% of waste. Now uses `Literal["A", "B"]` with Pydantic 422.
+* **Chargeback Pending Jobs**: Missing `state = 'DONE'` filter and no `IFNULL` guard on `total_slot_ms`. Running/pending jobs contributed partial slot-ms; all-NULL groups raised `TypeError` and 500'd the endpoint.
+* **HBO Savings Understatement**: `saved_slot_hours` used `percent_saved × post_optimization_slots` — a ceiling unrelated to actual savings. Fixed to `post_slots × (prev_ms − dur_ms) / dur_ms` (proportionality assumption), matching the SQL summary formula.
+* **HBO Project Discovery**: `LIMIT 500` with no `ORDER BY` returned an arbitrary subset. Added `ORDER BY project_id`, `LIMIT 501`, and truncation signal.
+* **HBO Borrowing Rule**: `borrowing_rule` dropdown was wired to nothing — changing it had zero effect on calculations. Now rejected with HTTP 501 if non-default.
+* **Chargeback Field Constraints**: `sku_rate` and `total_admin_bill` accepted negative and infinite values. Added `ge=0, allow_inf_nan=False`.
+* **Chargeback Atomic Save**: `save_config` truncated the file in-place — concurrent writes or SIGTERM left a partial/empty file, permanently 500'ing all endpoints. Now uses temp file + `os.replace`.
+* **XSS in Notifications**: `showNotification` used `innerHTML` with raw DOM input values. Replaced with `textContent` to prevent XSS via crafted project IDs or snapshot import.
+* **Snapshot Import Sanitizer**: `sanitizeImportedValue` returned non-JSON strings raw — the XSS delivery path for scalar settings keys (`bq_org_project`, `bq_admin_project`). Now escapes bare strings.
+* **Settings Validation Abort**: State and localStorage were mutated before validation — invalid input was persisted, cached, and survived reload. Now validates into local variables first and only commits after passing.
+* **Scope-Dependent Cache Flush**: Six scope-dependent keys (`bq_slots_utilization`, `bq_fluid_estimate_data`, etc.) survived scope changes, rendering stale data under the new region/project header. Replaced deny-list with an allow-list of scope-independent keys.
+* **Error Detail Rendering**: FastAPI 422 `detail` is an array of `{loc, msg}` objects. `err.detail || 'fallback'` rendered as `[object Object]`. Added `detailToMessage()` helper across all 11 error sites.
+* **Dry Run Response Check**: `/api/ai/dry_run` fetch had no `response.ok` check — backend 400/403 was silently treated as an invalid SQL result.
+* **Governance Cache Wipe**: Both governance scan buttons called `clearModuleCache` on the shared `bq_gov_results` key before merging, wiping the sibling scan's cached data on every run.
+* **Simulation Empty Array**: `Array.reduce()` on empty `/api/slots/simulate` response raised `TypeError`, surfaced verbatim as an error toast.
+* **Format Data Size Threshold**: `formatDataSize` switched units at `1000 GB` but divided by `1024`, rendering 1,010 GB as "0.99 TB". Changed threshold to `1024`.
+* **Max Bytes Billed Clamp Logging**: Silent clamp of `max_bytes_billed_gb` now logs a warning when the value is rewritten.
+* **Fluid Scaling Zero Lookback Guard**: `_to_metric` division by `lookback_days` now guarded against zero for internal callers.
+* **Alias Regex Fix**: `_ALIAS_RE` used `$` instead of `\Z`, allowing a trailing newline to bypass the check.
+* **Migration Optimizer Echo Bug**: When the BigQuery Migration API subtask call failed (403, timeout), `walk_literals` returned the user's own input SQL as the "optimized" result with `success=True`. Now strips the source literal so only subtask-derived output qualifies.
+* **Phantom −100% Savings on CTE Rewrites**: Multi-statement scripts (e.g. CTE-to-temp-table rewrites) dry-run as 0 bytes in BigQuery, producing phantom −100% byte deltas. Now detects zero-byte dry-runs and reports "not measurable" instead.
+* **Storage Savings Fabrication**: When `SCHEMATA_OPTIONS` permissions were missing, both fast and fallback queries swallowed errors and returned an empty set — indistinguishable from "no datasets on physical billing." Every dataset was then labeled "logical" with fabricated savings. Now tracks failed projects and excludes them.
+* **HBO Focus Mode Fallback**: When all focus projects were healthy (`enabled=True`), the empty-output fallback emitted a row for the admin project (not in the focus list). Now always emits one `HBOStatus` per checked project, including `enabled=True`.
+* **Chargeback Rounding Drift**: Three independent `round(x, 2)` calls per row could produce `1.00 + 1.00 = 2.01`, breaking invoice reconciliation. Now rounds the total first and derives the waste as the residual.
+* **HBO KPI Tiles 300× Discrepancy**: Live tiles showed org-wide summary, but cached tiles were computed from the top-10 slice (~300× difference on reload). Now caches `/api/hbo/summary` and restores tiles from it.
+* **Scope Map Fails Open**: When `/api/meta/scope-map` failed to load (502, cold-start timeout), all endpoints were unmapped and received `focus_projects`, triggering Pydantic `extra=forbid` → 422 for the whole session. Unmapped endpoints now default to `org` scope.
+* **Null-Safe formatNumber**: `formatNumber(null)` threw `TypeError`, killing the render loop. Now returns `'0'` for `null`, `undefined`, and `NaN`.
+* **GiB/TiB Labels**: Binary computations (÷ 1024³, ÷ 1024⁴) were labeled "GB"/"TB" (decimal units) — a 7.4% visual understatement vs the BigQuery Console. Corrected to "GiB"/"TiB".
+* **Unused AIResult Fields Removed**: `dry_run_validated`, `bytes_scanned_optimized`, `estimated_savings_pct`, and `is_external_table_query` were declared but never populated — zero defaults would silently render "0%" in a future UI column.
+* **Identifier Regex Documented**: `_safe_ident` allows dotted paths (required for domain-scoped GCP projects like `example.com:legacy-project`). Added documentation confirming this is intentional and safe due to backtick quoting in SQL.
 
 ---
 

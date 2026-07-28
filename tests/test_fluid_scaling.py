@@ -170,6 +170,7 @@ def _summary(reservation_id: str, status: str) -> _ReservationSummary:
     """Minimal summary; only reservation_id and status matter for config logic."""
     return _ReservationSummary(
         reservation_id=reservation_id,
+        edition=None,
         legacy_slot_seconds=0.0,
         fluid_slot_seconds=0.0,
         total_pure_used_seconds=0.0,
@@ -277,11 +278,13 @@ class TestBuildConfigStatus:
         assert f"`{self.REGION}.preflight_fluid_autoscaling_reservations`" in cfg.ddl
 
     def test_empty_summaries_fully_enabled_no_ddl(self):
+        """When no reservations are found, enabled should be None (no data),
+        not True — we cannot claim fully-enabled without evidence.  [H3]"""
         cfg = _build_config_status(
             [], enabled_reservations=set(),
             admin_project=self.ORG, region=self.REGION,
         )
-        assert cfg.enabled is True
+        assert cfg.enabled is None
         assert cfg.missing_reservations == []
         assert cfg.configured_reservations == []
         assert cfg.ddl is None

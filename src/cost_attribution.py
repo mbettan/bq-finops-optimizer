@@ -1,12 +1,13 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator, model_validator
-from typing import Optional, Dict
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Dict, Literal
 from datetime import datetime, timedelta
 from google.cloud import bigquery
 from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
 from collections import defaultdict
 import json
 import os
+import tempfile
 import logging
 import time
 
@@ -24,11 +25,11 @@ CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"
 
 
 class ReservationConfig(BaseModel):
-    sku_rate: float
-    total_admin_bill: float
+    sku_rate: float = Field(ge=0, allow_inf_nan=False)
+    total_admin_bill: float = Field(ge=0, allow_inf_nan=False)
 
 class CostAttributionConfig(BaseModel):
-    waste_rule: str = "A" # "A" = Proportional, "B" = Central Dump
+    waste_rule: Literal["A", "B"] = "A"  # "A" = Proportional, "B" = Central Dump
     central_cost_center_project: Optional[str] = None
     borrowing_rule: str = "lender_pays" # "lender_pays", "borrower_pays"
     reservations: Dict[str, ReservationConfig] = {}
@@ -77,8 +78,22 @@ def load_config() -> CostAttributionConfig:
 
 def save_config(config: CostAttributionConfig):
     try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config.model_dump(), f, indent=2)
+        # M8: Atomic write — temp file + os.replace prevents truncation on
+        # concurrent writes or SIGTERM between open() and flush().
+        fd, tmp_path = tempfile.mkstemp(
+            dir=CONFIG_FILE.parent, suffix=".tmp", prefix=".cost_attr_"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(config.model_dump(), f, indent=2)
+            os.replace(tmp_path, CONFIG_FILE)
+        except BaseException:
+            # Clean up the temp file on any failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
         raise HTTPException(status_code=500, detail="Failed to save configuration")
@@ -93,6 +108,13 @@ def get_config():
 
 @router.post("/config")
 def update_config(config: CostAttributionConfig):
+    # M3: borrowing_rule is not implemented — reject non-default with 501.
+    if config.borrowing_rule != "lender_pays":
+        raise HTTPException(
+            501,
+            f"borrowing_rule='{config.borrowing_rule}' is not yet implemented. "
+            "Only 'lender_pays' is currently supported."
+        )
     save_config(config)
     return {"message": "Configuration updated successfully"}
 
@@ -126,7 +148,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
             SELECT
               project_id,
               reservation_id,
-              SUM(total_slot_ms) AS total_slot_ms
+              SUM(IFNULL(total_slot_ms, 0)) AS total_slot_ms
             FROM
               {table_name}
             WHERE
@@ -135,6 +157,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
               AND job_type = 'QUERY'
               AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
               AND reservation_id IS NOT NULL
+              AND state = 'DONE'
             GROUP BY
               project_id,
               reservation_id
@@ -151,7 +174,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
         
         # Process Raw Data
         for row in job_results:
-            slot_hours = row.total_slot_ms / 3600000.0
+            slot_hours = (row.total_slot_ms or 0) / 3600000.0
             
             project_usage.append({
                 "project": row.project_id,
@@ -191,31 +214,53 @@ def calculate_cost_attribution(params: CostAttributionParams):
             direct_cost = slot_hours * sku_rate_per_slot_hour
             
             # --- B. Proportional Distribution for Waste ---
+            # C1a: Do NOT clamp with max(0, ...). When measured usage exceeds
+            # the bill (e.g. CUD discount makes sku_rate > effective rate),
+            # waste is genuinely zero — but clamping silently discarded the
+            # overage, causing Σ attributions > Σ bill.
             total_res_direct_cost = reservation_totals[res_id] * sku_rate_per_slot_hour
-            waste_cost = max(0, total_billed_to_admin - total_res_direct_cost)
+            waste_cost = total_billed_to_admin - total_res_direct_cost
+            if waste_cost < 0:
+                waste_cost = 0.0  # No waste when usage exceeds bill
             
             allocated_waste = 0.0
             
             if config.waste_rule == "A":
-                # Distribute waste proportionally
-                project_share_percentage = slot_hours / reservation_totals[res_id] if reservation_totals[res_id] > 0 else 0
-                allocated_waste = waste_cost * project_share_percentage
+                # C1b: Guard against zero-denominator. When all jobs are cache hits
+                # (total slot-hours = 0), waste cannot be proportionally distributed.
+                if reservation_totals[res_id] > 0:
+                    project_share_percentage = slot_hours / reservation_totals[res_id]
+                    allocated_waste = waste_cost * project_share_percentage
+                # else: allocated_waste stays 0 — the unallocated remainder
+                # is caught by the residual check below.
             elif config.waste_rule == "B":
                 # Dump 100% of waste to central IT cost center
                 pass
                 
             total_charge = direct_cost + allocated_waste
             
+            # M6: Round the total first, then ensure the components sum to it.
+            # Three independent round(x, 2) calls can produce rows like
+            # "1.00 + 1.00 = 2.01" which breaks invoice reconciliation.
+            rounded_total = round(total_charge, 2)
+            rounded_direct = round(direct_cost, 2)
+            # Derive waste as the residual so direct + waste == total exactly.
+            rounded_waste = round(rounded_total - rounded_direct, 2)
+
             final_attributions.append({
                 "project_id": proj_id,
                 "reservation_id": res_id,
-                "direct_usage_cost_usd": round(direct_cost, 2),
-                "allocated_waste_cost_usd": round(allocated_waste, 2),
-                "total_cost_attribution_usd": round(total_charge, 2),
+                "direct_usage_cost_usd": rounded_direct,
+                "allocated_waste_cost_usd": rounded_waste,
+                "total_cost_attribution_usd": rounded_total,
                 "slot_hours": round(slot_hours, 2)
             })
             
         # Handle Rule B (Central Dump) properly if needed
+        # C1c: Hoisted precondition check before the BigQuery scan would be
+        # ideal, but the rule-B block also needs reservation_totals computed
+        # above. The Literal validator on waste_rule now prevents unknown
+        # values reaching here.
         if config.waste_rule == "B":
             if not config.central_cost_center_project:
                 raise HTTPException(

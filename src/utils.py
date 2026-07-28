@@ -43,7 +43,7 @@ def log_endpoint_start(endpoint_name: str, params, _logger=None) -> float:
     lookback = getattr(params, 'lookback_days', None)
     focus = getattr(params, 'focus_projects', None) or []
     cap_gb = getattr(params, 'max_bytes_billed_gb', None)
-    cap_str = f"{cap_gb} GiB" if cap_gb else "200 GiB (default)"
+    cap_str = f"{cap_gb} GiB" if cap_gb else "800 GiB (default)"
 
     scope_str = f"{len(focus)} projects ({', '.join(focus[:3])}{'…' if len(focus) > 3 else ''})" if focus else "full organization"
     lookback_str = f" | lookback={lookback}d" if lookback else ""
@@ -61,8 +61,11 @@ def log_endpoint_end(endpoint_name: str, start_time: float, _logger=None):
     elapsed = time.time() - start_time
     log.info("◼ %s — completed in %.1fs", endpoint_name, elapsed)
 
+# P11: Dot kept because domain-scoped GCP projects use them (e.g.
+# example.com:legacy-project). Safe because all SQL interpolation uses
+# backtick quoting. Colon kept for project:number format.
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_\-\.\:]+\Z")
-_ALIAS_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_ALIAS_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # Cap for UX sanity and validation cost — filtering actually *reduces* result size
 # vs. org-wide, so SQL-length and result-set size aren't the concern.
@@ -235,6 +238,37 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
         
     return client, resolved_project
 
+
+# ---------------------------------------------------------------------------
+# Error classification helpers  [H6, H7]
+# ---------------------------------------------------------------------------
+
+_RETRYABLE_403_REASONS = frozenset({"rateLimitExceeded", "quotaExceeded"})
+
+
+def _is_retryable_403(e: Exception) -> bool:
+    """True when a Forbidden (403) is a quota/rate-limit error, not a real
+    IAM denial.  BigQuery returns 403 for both — this distinguishes them
+    by inspecting the structured ``errors`` list on the exception."""
+    for err in getattr(e, "errors", None) or []:
+        reason = err.get("reason", "") if isinstance(err, dict) else ""
+        if reason in _RETRYABLE_403_REASONS:
+            return True
+    return False
+
+
+def _has_error_reason(e: Exception, reason: str) -> bool:
+    """Check whether *any* entry in a GCP exception's ``errors`` list
+    carries the given ``reason`` code — more precise than substring
+    matching the stringified message."""
+    for err in getattr(e, "errors", None) or []:
+        if isinstance(err, dict) and err.get("reason") == reason:
+            return True
+    # Fallback: check the string representation for the reason keyword.
+    # Some exception subclasses don't populate .errors consistently.
+    return reason in str(e)
+
+
 def handle_endpoint_exception(e: Exception, service_name: str):
     """
     Centralized exception handler for API endpoints.
@@ -247,7 +281,17 @@ def handle_endpoint_exception(e: Exception, service_name: str):
         
     from google.api_core import exceptions as gax_exc
     
-    if isinstance(e, gax_exc.Forbidden):
+    # --- H6: Quota / rate-limit errors arrive as HTTP 403 but are transient,
+    #     not IAM failures.  Surface them as 429 so the client can retry.
+    if isinstance(e, (gax_exc.Forbidden, gax_exc.TooManyRequests)):
+        if _is_retryable_403(e) or isinstance(e, gax_exc.TooManyRequests):
+            logger.warning(f"{service_name} rate/quota limited (retryable): {e}")
+            raise HTTPException(
+                status_code=429,
+                detail="BigQuery rate or quota limit reached. Please wait a moment and retry.",
+                headers={"Retry-After": "5"},
+            )
+        # True IAM / permission error
         logger.error(f"{service_name} access denied: {e}")
         raise HTTPException(
             status_code=403,
@@ -268,10 +312,9 @@ def handle_endpoint_exception(e: Exception, service_name: str):
         # client report back to the full server-side detail.
         req_id = request_id_var.get()
         logger.error(f"{service_name} bad request [{req_id}]: {e}")
-        err_str = str(e)
-        # F6: surface a specific message when the bytes-billed safety cap
-        # is exceeded so users know to raise max_bytes_billed_gb.
-        if "bytesBilledLimitExceeded" in err_str or "exceeds the maximum" in err_str.lower():
+        # H7: Match the specific reason code rather than a broad substring
+        # that could match unrelated errors (e.g. partition-count limits).
+        if _has_error_reason(e, "bytesBilledLimitExceeded"):
             raise HTTPException(
                 400,
                 f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
@@ -283,6 +326,26 @@ def handle_endpoint_exception(e: Exception, service_name: str):
             f"BigQuery rejected the request (invalid parameters or malformed query). "
             f"Reference: {req_id} — check server logs for details."
         )
+    # --- M2: Server-side errors should propagate as 5xx, not 400. ---
+    elif isinstance(e, (gax_exc.InternalServerError, gax_exc.ServiceUnavailable, gax_exc.DeadlineExceeded)):
+        req_id = request_id_var.get()
+        logger.error(f"{service_name} BigQuery server error [{req_id}]: {e}")
+        err_str = str(e)
+        # bytesBilledLimitExceeded sometimes arrives as a 500.
+        if _has_error_reason(e, "bytesBilledLimitExceeded"):
+            raise HTTPException(
+                400,
+                f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
+                f"or narrow scope with focus_projects / shorter lookback. "
+                f"Reference: {req_id} — check server logs for details."
+            )
+        detail_msg = f"BigQuery server error (Reference: {req_id}). This is usually transient — please retry."
+        if "internal error" in err_str.lower() or "33494873" in err_str:
+            detail_msg = (
+                f"BigQuery internal engine error occurred after retry attempts (Ref: {req_id}). "
+                "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
+            )
+        raise HTTPException(status_code=502, detail=detail_msg)
     elif isinstance(e, gax_exc.GoogleAPIError):
         req_id = request_id_var.get()
         logger.error(f"{service_name} BigQuery error [{req_id}]: {e}")
@@ -293,9 +356,8 @@ def handle_endpoint_exception(e: Exception, service_name: str):
                 f"BigQuery internal engine error occurred after retry attempts (Ref: {req_id}). "
                 "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
             )
-        # bytesBilledLimitExceeded often arrives as a 500, not a 400.
-        # Detect it here so the user gets an actionable message.
-        if "bytesBilledLimitExceeded" in err_str or "exceeds the maximum" in err_str.lower():
+        # H7: Use reason code, not substring match.
+        if _has_error_reason(e, "bytesBilledLimitExceeded"):
             raise HTTPException(
                 400,
                 f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
@@ -347,21 +409,26 @@ def run_query_with_retry_limit(
             return query_job, res_data
         except Exception as e:
             err_msg = str(e)
+            first_line = (err_msg.splitlines() or [repr(e)])[0]
             # Permanent errors: no amount of retrying will fix a missing
             # IAM permission, a non-existent resource, or a malformed query.
+            # H6: Exclude retryable 403s (quota/rate-limit) from permanent set.
             if isinstance(e, (gax_exc.Forbidden, gax_exc.NotFound, gax_exc.BadRequest)):
-                logger.error(
-                    "❌ %s failed with permanent error (no retry): %s",
-                    description, err_msg.splitlines()[0]
-                )
-                raise
+                if isinstance(e, gax_exc.Forbidden) and _is_retryable_403(e):
+                    pass  # fall through to retry
+                else:
+                    logger.error(
+                        "❌ %s failed with permanent error (no retry): %s",
+                        description, first_line
+                    )
+                    raise
             # bytesBilledLimitExceeded comes back as a 500 InternalServerError,
             # not a 400 BadRequest, so isinstance checks miss it. Detect by
             # message — the query will never fit under the cap on retry.
             if "bytesBilledLimitExceeded" in err_msg:
                 logger.error(
                     "❌ %s exceeded bytes-billed cap (no retry): %s",
-                    description, err_msg.splitlines()[0]
+                    description, first_line
                 )
                 raise
             if attempt >= max_attempts:
@@ -373,21 +440,21 @@ def run_query_with_retry_limit(
             
             logger.warning(
                 "⚠️ %s attempt %d/%d failed: %s. Retrying in %.1fs...",
-                description, attempt, max_attempts, err_msg.splitlines()[0], delay
+                description, attempt, max_attempts, first_line, delay
             )
             time.sleep(delay)
             delay = min(delay * 2.0, max_delay)
 
 
-# Default safety cap for maximum_bytes_billed (200 GiB).
-DEFAULT_MAX_BYTES_BILLED = 200 * 1024**3
+# Default safety cap for maximum_bytes_billed (800 GiB).
+DEFAULT_MAX_BYTES_BILLED = 800 * 1024**3
 
 def get_max_bytes_billed(params=None) -> int:
     """
     Resolve the maximum_bytes_billed value from an API params object.
 
     Reads the optional ``max_bytes_billed_gb`` attribute (in GiB) and converts
-    it to bytes.  Falls back to :data:`DEFAULT_MAX_BYTES_BILLED` (200 GiB) when
+    it to bytes.  Falls back to :data:`DEFAULT_MAX_BYTES_BILLED` (800 GiB) when
     the attribute is missing, ``None``, or ``0``.
 
     The value is clamped to the range [1 GiB, 10 TiB] to prevent accidental
@@ -397,8 +464,14 @@ def get_max_bytes_billed(params=None) -> int:
     if not gb:
         return DEFAULT_MAX_BYTES_BILLED
     gb = int(gb)
+    original_gb = gb
     # Clamp: minimum 1 GiB, maximum 10 TiB (10240 GiB)
     gb = max(1, min(gb, 10240))
+    if gb != original_gb:
+        logger.warning(
+            "max_bytes_billed_gb=%d clamped to %d (valid range: 1–10240 GiB)",
+            original_gb, gb,
+        )
     return gb * 1024**3
 
 

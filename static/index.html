@@ -388,9 +388,9 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 200 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <input type="number" id="cfg-max-bytes-billed" placeholder="200" min="1" max="10240" step="50">
-                                <small>Default: 200 GiB — increase for large orgs (max 10 TiB)</small>
+                                <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 800 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="number" id="cfg-max-bytes-billed" placeholder="800" min="1" max="10240" step="50">
+                                <small>Default: 800 GiB — increase for large orgs</small>
                             </div>
                             <div class="form-group" style="grid-column: 1 / -1;">
                                 <label for="cfg-focus-projects">Focus Projects <span class="tooltip" data-tooltip="Comma-separated list of GCP project IDs to limit the analysis scope. When set, only data from these projects will be included in all queries. Leave empty for org-wide analysis."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
@@ -1786,20 +1786,38 @@
                             <div>
                                 <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">What is History-Based Optimization (HBO)?</h3>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    BigQuery's History-Based Optimization (HBO) is a native feature that uses telemetry from completed executions of similar queries to apply additional optimizations and improve query performance (both slot time and latency). <strong>History-Based Optimization is not for reservations only. It applies to all queries in BigQuery, including those running on the On-Demand pricing model.</strong>
+                                    BigQuery's History-Based Optimization (HBO) is a native feature — <strong>enabled by default since GA</strong> — that uses telemetry from completed executions of similar queries to automatically apply additional optimizations and improve query performance. <strong>HBO applies to all queries in BigQuery, including On-Demand pricing — it is not limited to reservations.</strong>
                                 </p>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    When you run a query repeatedly, BigQuery learns from each run and applies optimizations like <strong>semi-join reduction</strong>, <strong>join commutation</strong>, and <strong>parallelism adjustment</strong>. This continuous learning continues until no more optimizations can be applied. Optimizations are only used if there is high confidence of benefit, and are revoked if they fail to improve performance.
+                                    When you run a query repeatedly, BigQuery learns from each run and applies optimizations. These are split into two categories:
                                 </p>
-                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05); margin-top: 1rem;">
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem;">
+                                    <div style="background: rgba(56, 189, 248, 0.08); padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(56, 189, 248, 0.15);">
+                                        <h5 style="color: #38bdf8; font-size: 0.8rem; margin: 0 0 0.4rem 0;"><i class="fa-solid fa-clock-rotate-left"></i> History-Based (requires prior runs)</h5>
+                                        <ul style="color: var(--text-secondary); font-size: 0.8rem; margin: 0; padding-left: 1.2rem; line-height: 1.6;">
+                                            <li><strong>Semi-join reduction</strong> — reduces shuffled data volume</li>
+                                            <li><strong>Join commutation</strong> — swaps join sides for efficiency</li>
+                                            <li><strong>Join pushdown</strong> — executes selective joins earlier</li>
+                                            <li><strong>Parallelism adjustment</strong> — optimizes stage parallelism</li>
+                                        </ul>
+                                    </div>
+                                    <div style="background: rgba(45, 212, 191, 0.08); padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(45, 212, 191, 0.15);">
+                                        <h5 style="color: #2dd4bf; font-size: 0.8rem; margin: 0 0 0.4rem 0;"><i class="fa-solid fa-bolt"></i> Engine-Level (applied at runtime)</h5>
+                                        <ul style="color: var(--text-secondary); font-size: 0.8rem; margin: 0; padding-left: 1.2rem; line-height: 1.6;">
+                                            <li><strong>Enhanced vectorization</strong> — hardware-specific execution</li>
+                                            <li><strong>Short query optimization</strong> — fast-tracks simple queries</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05);">
                                     <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-chart-pie"></i> Quantifying the Impact</h4>
                                     <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
-                                        Since HBO is enabled by default and cannot be easily toggled off for A/B testing in some environments, this tool helps you estimate its impact. We compare optimized queries with their most recent unoptimized runs to show you the percentage of execution time saved.
+                                        This tool estimates HBO's impact by comparing each query's execution time against its historical average (<code>avg_previous_execution_ms</code>), filtering out jobs where data volume increased. Savings are projected to monthly slot-hours and dollars.
                                     </p>
                                 </div>
                                 <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-top: 1rem;">
                                     <i class="fa-solid fa-circle-info" style="color: #38bdf8; margin-right: 5px;"></i>
-                                    <strong>Note:</strong> If HBO has been disabled for a project or organization, you can use the provided DDL in the status panel to re-enable it.
+                                    <strong>HBO Status:</strong> The status panel below checks each project's <code>PROJECT_OPTIONS</code> for the <code>adaptive</code> setting. If HBO has been disabled, you can re-enable it with the provided DDL.
                                 </p>
                             </div>
                         </div>
@@ -1829,14 +1847,29 @@
 
                     <!-- Status Panel -->
                     <div class="glass-card org-rec-panel" id="hbo-status-panel" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
-                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
-                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
-                            <div style="flex: 1;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.25rem;"></i>
                                 <h3 style="margin: 0; color: #38bdf8;">HBO Status</h3>
-                                <div id="hbo-status-list" style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;">
-                                    <!-- Status items will be injected here -->
-                                </div>
                             </div>
+                            <span id="hbo-status-summary" style="color: var(--text-secondary); font-size: 0.8rem;"></span>
+                        </div>
+                        <div class="table-responsive">
+                            <table id="hbo-status-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 45%;">Project</th>
+                                        <th style="width: 30%;">Status</th>
+                                        <th style="width: 25%;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="hbo-status-tbody">
+                                    <!-- Rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="hbo-status-pagination" style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-top: 1rem;">
+                            <!-- Pagination buttons injected by JS -->
                         </div>
                     </div>
 
@@ -1867,6 +1900,7 @@
                                         <th>% Time Saved</th>
                                         <th>New Elapsed (ms)</th>
                                         <th>Original Elapsed (ms)</th>
+                                        <th>Optimizations Applied</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2571,12 +2605,25 @@
                                     </div>
                                 </div>
 
-                                <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    <strong>Prerequisites & Roles:</strong>
-                                    <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
-                                        <li>Configure your <strong>GCP Project ID</strong> in the Global Settings panel.</li>
-                                        <li>Serverless execution using ADC user/service account credentials. Requires <strong>Vertex AI User</strong> (<code>roles/aiplatform.user</code>) and BigQuery metadata permissions.</li>
-                                    </ul>
+                                   <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 1rem;">
+                                    <strong>Required Roles</strong> <span style="font-size: 0.8rem; color: #64748b;">(on the execution project)</span>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                                        <div style="background: rgba(56, 189, 248, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #38bdf8; margin-bottom: 0.2rem;"><i class="fa-solid fa-arrows-rotate"></i> Migration Editor</div>
+                                            <code style="font-size: 0.7rem; color: #a5f3fc;">roles/bigquerymigration.editor</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">SQL optimization workflows (create, get, delete)</div>
+                                        </div>
+                                        <div style="background: rgba(56, 189, 248, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #38bdf8; margin-bottom: 0.2rem;"><i class="fa-solid fa-flask"></i> BigQuery User</div>
+                                            <code style="font-size: 0.7rem; color: #a5f3fc;">roles/bigquery.user</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">$0.00 dry-run byte validation</div>
+                                        </div>
+                                        <div style="background: rgba(168, 85, 247, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #a855f7; margin-bottom: 0.2rem;"><i class="fa-solid fa-brain"></i> Vertex AI User</div>
+                                            <code style="font-size: 0.7rem; color: #d8b4fe;">roles/aiplatform.user</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">Gemini-powered recommendations</div>
+                                        </div>
+                                    </div>
                                 </div>
                                 
                                 <!-- Subtle inline security and privacy note -->
@@ -2690,18 +2737,28 @@
             </div>
             
             <p style="color: var(--text-primary); font-weight: 600; margin-bottom: 0.75rem; font-size: 0.95rem;">
-                ⚠️ Schema Context Will Be Sent to Vertex AI
+                ⚠️ Schema &amp; Query Context Will Be Sent to Google Cloud APIs
             </p>
             
             <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.6; margin-bottom: 1rem;">
-                To provide deeper, metadata-aware optimization advice (like checking partition and cluster keys), this tool reads the <strong>DDL (table definitions)</strong> of tables referenced in your queries and includes them in prompts sent to <a href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start" target="_blank" style="color: #38bdf8; text-decoration: underline;">Agent Platform</a>.
+                To provide deeper optimization advice, this tool sends metadata to two Google Cloud services:
             </p>
-            
+
             <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
                 <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0 0 0.5rem 0;">
-                    <strong>DDLs may contain sensitive information, including:</strong>
+                    <strong>1. <a href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start" target="_blank" style="color: #38bdf8; text-decoration: underline;">Vertex AI Agent Platform</a></strong> — receives DDL (table definitions) and query text for Gemini-powered analysis.
+                </p>
+                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0;">
+                    <strong>2. <a href="https://cloud.google.com/bigquery/docs/migration-service-overview" target="_blank" style="color: #38bdf8; text-decoration: underline;">BigQuery Migration Service API</a></strong> — receives SQL queries and auto-resolved schema DDL for automated query rewriting and translation.
+                </p>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
+                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0 0 0.5rem 0;">
+                    <strong>Metadata that may be transmitted includes:</strong>
                 </p>
                 <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5;">
+                    <li>SQL query text (full query statements)</li>
                     <li>Column names revealing business logic or data structure</li>
                     <li>Table/column descriptions and comments (<code>OPTIONS</code>)</li>
                     <li>Partitioning and clustering strategies</li>
@@ -2710,12 +2767,12 @@
             
             <div style="background: rgba(56, 189, 248, 0.08); border-left: 4px solid #38bdf8; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
                 <p style="color: #38bdf8; font-size: 0.8rem; font-weight: 600; margin: 0;">
-                    <i class="fa-solid fa-shield-halved"></i> Reassurance: Row-level data is NEVER read, processed, or transmitted. Only structural metadata and query text are analyzed.
+                    <i class="fa-solid fa-shield-halved"></i> Reassurance: Row-level data is NEVER read, processed, or transmitted. Only structural metadata and query text are analyzed. Both services are Google Cloud first-party APIs within your project's security perimeter.
                 </p>
             </div>
             
             <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 1.25rem;">
-                By proceeding, you confirm you are authorized to send this metadata to Agent Platform. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
+                By proceeding, you confirm you are authorized to send this metadata to the above Google Cloud services. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
             </p>
             
             <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem;">

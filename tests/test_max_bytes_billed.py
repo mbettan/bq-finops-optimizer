@@ -11,7 +11,7 @@ class MockParams(BaseModel):
     max_bytes_billed_gb: Optional[int] = None
 
 def test_get_max_bytes_billed_none():
-    # Calling helper with None or empty params should fallback to default 200 GiB
+    # Calling helper with None or empty params should fallback to default 800 GiB
     assert get_max_bytes_billed(None) == DEFAULT_MAX_BYTES_BILLED
     params = MockParams()
     assert get_max_bytes_billed(params) == DEFAULT_MAX_BYTES_BILLED
@@ -23,7 +23,7 @@ def test_get_max_bytes_billed_valid():
 
 def test_get_max_bytes_billed_clamped_min():
     # If the user enters a negative value or zero, it is clamped to min 1 GiB or default.
-    # Note: 0 falls back to default 200 GiB, while negative values clamp to 1 GiB.
+    # Note: 0 falls back to default 800 GiB, while negative values clamp to 1 GiB.
     params_neg = MockParams(max_bytes_billed_gb=-5)
     assert get_max_bytes_billed(params_neg) == 1 * 1024**3
     

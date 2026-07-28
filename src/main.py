@@ -55,7 +55,7 @@ import time
 import uuid
 
 
-__version__ = "1.2.3"
+__version__ = "1.3.0"
 
 # Centralized on-demand pricing — single source of truth [R-pricing]
 ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))
@@ -353,26 +353,53 @@ def _parse_release_notes() -> dict:
                 current_release["highlights"].append(title)
             continue
 
-        # BQ-style: bold tag on its own line (**Feature**, **Fixed**, etc.)
-        # Body follows on the next non-empty line.
+        # BQ-style: bold tag on its own line.
+        # Supports bare (**Fixed**), descriptive (**Feature (desc)**),
+        # and compound (**Security & Error Handling**) tags.
         _bq_tags = {"Feature", "Fixed", "Change", "Security", "Issue",
                      "Announcement", "Breaking", "Deprecated"}
-        if stripped.startswith("**") and stripped.endswith("**") and stripped[2:-2] in _bq_tags:
-            # Store the tag; grab body from the next line
-            current_release.setdefault("_pending_tag", stripped[2:-2])
+        if stripped.startswith("**") and stripped.endswith("**"):
+            inner = stripped[2:-2]
+            base_tag = inner.split()[0] if inner else ""
+            if base_tag in _bq_tags:
+                rest = inner[len(base_tag):].strip()
+
+                # **Feature (description)** → emit highlight immediately
+                if rest.startswith("(") and rest.endswith(")"):
+                    desc = rest[1:-1].strip()
+                    current_release["highlights"].append(f"[{base_tag}] {desc}")
+                    current_release.pop("_current_tag", None)
+                    continue
+
+                # Bare **Fixed** or compound **Security & ...** → capture body
+                current_release["_current_tag"] = base_tag
+                continue
+
+        # Horizontal rules separate releases — clear any pending state
+        if stripped == "---":
+            current_release.pop("_current_tag", None)
             continue
 
-        # If we have a pending tag, the current line is the body
-        if current_release.get("_pending_tag") and stripped:
-            tag = current_release.pop("_pending_tag")
-            # Take first sentence for the highlight
+        # Bullet points under a current tag → each becomes a highlight
+        if stripped.startswith("* ") and current_release.get("_current_tag"):
+            tag = current_release["_current_tag"]
+            bullet_text = stripped[2:].strip()
+            dot_pos = bullet_text.find(". ")
+            summary = bullet_text[:dot_pos + 1] if dot_pos != -1 else bullet_text.rstrip(".")
+            current_release["highlights"].append(f"[{tag}] {summary}")
+            continue
+
+        # Paragraph body (first non-bullet, non-empty line) → first sentence
+        if current_release.get("_current_tag") and stripped:
+            tag = current_release.pop("_current_tag")
             dot_pos = stripped.find(". ")
             summary = stripped[:dot_pos + 1] if dot_pos != -1 else stripped.rstrip(".")
             current_release["highlights"].append(f"[{tag}] {summary}")
             continue
-        # Clear pending tag on blank lines
+
+        # Clear current tag on blank lines
         if not stripped:
-            current_release.pop("_pending_tag", None)
+            current_release.pop("_current_tag", None)
 
     if current_release:
         releases.append(current_release)
@@ -382,7 +409,7 @@ def _parse_release_notes() -> dict:
         if r["version"] is None:
             r["version"] = r["release_date"]
         r.pop("_has_highlights_section", None)
-        r.pop("_pending_tag", None)
+        r.pop("_current_tag", None)
 
     return _build_about(releases)
 
@@ -467,7 +494,7 @@ def run_static_schema_audit(params: StaticAuditParams):
             # Focus takes priority over scope
             target_projects = [_safe_ident(p, "project_id") for p in params.focus_projects]
         elif params.scope == 'organization':
-            logger.info(f"▶ Static Schema Audit — project={resolved_project} | region={region_val} | scope=full organization | safety_cap=200 GiB (default)")
+            logger.info(f"▶ Static Schema Audit — project={resolved_project} | region={region_val} | scope=full organization | safety_cap=800 GiB (default)")
             proj_sql = f"""
             SELECT DISTINCT project_id 
             FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
@@ -584,6 +611,7 @@ def fetch_active_assist_recommendations(params: StorageParams):
               `{p}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS
             WHERE
               recommender = 'google.bigquery.table.PartitionClusterRecommender'
+              AND state = 'ACTIVE'
             """
                 union_blocks.append(block)
 
@@ -816,8 +844,19 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
     return processed_metrics
 
 def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region: str, params=None):
+    """Returns (physical_datasets, failed_projects).
+
+    C6: Both the fast path and the per-project fallback previously swallowed
+    exceptions and returned an empty set — indistinguishable from "nothing is
+    on physical billing."  The consumer then defaulted every dataset to
+    "logical" and emitted ALTER SCHEMA recommendations with dollar figures
+    for datasets already on physical.
+
+    Now explicitly tracks which projects failed, so the consumer can skip them
+    instead of fabricating savings.
+    """
     if not projects:
-        return set()
+        return set(), set()
 
     # Defense in depth: these project names come from a prior BigQuery result
     # (get_storage_metrics), not directly from the request, but validate them
@@ -834,12 +873,13 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
     logger.info(f"Trying fast UNION ALL for physical datasets on {len(projects)} projects")
     try:
         results = run_query_and_log(scoped_client, sql, "Physical Datasets (Fast)", params=params)
-        return {(row['project_name'], row['dataset_name']) for row in results}
+        return {(row['project_name'], row['dataset_name']) for row in results}, set()
     except Exception as e:
         logger.warning(f"Fast UNION ALL failed: {e}. Falling back to loop.")
 
     # Fallback to loop
     physical_datasets = set()
+    failed_projects = set()
     for p in projects:
         sql = f"SELECT schema_name as dataset_name FROM `{p}.{region}.INFORMATION_SCHEMA.SCHEMATA_OPTIONS` WHERE option_name = 'storage_billing_model' AND option_value = 'PHYSICAL'"
         try:
@@ -848,8 +888,9 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
                 physical_datasets.add((p, row['dataset_name']))
         except Exception as e:
             logger.warning(f"Failed to query SCHEMATA_OPTIONS for project {p}: {e}")
+            failed_projects.add(p)
 
-    return physical_datasets
+    return physical_datasets, failed_projects
 
 def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, params=None):
     sql = f"SELECT option_value FROM `{scoped_client.project}`.`{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
@@ -884,7 +925,13 @@ def analyze_storage(params: StorageParams):
         effective_pricing_ratio = global_physical_cost / global_physical_gib if global_physical_gib > 0 else 0
         
         projects = {row['project_name'] for row in metrics}
-        physical_datasets = get_physical_datasets(scoped_client, projects, params.region, params=params)
+        physical_datasets, failed_projects = get_physical_datasets(scoped_client, projects, params.region, params=params)
+        if failed_projects:
+            logger.warning(
+                "C6: %d project(s) failed SCHEMATA_OPTIONS — their datasets will be "
+                "excluded from billing model recommendations: %s",
+                len(failed_projects), sorted(failed_projects),
+            )
         
         processed_data = []
         for row in metrics:
@@ -893,6 +940,12 @@ def analyze_storage(params: StorageParams):
             forecast_logical = row['forecast_logical']
             forecast_physical = row['forecast_physical']
             
+            # C6: Skip datasets from projects where we couldn't determine
+            # the current billing model — defaulting to 'logical' would
+            # fabricate savings for datasets already on physical.
+            if project in failed_projects:
+                continue
+
             currently_on = "physical" if (project, dataset) in physical_datasets else "logical"
             better_on = "physical" if forecast_logical > forecast_physical else "logical"
             
@@ -1564,8 +1617,13 @@ class AIParams(FocusMixin):
         description="composite | cumulative_cost | execution_frequency | memory_spill | slot_ms"
     )
 
-# Output safety guard: only allow SELECT/WITH queries from Gemini [R3/R-security]
-ALLOWED_QUERY_PREFIX_RE = re.compile(r"^\s*(WITH|SELECT)\b", re.IGNORECASE)
+# Output safety guard: allow SELECT/WITH and CTAS/CVAS rewrites from Gemini [R3/R-security]
+# CTAS pattern: CREATE [OR REPLACE] TABLE|VIEW ... AS SELECT — common in scheduled queries.
+# The dry-run endpoint (/api/ai/dry-run) keeps stricter SELECT/WITH-only validation.
+ALLOWED_QUERY_PREFIX_RE = re.compile(
+    r"^\s*(?:WITH|SELECT|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE)\b)",
+    re.IGNORECASE,
+)
 
 class AIResult(BaseModel):
     job_id: str
@@ -1577,12 +1635,12 @@ class AIResult(BaseModel):
     gemini_optimization_advice: str
     tables_referenced_count: int
     tables_found_count: int
-    dry_run_validated: bool = False
+    # F-L5: Removed dry_run_validated, bytes_scanned_optimized,
+    # estimated_savings_pct, and is_external_table_query — backend never
+    # populates them and frontend never reads them. Keeping zero defaults
+    # in the public response risks silent "0%" in a future UI column.
     bytes_scanned_original: int = 0            # total_bytes_processed (always populated)
     bytes_billed_original: int = 0             # total_bytes_billed (0 under Editions)
-    bytes_scanned_optimized: int = 0
-    estimated_savings_pct: float = 0.0
-    is_external_table_query: bool = False
     approx_warning_flag: bool = False
     on_demand_rate_usd_per_tb: float = ON_DEMAND_USD_PER_TB
     migration_applied_yaml: Optional[str] = None
@@ -1693,8 +1751,8 @@ def analyze_ai_query(params: AIParams):
             SUM(effective_bytes) AS total_effective_bytes,
             SUM(slot_ms) AS total_slot_ms,
             SUM(bytes_spilled) AS total_bytes_spilled,
-            SUM(effective_bytes) / POW(10, 12) * 6.25 AS window_cost_usd,
-            (SUM(effective_bytes) / POW(10, 12) * 6.25) / {params.lookback_days} * 365 AS annualized_cost_usd,
+            SUM(effective_bytes) / POW(1024, 4) * {ON_DEMAND_USD_PER_TB} AS window_cost_usd,
+            (SUM(effective_bytes) / POW(1024, 4) * {ON_DEMAND_USD_PER_TB}) / {params.lookback_days} * 365 AS annualized_cost_usd,
             ARRAY_AGG(job_meta ORDER BY job_meta.total_slot_ms DESC LIMIT 1)[OFFSET(0)] AS worst_job,
             ROUND(
               (0.40 * LOG10(SUM(effective_bytes) / POW(10, 9) + 1)) +
@@ -2275,8 +2333,9 @@ def dry_run_query(params: DryRunParams):
     cleaned_query = re.sub(r";{2,}", ";", cleaned_query).strip()
     cleaned_query = cleaned_query.rstrip(";").strip()
 
-    # Output safety guard — only SELECT/WITH queries
-    if not ALLOWED_QUERY_PREFIX_RE.match(cleaned_query):
+    # Dry-run safety guard — stricter than AI output: only SELECT/WITH (no CTAS)
+    _DRYRUN_ALLOWED_RE = re.compile(r"^\s*(WITH|SELECT)\b", re.IGNORECASE)
+    if not _DRYRUN_ALLOWED_RE.match(cleaned_query):
         raise HTTPException(status_code=400, detail="Only SELECT or WITH queries are allowed for dry-run.")
 
     result = validate_sql_dry_run(scoped_client, cleaned_query)
@@ -4116,7 +4175,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
             
             avg_bytes = row['avg_bytes_processed'] or 0.0
             recommendation = "N/A"
-            if avg_bytes < 100 * 1024 * 1024 and row['avg_duration_seconds'] < 5:
+            if avg_bytes < 100 * 1024 * 1024 and (row['avg_duration_seconds'] or 0.0) < 5:
                 if params.fluid_scaling:
                     recommendation = "Optimized by Fluid Scaling. Monitor for further efficiency."
                 else:

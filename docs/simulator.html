@@ -548,9 +548,9 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 200 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <input type="number" id="cfg-max-bytes-billed" placeholder="200" min="1" max="10240" step="50">
-                                <small>Default: 200 GiB — increase for large orgs (max 10 TiB)</small>
+                                <label for="cfg-max-bytes-billed">Max Bytes Billed (GiB) <span class="tooltip" data-tooltip="Safety cap for all BigQuery queries. Increase this for large-scale environments that exceed the 800 GiB default. Queries scanning more bytes than this limit will be cancelled."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="number" id="cfg-max-bytes-billed" placeholder="800" min="1" max="10240" step="50">
+                                <small>Default: 800 GiB — increase for large orgs</small>
                             </div>
                             <div class="form-group" style="grid-column: 1 / -1;">
                                 <label for="cfg-focus-projects">Focus Projects <span class="tooltip" data-tooltip="Comma-separated list of GCP project IDs to limit the analysis scope. When set, only data from these projects will be included in all queries. Leave empty for org-wide analysis."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>

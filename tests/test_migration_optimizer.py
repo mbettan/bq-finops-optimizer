@@ -134,3 +134,129 @@ def test_translate_endpoint_schema(mock_run):
     data = response.json()
     assert data["translated_sql"] == "SELECT 1 AS test"
     assert data["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# C3 Regression: _execute_workflow_pass must NOT strip translated SQL
+# ---------------------------------------------------------------------------
+
+from src.migration_optimizer import (
+    _execute_workflow_pass,
+    MigrationClient,
+    HttpResult,
+    MigrationIssue,
+)
+
+
+def _make_mock_client(workflow_payload, subtask_payload=None):
+    """Create a mock MigrationClient that returns predetermined payloads."""
+    mock = MagicMock(spec=MigrationClient)
+    # create_workflow returns 200 with a resource name
+    mock.create_workflow.return_value = HttpResult(
+        status=200,
+        body={"name": "projects/p/locations/us/workflows/w-123"},
+        text="",
+    )
+    # wait returns the workflow payload
+    mock.wait.return_value = workflow_payload
+    # subtasks returns 200 with subtask payload (or empty)
+    mock.subtasks.return_value = HttpResult(
+        status=200,
+        body=subtask_payload or {"subtasks": []},
+        text="",
+    )
+    # delete always succeeds
+    mock.delete.return_value = HttpResult(status=200, body={}, text="")
+    return mock
+
+
+def _make_params_for_pass():
+    return TranslationParams(
+        query="SELECT * FROM t",
+        project_id="test-project",
+        timeout_seconds=30,
+    )
+
+
+class TestC3EchoStripping:
+    """Regression tests for C3: only strip echoed input, never translated output."""
+
+    def test_translated_sql_is_kept_when_different_from_input(self):
+        """When the API returns DIFFERENT SQL in walk_literals, it's a real
+        translation — C3 must NOT strip it."""
+        source_sql = "SELECT * FROM my_table WHERE x > 1\n"
+        translated_sql = "SELECT * FROM my_table WHERE x > 1 -- optimized\n"
+
+        # Workflow payload contains the translated SQL under input.sql
+        workflow_payload = {
+            "state": "COMPLETED",
+            "tasks": {"t": {"targetReturnLiterals": [
+                {"relativePath": "input.sql", "literalString": translated_sql}
+            ]}}
+        }
+        mock_client = _make_mock_client(workflow_payload)
+        files = [("input.sql", source_sql)]
+        params = _make_params_for_pass()
+
+        literals, issues, ok, err = _execute_workflow_pass(mock_client, files, params)
+
+        assert ok is True
+        assert "input.sql" in literals, (
+            "C3 regression: translated SQL was stripped even though it differs from input"
+        )
+        assert literals["input.sql"] == translated_sql
+
+    def test_echoed_input_is_stripped(self):
+        """When the API echoes the EXACT source input back, C3 must strip it."""
+        source_sql = "SELECT * FROM my_table WHERE x > 1\n"
+
+        # Workflow payload echoes the source SQL verbatim
+        workflow_payload = {
+            "state": "COMPLETED",
+            "tasks": {"t": {"targetReturnLiterals": [
+                {"relativePath": "input.sql", "literalString": source_sql}
+            ]}}
+        }
+        mock_client = _make_mock_client(workflow_payload)
+        files = [("input.sql", source_sql)]
+        params = _make_params_for_pass()
+
+        literals, issues, ok, err = _execute_workflow_pass(mock_client, files, params)
+
+        assert ok is True
+        assert "input.sql" not in literals, (
+            "C3: echoed source SQL should have been stripped but was kept"
+        )
+
+    def test_subtask_output_overrides_after_echo_strip(self):
+        """When walk_literals echoes the input (stripped by C3), but the subtask
+        endpoint returns the REAL translated SQL, the subtask wins."""
+        source_sql = "SELECT * FROM my_table\n"
+        real_translation = "SELECT * FROM my_table -- rewritten by compiler\n"
+
+        # Main payload echoes source
+        workflow_payload = {
+            "state": "COMPLETED",
+            "tasks": {"t": {"targetReturnLiterals": [
+                {"relativePath": "input.sql", "literalString": source_sql}
+            ]}}
+        }
+        # Subtask carries the real translation
+        subtask_payload = {
+            "subtasks": [{
+                "resource": {
+                    "targetReturnLiterals": [
+                        {"relativePath": "input.sql", "literalString": real_translation}
+                    ]
+                }
+            }]
+        }
+        mock_client = _make_mock_client(workflow_payload, subtask_payload)
+        files = [("input.sql", source_sql)]
+        params = _make_params_for_pass()
+
+        literals, issues, ok, err = _execute_workflow_pass(mock_client, files, params)
+
+        assert ok is True
+        assert literals.get("input.sql") == real_translation
+

@@ -40,6 +40,16 @@ router = APIRouter(prefix="/api/fluid-scaling", tags=["fluid-scaling"])
 DAYS_PER_YEAR = 365.25
 SECONDS_PER_HOUR = 3600
 
+# Per-edition slot pricing (USD per slot-hour).  [H2]
+# Source: https://cloud.google.com/bigquery/pricing#editions-pricing
+# The user-supplied `price_per_slot_hr` in FluidEstimateParams serves as the
+# fallback for any edition string not in this map.
+EDITION_RATES: dict[str, float] = {
+    "STANDARD":         0.04,
+    "ENTERPRISE":       0.06,
+    "ENTERPRISE_PLUS":  0.10,
+}
+
 # MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
 MAX_LOOKBACK_DAYS = 90
 
@@ -86,7 +96,7 @@ class FluidEstimateMetric(BaseModel):
 
 
 class FluidScalingConfigStatus(BaseModel):
-    enabled: bool
+    enabled: Optional[bool] = None
     configured_reservations: List[str]
     missing_reservations: List[str]
     ddl: Optional[str] = None
@@ -336,6 +346,7 @@ GROUP BY reservation_id
 class _ReservationSummary:
     """Per-reservation aggregates after Python rollup."""
     reservation_id: str
+    edition: Optional[str]
     legacy_slot_seconds: float
     fluid_slot_seconds: float
     total_pure_used_seconds: float
@@ -363,6 +374,7 @@ def _process_unified_results(df: pd.DataFrame) -> List[_ReservationSummary]:
         output.append(
             _ReservationSummary(
                 reservation_id=row.reservation_id,
+                edition=str(row.edition).upper().strip() if pd.notnull(getattr(row, 'edition', None)) else None,
                 legacy_slot_seconds=float(row.legacy_slot_seconds) if pd.notnull(row.legacy_slot_seconds) else 0.0,
                 fluid_slot_seconds=float(row.fluid_slot_seconds) if pd.notnull(row.fluid_slot_seconds) else 0.0,
                 total_pure_used_seconds=float(row.total_pure_used_seconds) if pd.notnull(row.total_pure_used_seconds) else 0.0,
@@ -377,6 +389,9 @@ def _to_metric(
     price_per_slot_hr: float,
     lookback_days: int,
 ) -> FluidEstimateMetric:
+    # H2: Use edition-specific rate; fall back to user-supplied override.
+    effective_rate = EDITION_RATES.get(summary.edition, price_per_slot_hr) if summary.edition else price_per_slot_hr
+
     today_hours = summary.legacy_slot_seconds / SECONDS_PER_HOUR
     fluid_hours = summary.fluid_slot_seconds / SECONDS_PER_HOUR
     total_pure_used_hours = summary.total_pure_used_seconds / SECONDS_PER_HOUR
@@ -385,9 +400,11 @@ def _to_metric(
     # Clamped True cooldown savings (always >= 0%)
     clamped_savings = min(max((saved_hours / today_hours * 100.0), 0.0), 100.0) if today_hours > 0 else 0.0
 
-    usd_window = saved_hours * price_per_slot_hr
-    usd_monthly = usd_window * (DAYS_PER_MONTH / lookback_days)
-    usd_annual = usd_window * (DAYS_PER_YEAR / lookback_days)
+    usd_window = saved_hours * effective_rate
+    # M10: Guard against zero lookback_days from internal callers (HTTP is safe via ge=1).
+    safe_lookback = max(lookback_days, 1)
+    usd_monthly = usd_window * (DAYS_PER_MONTH / safe_lookback)
+    usd_annual = usd_window * (DAYS_PER_YEAR / safe_lookback)
 
     return FluidEstimateMetric(
         reservation_id=summary.reservation_id or "(unassigned)",
@@ -447,8 +464,11 @@ def _build_config_status(
     configured_res = sorted(list(actionable_res_names & enabled_norm))
 
     ddl = None
-    is_fully_enabled = True
-    if missing_res:
+    # No actionable reservations found — don't claim "fully enabled" when we
+    # have no data to base that on (e.g. wrong admin_project_id or region).
+    if not actionable_res_names:
+        is_fully_enabled = None
+    elif missing_res:
         is_fully_enabled = False
         # Union with already-enabled names so the DDL doesn't drop existing entries.
         new_list = sorted(list(enabled_norm | actionable_res_names))
@@ -460,6 +480,8 @@ def _build_config_status(
             f"  `{region}.{_FLUID_OPTION_NAME}` = [{list_str}]\n"
             f");"
         )
+    else:
+        is_fully_enabled = True
 
     return FluidScalingConfigStatus(
         enabled=is_fully_enabled,
