@@ -6,7 +6,8 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
-## July 27, 2026 — v1.3.0
+
+## July 28, 2026 — v1.3.0
 
 **Feature (AI Doctor Multi-Strategy ROI Engine)**
 Introduced an aggregated multi-metric query selection and FinOps ROI prioritization engine for AI Doctor. Rather than selecting single un-grouped expensive jobs, AI Doctor groups query executions across `JOBS_BY_ORGANIZATION` over 7–90 day lookback windows. Added an interactive **Discovery Priority** dropdown to the UI with 5 distinct strategy modes:
@@ -34,6 +35,22 @@ Introduced an aggregated multi-metric query selection and FinOps ROI prioritizat
 * **listAll Redaction Awareness**: Distinguishes `None` (undetermined — row absent, permissions issue) from `[]` (checked, no optimizations applied). This prevents IAM `listAll` redaction from being misreported as "no optimizations."
 * **Progressive Enhancement**: The enrichment call is non-blocking — the HBO table renders immediately with "Loading…" badges, which upgrade to real badges when the per-project fan-out resolves.
 * **XSS-Safe Rendering**: Badge cells built with `document.createElement` + `textContent` (never `innerHTML`), preventing injection through server-returned optimization keys.
+
+**Feature (AI Doctor Executive KPI Dashboard)**
+* **KPI Summary Strip**: Three glassmorphism metric cards render above the results table immediately after analysis: **Audited Spend** (total cost + TiB scanned), **Findings by Severity** (HIGH/MED/LOW pill counts), and **Schema Coverage** (DDL retrieval percentage). Provides a FinOps lead with the 5-second answer before scanning any rows.
+
+**Feature (AI Doctor Smart Filter Pills)**
+* **Interactive Filter Toolbar**: Six clickable pill filters above the table — **All**, **High**, **Medium**, **Has Migration Config**, **Schema Gap**, **Repeat Offenders** — each with live counts. Filters integrate with DataTables custom search (`$.fn.dataTable.ext.search`) and reset cleanly on re-render via clone-to-reset pattern to prevent event listener stacking.
+
+**Feature (AI Doctor UX Polish)**
+* **Sort by Cost**: Default table sort changed from severity/slot-ms to **Original Cost descending** — the highest-spend queries surface first. Cost column now carries a numeric `data-order` attribute for correct DataTable sorting.
+* **Severity Left-Stripe**: Replaced subtle background tinting with a **4px inset left border stripe** (red/amber/green `box-shadow`) for stronger visual scanning and improved accessibility for color-blind users.
+* **Collapsible Migration API Config**: YAML badge refactored into an **accordion** (collapsed by default) with chevron rotation animation. Uses event delegation instead of inline `onclick` handlers (CSP-safe).
+* **Advice Truncation**: AI Optimization Advice column capped at 150px with a gradient fade and **"▼ Show more" / "▲ Show less" toggle** for content exceeding 300 characters. Negative margin cleared on expand for clean layout.
+* **Copy Original SQL**: Added a **"Copy SQL" button** to the original Query SQL column (rose-themed), matching the existing blue Copy SQL on the Optimized Query column.
+* **Schema Note Consolidation**: Moved the visible inline footnote ("This recommendation used schema context…") into the **Schema Coverage badge tooltip** (hover), decluttering the Advice column.
+* **Sticky Header Fix**: Added `z-index: 10` to the existing `position: sticky` thead rule so table content scrolls underneath headers correctly.
+* **Query SQL Restyle**: Original SQL column redesigned from truncated text to a **scrollable `<pre>` code block** with rose/red syntax highlighting (`#fb7185`), consistent with the blue Optimized Query column.
 * **`test_hbo_optimizations.py` (27 tests)**: Covers JSON parsing (4+ shapes), badge building, per-project fan-out isolation, UNION ALL prevention, partition pruning, listAll redaction semantics, and empty exception guard (P12).
 
 **Security & Error Handling**
@@ -79,7 +96,9 @@ Introduced an aggregated multi-metric query selection and FinOps ROI prioritizat
 * **Settings Validation Abort**: State and localStorage were mutated before validation — invalid input was persisted, cached, and survived reload. Now validates into local variables first and only commits after passing.
 * **Scope-Dependent Cache Flush**: Six scope-dependent keys (`bq_slots_utilization`, `bq_fluid_estimate_data`, etc.) survived scope changes, rendering stale data under the new region/project header. Replaced deny-list with an allow-list of scope-independent keys.
 * **Error Detail Rendering**: FastAPI 422 `detail` is an array of `{loc, msg}` objects. `err.detail || 'fallback'` rendered as `[object Object]`. Added `detailToMessage()` helper across all 11 error sites.
-* **Dry Run Response Check**: `/api/ai/dry_run` fetch had no `response.ok` check — backend 400/403 was silently treated as an invalid SQL result.
+* **Dry Run Button Removed**: Removed the `/api/ai/dry_run` endpoint, its Pydantic models (`DryRunRequest`, `DryRunResponse`), the frontend button/event handler, and 2 dedicated test cases. The feature carried risk with minimal value — the underlying Migration API's internal `dry_run_compare` parameter is unaffected.
+* **CSP-Blocked Inline Handlers**: All inline `onclick` handlers in the AI Doctor table (YAML accordion, advice toggle) replaced with **event delegation** via `tbody.addEventListener`, resolving click failures under Content Security Policy restrictions.
+* **Event Listener Stacking**: Filter pill click handlers now use clone-to-reset (`cloneNode(true)` + `replaceChild`) to prevent duplicate handler accumulation across re-renders.
 * **Governance Cache Wipe**: Both governance scan buttons called `clearModuleCache` on the shared `bq_gov_results` key before merging, wiping the sibling scan's cached data on every run.
 * **Simulation Empty Array**: `Array.reduce()` on empty `/api/slots/simulate` response raised `TypeError`, surfaced verbatim as an error toast.
 * **Format Data Size Threshold**: `formatDataSize` switched units at `1000 GB` but divided by `1024`, rendering 1,010 GB as "0.99 TB". Changed threshold to `1024`.

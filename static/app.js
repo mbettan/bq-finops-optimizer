@@ -4328,7 +4328,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 
-    // Module-scoped variable to hold current results for Copy/DryRun reference [2.8]
+    // Module-scoped variable to hold current results for Copy SQL reference
     let currentAiResults = [];
 
     const renderAiResults = (data) => {
@@ -4337,6 +4337,62 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const tbody = oldTbody.cloneNode(false);
         oldTbody.parentNode.replaceChild(tbody, oldTbody);
         currentAiResults = data;
+
+        // --- KPI Summary Strip ---
+        const kpiStrip = document.getElementById('aidoc-kpis');
+        const filtersBar = document.getElementById('aidoc-filters');
+        if (kpiStrip && data.length > 0) {
+            let totalCostUsd = 0, totalBytes = 0;
+            let nHigh = 0, nMed = 0, nLow = 0;
+            let totalReferenced = 0, totalFound = 0;
+            let nMigration = 0, nSchemaGap = 0, nRepeat = 0;
+
+            data.forEach(r => {
+                const rate = r.on_demand_rate_usd_per_tb || 6.25;
+                const bytes = r.bytes_billed_original || r.bytes_scanned_original || 0;
+                totalBytes += bytes;
+                totalCostUsd += (bytes / (1024**4)) * rate;
+                if (r.severity === 'HIGH') nHigh++;
+                else if (r.severity === 'MEDIUM') nMed++;
+                else if (r.severity === 'LOW') nLow++;
+                totalReferenced += (r.tables_referenced_count || 0);
+                totalFound += (r.tables_found_count || 0);
+                if (r.migration_applied_yaml) nMigration++;
+                if ((r.tables_referenced_count || 0) > (r.tables_found_count || 0)) nSchemaGap++;
+                if (r.execution_count && r.execution_count > 1) nRepeat++;
+            });
+
+            // Populate KPI values
+            const spendEl = document.getElementById('kpi-spend');
+            const bytesEl = document.getElementById('kpi-bytes');
+            if (spendEl) spendEl.textContent = `$${Math.round(totalCostUsd).toLocaleString()}`;
+            const totalTib = totalBytes / (1024**4);
+            if (bytesEl) bytesEl.textContent = totalTib >= 1 ? `${totalTib.toFixed(1)} TiB scanned` : `${Math.round(totalBytes / (1024**3))} GiB scanned`;
+
+            const nHighEl = document.getElementById('kpi-n-high');
+            const nMedEl = document.getElementById('kpi-n-med');
+            const nLowEl = document.getElementById('kpi-n-low');
+            if (nHighEl) nHighEl.textContent = nHigh;
+            if (nMedEl) nMedEl.textContent = nMed;
+            if (nLowEl) nLowEl.textContent = nLow;
+
+            const covEl = document.getElementById('kpi-coverage');
+            const covMeta = document.getElementById('kpi-coverage-meta');
+            if (covEl) covEl.textContent = totalReferenced > 0 ? `${Math.round((totalFound / totalReferenced) * 100)}%` : 'N/A';
+            if (covMeta) covMeta.textContent = `${totalFound}/${totalReferenced} DDLs supplied to model`;
+
+            kpiStrip.style.display = 'grid';
+
+            // Populate filter pill counts
+            const setCount = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+            setCount('pill-all', data.length);
+            setCount('pill-high', nHigh);
+            setCount('pill-med', nMed);
+            setCount('pill-migration', nMigration);
+            setCount('pill-schemagap', nSchemaGap);
+            setCount('pill-repeat', nRepeat);
+            if (filtersBar) filtersBar.style.display = 'flex';
+        }
 
         // Severity badge config with numeric rank for DataTable sorting [R2]
         const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
@@ -4348,6 +4404,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         data.forEach(row => {
             const tr = document.createElement('tr');
+            // Severity-based row stripe + filter data attributes
+            if (row.severity) {
+                tr.className = `severity-${row.severity.toLowerCase()}`;
+            }
+            tr.dataset.severity = (row.severity || '').toUpperCase();
+            tr.dataset.migration = row.migration_applied_yaml ? '1' : '0';
+            tr.dataset.schemagap = (row.tables_referenced_count || 0) > (row.tables_found_count || 0) ? '1' : '0';
+            tr.dataset.repeat = (row.execution_count && row.execution_count > 1) ? '1' : '0';
             
             // --- Severity Badge [R2] ---
             let severityBadge = '<span style="color: var(--text-secondary);">—</span>';
@@ -4395,16 +4459,18 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const found = row.tables_found_count || 0;
             
             if (referenced > 0) {
+                const missing = referenced - found;
+                const schemaNote = `This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI.${missing > 0 ? ` (${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}`;
                 if (found === referenced) {
                     coverageBadge = `
-                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="All ${found} referenced table DDL schemas were successfully retrieved and analyzed.">
+                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="${schemaNote}">
                             <i class="fa-solid fa-circle-check" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
                         </span>`;
                 } else {
                     const isInfoSchema = row.query && row.query.toUpperCase().includes('INFORMATION_SCHEMA');
                     const badgeTitle = isInfoSchema
-                        ? "System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns."
-                        : `${referenced - found} out of ${referenced} referenced table DDLs could not be retrieved (likely due to cross-project boundaries or permission constraints).`;
+                        ? `System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns.`
+                        : schemaNote;
                     const badgeBg = isInfoSchema ? "rgba(148, 163, 184, 0.12)" : "rgba(245, 158, 11, 0.12)";
                     const badgeBorder = isInfoSchema ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)";
                     const badgeColor = isInfoSchema ? "#94a3b8" : "#f59e0b";
@@ -4416,18 +4482,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                         </span>`;
                 }
             }
-            
-            // --- Inline Notes ---
-            let inlineNote = '';
-            if (referenced > 0) {
-                const missing = referenced - found;
-                inlineNote = `
-                    <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; font-style: italic;">
-                        <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i>
-                        This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI. 
-                        ${missing > 0 ? `(${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}
-                    </div>`;
-            }
+
 
             const renderMarkdown = (text) => {
                 if (!text) return '';
@@ -4452,9 +4507,28 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             };
 
             // --- Query SQL Preview ---
-            const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
-            const escapedQuery = row.query || '';
-            const escapedPreview = sqlPreview;
+            let originalQueryCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (row.query) {
+                const escapedOrigSqlPreview = escHtml(
+                    row.query.length > 200
+                        ? row.query.substring(0, 200) + '...'
+                        : row.query
+                );
+                originalQueryCell = `
+                    <div style="position: relative; min-width: 220px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(251, 113, 133, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #fb7185; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedOrigSqlPreview}</pre>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <button class="copy-orig-sql-btn" style="background: rgba(251,113,133,0.15); border: 1px solid rgba(251,113,133,0.3);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                        </div>
+                    </div>`;
+            }
 
             // --- Optimized Query Cell [R3] ---
             let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
@@ -4483,13 +4557,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                                 cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                                 <i class="fa-solid fa-copy"></i> Copy SQL
                             </button>
-                            <button class="dry-run-btn" style="background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.3);
-                                color: #a855f7; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
-                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
-                                <i class="fa-solid fa-flask"></i> Dry Run
-                            </button>
                         </div>
-                        <div class="dry-run-result" style="display: none; margin-top: 0.5rem;"></div>
+                        __YAML_BADGE_PLACEHOLDER__
                     </div>`;
             }
 
@@ -4497,23 +4566,39 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             if (row.migration_applied_yaml) {
                 const escapedYaml = escHtml(row.migration_applied_yaml.trim());
                 yamlBadge = `
-                    <div style="margin-top: 0.5rem; padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8;">
-                        <div style="font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 4px;">
+                    <div style="margin-top: 0.5rem; border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8; overflow: hidden;">
+                        <div class="yaml-toggle-btn" style="padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none;">
+                            <i class="fa-solid fa-chevron-right yaml-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i>
                             <i class="fa-solid fa-wand-magic-sparkles"></i> Migration API Config Applied
                         </div>
-                        <pre style="margin: 0; font-family: monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; word-break: break-all;">${escapedYaml}</pre>
+                        <div class="yaml-content" style="display: none; padding: 0.4rem 0.6rem; background: rgba(15,23,42,0.4);">
+                            <pre style="margin: 0; font-family: monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; word-break: break-all;">${escapedYaml}</pre>
+                        </div>
                     </div>`;
             }
+            optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.user_email}</td>
                 <td>${row.total_slot_ms.toLocaleString()}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
-                <td>${originalCost}</td>
-                <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help;" title="${escapedQuery}">${escapedPreview}</td>
+                <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
+                <td>${originalQueryCell}</td>
                 <td>${coverageBadge}</td>
-                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">${renderMarkdown(row.gemini_optimization_advice)}${yamlBadge}${inlineNote}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                    <div class="advice-wrapper" style="position: relative;">
+                        <div class="advice-content" style="max-height: 150px; overflow: hidden; transition: max-height 0.3s ease;">
+                            ${renderMarkdown(row.gemini_optimization_advice)}
+                        </div>
+                        ${(row.gemini_optimization_advice || '').length > 300 ? `
+                        <div class="advice-toggle"
+                            style="text-align: center; padding: 0.3rem; font-size: 0.72rem; color: #38bdf8; cursor: pointer;
+                            background: linear-gradient(to bottom, transparent, rgba(15,23,42,0.95) 40%); margin-top: -1.5rem; position: relative; z-index: 1;">
+                            ▼ Show more
+                        </div>` : ''}
+                    </div>
+                </td>
                 <td>${optimizedCell}</td>
             `;
             tbody.appendChild(tr);
@@ -4522,11 +4607,44 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if ($.fn.DataTable.isDataTable('#ai-results-table')) {
             $('#ai-results-table').DataTable().destroy();
         }
-        $('#ai-results-table').DataTable({ pageLength: 10, order: [[3, 'asc'], [2, 'desc']], responsive: true });
+        $('#ai-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
 
-        // --- Event Delegation for Copy SQL + Dry Run buttons ---
+        // --- Filter Pills (DataTables custom search) ---
+        let activeFilter = 'all';
+        // Clear any previously-registered AI Doctor filter functions
+        $.fn.dataTable.ext.search = $.fn.dataTable.ext.search.filter(fn => !fn._aidocFilter);
+        const filterFn = (settings, searchData, dataIndex, rowData, counter) => {
+            if (settings.nTable.id !== 'ai-results-table') return true;
+            if (activeFilter === 'all') return true;
+            const tr = settings.aoData[dataIndex].nTr;
+            if (!tr) return true;
+            if (activeFilter === 'high') return tr.dataset.severity === 'HIGH';
+            if (activeFilter === 'medium') return tr.dataset.severity === 'MEDIUM';
+            if (activeFilter === 'migration') return tr.dataset.migration === '1';
+            if (activeFilter === 'schemagap') return tr.dataset.schemagap === '1';
+            if (activeFilter === 'repeat') return tr.dataset.repeat === '1';
+            return true;
+        };
+        filterFn._aidocFilter = true;
+        $.fn.dataTable.ext.search.push(filterFn);
+
+        if (filtersBar) {
+            // Clone to strip stacked event listeners from previous renders
+            const freshBar = filtersBar.cloneNode(true);
+            filtersBar.parentNode.replaceChild(freshBar, filtersBar);
+            freshBar.querySelectorAll('.aidoc-pill').forEach(pill => {
+                pill.addEventListener('click', () => {
+                    freshBar.querySelectorAll('.aidoc-pill').forEach(p => p.classList.remove('is-active'));
+                    pill.classList.add('is-active');
+                    activeFilter = pill.dataset.filter;
+                    $('#ai-results-table').DataTable().draw();
+                });
+            });
+        }
+
+        // --- Event Delegation for interactive buttons ---
         tbody.addEventListener('click', async (e) => {
-            // Copy SQL button [R-clipboard]
+            // Copy Optimized SQL button [R-clipboard]
             const copyBtn = e.target.closest('.copy-sql-btn');
             if (copyBtn) {
                 const tr = copyBtn.closest('tr');
@@ -4538,7 +4656,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     if (navigator.clipboard && window.isSecureContext) {
                         await navigator.clipboard.writeText(sql);
                     } else {
-                        // Fallback for insecure contexts (plain HTTP) [R-clipboard]
                         const ta = document.createElement('textarea');
                         ta.value = sql;
                         ta.style.cssText = 'position:fixed;left:-9999px';
@@ -4554,97 +4671,67 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 return;
             }
 
-            // Dry Run button [R9]
-            const dryBtn = e.target.closest('.dry-run-btn');
-            if (dryBtn) {
-                const tr = dryBtn.closest('tr');
+            // Copy Original SQL button
+            const copyOrigBtn = e.target.closest('.copy-orig-sql-btn');
+            if (copyOrigBtn) {
+                const tr = copyOrigBtn.closest('tr');
                 const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
                 const rowData = currentAiResults[rowIdx];
-                const resultDiv = tr.querySelector('.dry-run-result');
-
-                // Quick check: dry-run only supports SELECT/WITH — detect DML client-side
-                const sqlTrimmed = (rowData.optimized_query || '').trim();
-                const isDml = /^\s*(INSERT|UPDATE|DELETE|MERGE|CREATE|DROP|ALTER|TRUNCATE)\b/i.test(sqlTrimmed);
-                if (isDml) {
-                    resultDiv.innerHTML = `
-                        <div style="color: #94a3b8; font-size: 0.78rem; padding: 0.5rem; background: rgba(148,163,184,0.08);
-                            border-radius: 6px; border: 1px solid rgba(148,163,184,0.2);">
-                            <i class="fa-solid fa-circle-info"></i> Dry-run is only available for SELECT/WITH queries. DML statements (INSERT, UPDATE, etc.) cannot be validated without execution.
-                        </div>`;
-                    resultDiv.style.display = 'block';
-                    return;
-                }
-                
-                dryBtn.disabled = true;
-                dryBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running...';
+                const sql = rowData?.query || '';
                 
                 try {
-                    const resp = await fetch('/api/ai/dry_run', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/ai/dry_run', {
-                            org_project_id: state.orgProject,
-                            query: rowData.optimized_query
-                        }))
-                    });
-                    const dryData = await resp.json();
-                    
-                    // F-M5: Check response.ok — backend returns 400 for non-SELECT/WITH.
-                    if (!resp.ok) {
-                        resultDiv.innerHTML = `
-                            <div style="color: #ef4444; font-size: 0.78rem; padding: 0.5rem; background: rgba(239,68,68,0.1);
-                                border-radius: 6px; border: 1px solid rgba(239,68,68,0.3);">
-                                <i class="fa-solid fa-xmark"></i> Dry-run failed: ${escHtml(detailToMessage(dryData.detail, 'Server error'))}
-                            </div>`;
-                        resultDiv.style.display = 'block';
-                    } else if (!dryData.valid) {
-                        // [R9] Show actual BQ error — useful signal for invalid rewrites
-                        resultDiv.innerHTML = `
-                            <div style="color: #ef4444; font-size: 0.78rem; padding: 0.5rem; background: rgba(239,68,68,0.1);
-                                border-radius: 6px; border: 1px solid rgba(239,68,68,0.3);">
-                                <i class="fa-solid fa-xmark"></i> Dry-run failed: ${escHtml(dryData.error || 'Unknown error')}
-                            </div>`;
-                    } else if (dryData.is_external) {
-                        resultDiv.innerHTML = `
-                            <div style="color: #94a3b8; font-size: 0.78rem; padding: 0.5rem;">
-                                <i class="fa-solid fa-cloud"></i> External/Federated Table — byte savings cannot be calculated via Dry-Run.
-                            </div>`;
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
                     } else {
-                        const optGib = dryData.total_bytes_processed / (1024**3);
-                        const optLabel = optGib >= 1024
-                            ? `${Math.round(optGib / 1024)} TiB`
-                            : `${Math.round(optGib)} GiB`;
-                        const optUsd = Math.round(dryData.estimated_cost_usd);
-                        const origBytes = rowData.bytes_billed_original || rowData.bytes_scanned_original || 0;
-
-                        let savingsHtml = '';
-                        if (origBytes > 0) {  // [R9] Guard division-by-zero
-                            const origGib = origBytes / (1024**3);
-                            const origLabel = origGib >= 1024
-                                ? `${Math.round(origGib / 1024)} TiB`
-                                : `${Math.round(origGib)} GiB`;
-                            const pct = (((origBytes - dryData.total_bytes_processed) / origBytes) * 100).toFixed(1);
-                            savingsHtml = `
-                                <div style="color: #22c55e; margin-top: 0.25rem;">
-                                    ↓ ${pct}% reduction (${origLabel} → ${optLabel})
-                                </div>`;
-                        }
-                        
-                        resultDiv.innerHTML = `
-                            <div style="font-size: 0.78rem; padding: 0.5rem; background: rgba(34,197,94,0.1);
-                                border-radius: 6px; border: 1px solid rgba(34,197,94,0.3);">
-                                <div style="color: #38bdf8;">Optimized: ${optLabel} (~$${optUsd})</div>
-                                ${savingsHtml}
-                            </div>`;
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
                     }
-                    resultDiv.style.display = 'block';
+                    showNotification('Original SQL copied to clipboard.', 'success');
                 } catch (err) {
-                    resultDiv.innerHTML = `<div style="color: #ef4444; font-size: 0.78rem;">${escHtml(err.message)}</div>`;
-                    resultDiv.style.display = 'block';
-                } finally {
-                    dryBtn.disabled = false;
-                    dryBtn.innerHTML = '<i class="fa-solid fa-flask"></i> Dry Run';
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
                 }
+                return;
+            }
+
+            // YAML accordion toggle
+            const yamlBtn = e.target.closest('.yaml-toggle-btn');
+            if (yamlBtn) {
+                const content = yamlBtn.nextElementSibling;
+                const chevron = yamlBtn.querySelector('.yaml-chevron');
+                if (content.style.display === 'none') {
+                    content.style.display = 'block';
+                    if (chevron) chevron.style.transform = 'rotate(90deg)';
+                } else {
+                    content.style.display = 'none';
+                    if (chevron) chevron.style.transform = 'rotate(0deg)';
+                }
+                return;
+            }
+
+            // Advice Show more/less toggle
+            const adviceBtn = e.target.closest('.advice-toggle');
+            if (adviceBtn) {
+                const wrapper = adviceBtn.parentElement;
+                const content = wrapper.querySelector('.advice-content');
+                if (content.style.maxHeight === '150px') {
+                    content.style.maxHeight = 'none';
+                    content.style.overflow = 'visible';
+                    adviceBtn.textContent = '▲ Show less';
+                    adviceBtn.style.marginTop = '0';
+                    adviceBtn.style.background = 'none';
+                } else {
+                    content.style.maxHeight = '150px';
+                    content.style.overflow = 'hidden';
+                    adviceBtn.textContent = '▼ Show more';
+                    adviceBtn.style.marginTop = '-1.5rem';
+                    adviceBtn.style.background = 'linear-gradient(to bottom, transparent, rgba(15,23,42,0.95) 40%)';
+                }
+                return;
             }
         });
     };

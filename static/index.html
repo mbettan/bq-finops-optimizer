@@ -2652,6 +2652,8 @@
                                     <option value="5" selected>Top 5 (Fastest)</option>
                                     <option value="10">Top 10</option>
                                     <option value="20">Top 20</option>
+                                    <option value="25">Top 25</option>
+                                    <option value="50">Top 50</option>
                                 </select>
                             </div>
                             <div>
@@ -2694,6 +2696,39 @@
                             A semantic, serverless audit of your most resource-hungry SQL queries. 
                             The system analyzes raw query telemetry, retrieves referenced table schemas (DDLs) from the metadata catalog, and leverages Gemini to highlight performance anti-patterns with tailored refactoring advice.
                         </p>
+
+                        <!-- KPI Summary Strip -->
+                        <div class="aidoc-kpis" id="aidoc-kpis" style="display: none;">
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-coins" style="color: #f59e0b;"></i> Audited Spend</p>
+                                <p class="aidoc-kpi__value" id="kpi-spend">—</p>
+                                <p class="aidoc-kpi__meta" id="kpi-bytes">—</p>
+                            </article>
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-chart-pie" style="color: #818cf8;"></i> Findings</p>
+                                <div class="aidoc-kpi__sevpills" id="kpi-severity">
+                                    <span class="aidoc-sevpill aidoc-sevpill--high"><i class="fa-solid fa-circle-exclamation"></i> <b id="kpi-n-high">0</b> High</span>
+                                    <span class="aidoc-sevpill aidoc-sevpill--medium"><i class="fa-solid fa-triangle-exclamation"></i> <b id="kpi-n-med">0</b> Med</span>
+                                    <span class="aidoc-sevpill aidoc-sevpill--low"><i class="fa-solid fa-circle-check"></i> <b id="kpi-n-low">0</b> Low</span>
+                                </div>
+                            </article>
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-database" style="color: #38bdf8;"></i> Schema Coverage</p>
+                                <p class="aidoc-kpi__value" id="kpi-coverage">—</p>
+                                <p class="aidoc-kpi__meta" id="kpi-coverage-meta">DDLs supplied to model</p>
+                            </article>
+                        </div>
+
+                        <!-- Filter Pills -->
+                        <div class="aidoc-filters" id="aidoc-filters" style="display: none;">
+                            <button class="aidoc-pill is-active" data-filter="all">All <b id="pill-all">0</b></button>
+                            <button class="aidoc-pill" data-filter="high"><i class="fa-solid fa-circle-exclamation"></i> High <b id="pill-high">0</b></button>
+                            <button class="aidoc-pill" data-filter="medium"><i class="fa-solid fa-triangle-exclamation"></i> Medium <b id="pill-med">0</b></button>
+                            <button class="aidoc-pill" data-filter="migration"><i class="fa-solid fa-wand-magic-sparkles"></i> Has Migration Config <b id="pill-migration">0</b></button>
+                            <button class="aidoc-pill" data-filter="schemagap"><i class="fa-solid fa-triangle-exclamation"></i> Schema Gap <b id="pill-schemagap">0</b></button>
+                            <button class="aidoc-pill" data-filter="repeat"><i class="fa-solid fa-repeat"></i> Repeat Offenders <b id="pill-repeat">0</b></button>
+                        </div>
+
                         <div class="table-responsive">
                             <table id="ai-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>

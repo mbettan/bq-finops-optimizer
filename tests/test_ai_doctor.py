@@ -343,33 +343,6 @@ def test_ai_doctor_rejects_destructive_optimized_sql():
         assert result["severity"] == "HIGH"
 
 
-def test_dry_run_endpoint():
-    """Verify dry-run endpoint returns bytes processed and estimated cost."""
-    with patch("src.main.init_bq_client_and_resolve_project") as mock_init:
-        mock_bq_client = MagicMock()
-        mock_init.return_value = (mock_bq_client, "acme-sandbox")
-        mock_job = MagicMock()
-        mock_job.total_bytes_processed = 1073741824  # 1 GB
-        mock_bq_client.query.return_value = mock_job
-
-        response = client.post("/api/ai/dry_run", json={
-            "org_project_id": "acme-sandbox",
-            "query": "SELECT col1 FROM `acme-sandbox.dataset.table`"
-        })
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total_bytes_processed"] == 1073741824
-        assert data["estimated_cost_usd"] > 0
-        assert data["valid"] is True
-
-
-def test_dry_run_rejects_ddl():
-    """Safety guard: only SELECT/WITH queries allowed — DDL/DML rejected."""
-    response = client.post("/api/ai/dry_run", json={
-        "org_project_id": "acme-sandbox",
-        "query": "DROP TABLE `acme-sandbox.dataset.table`"
-    })
-    assert response.status_code == 400
 
 
 def test_ai_doctor_discovery_strategies():

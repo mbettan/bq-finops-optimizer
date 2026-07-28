@@ -1619,7 +1619,6 @@ class AIParams(FocusMixin):
 
 # Output safety guard: allow SELECT/WITH and CTAS/CVAS rewrites from Gemini [R3/R-security]
 # CTAS pattern: CREATE [OR REPLACE] TABLE|VIEW ... AS SELECT — common in scheduled queries.
-# The dry-run endpoint (/api/ai/dry-run) keeps stricter SELECT/WITH-only validation.
 ALLOWED_QUERY_PREFIX_RE = re.compile(
     r"^\s*(?:WITH|SELECT|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE)\b)",
     re.IGNORECASE,
@@ -2276,86 +2275,6 @@ def analyze_ai_query(params: AIParams):
         # Restored granular exception mapping (M1)
         handle_endpoint_exception(e, "AI query analysis")
 
-
-# ---------------------------------------------------------------------------
-# AI Doctor: Free Dry-Run Validation Engine
-# ---------------------------------------------------------------------------
-
-def validate_sql_dry_run(client: bigquery.Client, sql: str) -> dict:
-    """Executes a FREE BigQuery Dry-Run to validate syntax and retrieve byte count.
-    Note: maximum_bytes_billed is NOT enforced on dry runs — omit it."""
-    job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-    try:
-        job = client.query(sql, job_config=job_config)
-        bytes_processed = job.total_bytes_processed or 0
-        return {
-            "valid": True,
-            "bytes_processed": bytes_processed,
-            "is_external": bytes_processed == 0 and "FROM" in sql.upper(),
-            "error": None
-        }
-    except Exception as e:
-        return {
-            "valid": False,
-            "bytes_processed": 0,
-            "is_external": False,
-            "error": str(e)
-        }
-
-
-class DryRunParams(BaseModel):
-    org_project_id: Optional[str] = None
-    query: str
-    max_bytes_billed_gb: Optional[int] = None
-
-
-class DryRunResult(BaseModel):
-    total_bytes_processed: int
-    estimated_cost_usd: float
-    is_external: bool = False
-    valid: bool = True
-    error: Optional[str] = None
-
-
-@app.post("/api/ai/dry_run", response_model=DryRunResult)
-def dry_run_query(params: DryRunParams):
-    """Validate an optimized SQL query via BigQuery's free Dry-Run API.
-    Returns total_bytes_processed and estimated on-demand cost.
-    Only SELECT/WITH queries are allowed — destructive statements are rejected."""
-    _validate_safe_params(params)
-    scoped_client, target_project = init_bq_client_and_resolve_project(params)
-
-    # Clean query: unescape HTML entities, strip markdown code blocks, normalize semicolons
-    import html
-    cleaned_query = html.unescape(params.query).strip()
-    cleaned_query = re.sub(r"^```(?:sql)?\s*", "", cleaned_query, flags=re.IGNORECASE)
-    cleaned_query = re.sub(r"\s*```$", "", cleaned_query).strip()
-    cleaned_query = re.sub(r";{2,}", ";", cleaned_query).strip()
-    cleaned_query = cleaned_query.rstrip(";").strip()
-
-    # Dry-run safety guard — stricter than AI output: only SELECT/WITH (no CTAS)
-    _DRYRUN_ALLOWED_RE = re.compile(r"^\s*(WITH|SELECT)\b", re.IGNORECASE)
-    if not _DRYRUN_ALLOWED_RE.match(cleaned_query):
-        raise HTTPException(status_code=400, detail="Only SELECT or WITH queries are allowed for dry-run.")
-
-    result = validate_sql_dry_run(scoped_client, cleaned_query)
-
-    if not result["valid"]:
-        return DryRunResult(
-            total_bytes_processed=0,
-            estimated_cost_usd=0.0,
-            valid=False,
-            error=result["error"]
-        )
-
-    bytes_processed = result["bytes_processed"]
-    cost_usd = (bytes_processed / (1024**4)) * ON_DEMAND_USD_PER_TB
-
-    return DryRunResult(
-        total_bytes_processed=bytes_processed,
-        estimated_cost_usd=round(cost_usd, 6),
-        is_external=result["is_external"]
-    )
 
 
 @app.post("/api/ai/translate", response_model=TranslationResponse)
