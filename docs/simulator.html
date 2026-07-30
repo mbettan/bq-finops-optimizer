@@ -213,6 +213,19 @@
                     '/api/dashboard/anomalies':     'bq_dashboard_anomalies'
                 };
 
+                if (urlStr.includes('/api/meta/scope-map')) {
+                    // Build scope map from the apiMap keys — classify all as "focus"
+                    // (in the simulator there are no real org-level restrictions)
+                    const scopeMap = {};
+                    for (const path of Object.keys(apiMap)) {
+                        scopeMap[path] = 'focus';
+                    }
+                    return new Response(JSON.stringify(scopeMap), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
                 if (urlStr.includes('/api/about')) {
                     const releases = window.SIMULATOR_PARSED_RELEASES || [];
                     const latestVersion = releases.length ? releases[0].version : '1.3.0';
@@ -2910,6 +2923,5 @@
     <!-- Notification Container -->
     <div id="notification-container"></div>
 
-    <script src="static/app.js"></script>
 </body>
 </html>
