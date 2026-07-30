@@ -1,0 +1,41 @@
+# BQ FinOps Optimizer
+
+> BQ FinOps Optimizer is an open-source BigQuery cost optimization tool that uses Gemini AI to analyze queries, detect SQL anti-patterns, and cut cloud costs.
+
+## What It Does
+
+BQ FinOps Optimizer is an enterprise-grade diagnostic and simulation suite for Google Cloud BigQuery. It runs entirely inside your own environment — zero SaaS fees, zero data exfiltration.
+
+### Core Capabilities
+
+- **AI Doctor**: Pulls queries from INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION, classifies anti-pattern severity with Gemini, and generates rewritten optimized SQL with estimated cost savings.
+- **Editions Capacity Simulator**: Models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis.
+- **Storage Optimizer**: Compares physical vs. logical storage billing and generates ALTER SCHEMA DDL to switch datasets to the cheaper model.
+- **Compute Analyzer**: Analyzes slot consumption across org-wide workloads, identifies top spenders, and profiles workload patterns.
+- **HBO (Heuristic & Behavior Optimizer)**: Identifies optimization types BigQuery applied to each job — Semi-Join Reduction, Join Commutation, Parallelism Adjustment, and more.
+- **Cost Attribution Engine**: Attributes Editions costs to individual projects with Lender Pays vs. Borrower Pays idle-slot models.
+- **Migration Guardrails**: Static schema auditor that flags high-risk tables and generates clustering DDL stubs.
+
+### Anti-Patterns Detected
+
+- CROSS JOIN explosions
+- SELECT * on wide tables
+- CAST defeating partition pruning
+- Missing clustering keys
+- Unnecessary ORDER BY in subqueries
+- Redundant repeated queries
+
+## Technical Details
+
+- **License**: Apache 2.0
+- **Languages**: Python, JavaScript, SQL
+- **AI Model**: Gemini (via Vertex AI)
+- **Deployment**: Local laptop or Cloud Run
+- **Data Source**: BigQuery INFORMATION_SCHEMA views
+
+## Links
+
+- Website: https://mbettan.github.io/bq-finops-optimizer/
+- GitHub: https://github.com/mbettan/bq-finops-optimizer
+- Documentation: https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md
+- License: https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE

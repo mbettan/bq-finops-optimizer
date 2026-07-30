@@ -4,17 +4,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Open-Source BigQuery Cost Optimizer | BQ FinOps</title>
+    <title>BigQuery Cost Optimization Tool — BQ FinOps Optimizer (Open Source)</title>
     <meta name="description"
-        content="Reduce BigQuery spend with open-source tools for query cost analysis, slot reservation planning, Editions capacity sizing, storage billing, and cost attribution.">
+        content="Open-source BigQuery cost optimization tool. Analyze storage & compute spend, detect SQL anti-patterns with Gemini AI, and cut your GCP bill by up to 40%.">
     <link rel="canonical" href="https://mbettan.github.io/bq-finops-optimizer/">
 
     <!-- Open Graph -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="og:title" content="Open-Source BigQuery Cost Optimizer">
+    <meta property="og:title" content="BQ FinOps Optimizer — AI-Powered BigQuery Cost Optimization">
     <meta property="og:description"
-        content="Analyze BigQuery query spend, slot reservations, Editions capacity, storage billing, and shared-cost attribution.">
+        content="Analyze BigQuery spend, detect SQL anti-patterns with Gemini, and get rewritten optimized queries. Free & open source.">
+    <meta property="og:image:alt" content="BQ FinOps Optimizer dashboard showing BigQuery cost analysis and AI Doctor query diagnosis">
     <meta property="og:site_name" content="BQ FinOps Optimizer">
     <meta property="og:locale" content="en_US">
     <meta property="og:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
@@ -22,12 +23,12 @@
     <meta property="og:image:height" content="630">
 
     <!-- Twitter -->
-    <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:url" content="https://mbettan.github.io/bq-finops-optimizer/">
-    <meta property="twitter:title" content="Open-Source BigQuery Cost Optimizer">
-    <meta property="twitter:description"
-        content="Analyze BigQuery query spend, slot reservations, Editions capacity, storage billing, and shared-cost attribution.">
-    <meta property="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="BQ FinOps Optimizer — AI-Powered BigQuery Cost Optimization">
+    <meta name="twitter:description"
+        content="Cut BigQuery costs with Gemini-powered query diagnosis. Open source.">
+    <meta name="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
+    <meta name="twitter:image:alt" content="BQ FinOps Optimizer dashboard showing BigQuery cost analysis">
 
     <!-- Structured Data -->
     <script type="application/ld+json">
@@ -44,10 +45,10 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "BQ FinOps Optimizer",
-        "description": "Open-source BigQuery FinOps tools for query cost analysis, slot reservation planning, storage billing optimization, and cost attribution.",
+        "description": "Open-source BigQuery cost optimization tool with AI-powered query diagnosis using Gemini. Analyzes INFORMATION_SCHEMA jobs, detects SQL anti-patterns, and generates optimized queries.",
         "applicationCategory": "DeveloperApplication",
         "applicationSubCategory": "Cloud Cost Optimization",
-        "operatingSystem": "Web",
+        "operatingSystem": "Cross-platform",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "isAccessibleForFree": true,
         "softwareVersion": "1.3.0",
@@ -57,7 +58,72 @@
         "softwareHelp": "https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md",
         "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
         "programmingLanguage": ["Python", "JavaScript", "SQL"],
-        "author": { "@type": "Person", "name": "mbettan" }
+        "author": { "@type": "Person", "name": "Michael Bettan", "url": "https://github.com/mbettan" },
+        "keywords": "BigQuery, cost optimization, FinOps, GCP, Gemini, SQL optimization, slot analysis, query diagnosis"
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": "How does the AI Doctor optimize BigQuery queries?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The AI Doctor pulls real queries from INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION, classifies anti-pattern severity with Gemini, and generates rewritten optimized SQL with estimated cost savings."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is BQ FinOps Optimizer free?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes, it is fully open source under the Apache 2.0 license. You only pay for your own BigQuery and Vertex AI usage."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is BQ FinOps Optimizer a Google Cloud product?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "No. BQ FinOps Optimizer is an independent, personal side project. It is not developed, maintained, supported, or endorsed by Google. It comes with no warranty, no SLA, and no guarantee of correctness. Use it at your own risk."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What BigQuery anti-patterns does it detect?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The tool detects common anti-patterns including CROSS JOIN explosions, SELECT * on wide tables, CAST defeating partition pruning, missing clustering keys, unnecessary ORDER BY in subqueries, and redundant repeated queries."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Does it work with BigQuery Editions?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. The tool models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis. It recommends optimal edition and capacity tier for your workload."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Are you looking for beta testers and co-design partners?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Absolutely! We want to work with real users who are willing to test BQ FinOps Optimizer in their own environments and share feedback. If you're interested, reach out directly at bettan.michael@gmail.com."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How can I contribute or help?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "There are several ways to contribute: open issues on GitHub for bugs or feature requests (please keep them generic and never include PII or sensitive information), submit pull requests if you've fixed a bug or improved the code, or share private feedback directly at bettan.michael@gmail.com."
+                }
+            }
+        ]
     }
     </script>
 
@@ -69,6 +135,284 @@
 
 
     <link rel="stylesheet" href="style.css">
+
+    <!-- ░░ AI DOCTOR DEMO — STYLES ░░ -->
+    <style>
+      /* ============ AI DOCTOR DEMO (scoped) ============ */
+      .ai-doctor-demo { display: flex; flex-direction: column; gap: 1.25rem; }
+
+      /* ---- A) KPI Strip ---- */
+      .ai-doctor-demo .aid-kpis {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.85rem;
+      }
+      .ai-doctor-demo .aid-kpi {
+        position: relative;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        padding: 1rem 1.15rem;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        box-shadow: 0 0 24px rgba(56, 189, 248, 0.05);
+        display: flex; flex-direction: column; gap: 0.3rem;
+      }
+      .ai-doctor-demo .aid-kpi-label {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.68rem; font-weight: 500;
+        text-transform: uppercase; letter-spacing: 0.08em;
+        color: #94a3b8;
+      }
+      .ai-doctor-demo .aid-kpi-value {
+        font-family: 'Sora', sans-serif;
+        font-size: 1.45rem; font-weight: 700;
+        color: #e2e8f0; line-height: 1.2;
+      }
+      .ai-doctor-demo .aid-kpi-value em {
+        font-style: normal; color: #38bdf8; font-size: 0.9em;
+      }
+      .ai-doctor-demo .aid-kpi-sub {
+        font-size: 0.72rem; color: #94a3b8;
+      }
+      .ai-doctor-demo .aid-kpi-sev {
+        display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem;
+        font-size: 0.82rem; font-weight: 600;
+      }
+      .ai-doctor-demo .aid-kpi-sev > span { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+
+      .ai-doctor-demo .aid-dot {
+        display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+        flex: none;
+      }
+      .ai-doctor-demo .aid-dot-red   { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.7); }
+      .ai-doctor-demo .aid-dot-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.7); }
+      .ai-doctor-demo .aid-dot-green { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.7); }
+
+      /* ---- B) Filter Pills ---- */
+      .ai-doctor-demo .aid-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .ai-doctor-demo .aid-pill {
+        display: inline-flex; align-items: center; gap: 0.4rem;
+        font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 500;
+        color: #94a3b8;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        padding: 0.4rem 0.9rem;
+        cursor: pointer;
+        transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+      }
+      .ai-doctor-demo .aid-pill:hover { color: #e2e8f0; border-color: rgba(56, 189, 248, 0.3); }
+      .ai-doctor-demo .aid-pill:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+      .ai-doctor-demo .aid-pill.is-active {
+        color: #e2e8f0;
+        border-color: rgba(56, 189, 248, 0.5);
+        background: rgba(56, 189, 248, 0.1);
+        box-shadow: 0 4px 14px rgba(56, 189, 248, 0.18), inset 0 -2px 0 #38bdf8;
+      }
+      .ai-doctor-demo .aid-pill-count {
+        font-size: 0.68rem; font-weight: 600;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 999px; padding: 0.05rem 0.45rem;
+      }
+      .ai-doctor-demo .aid-pill i.fas { font-size: 0.7rem; opacity: 0.8; }
+
+      /* ---- C) Table ---- */
+      .ai-doctor-demo .aid-table-wrap {
+        overflow-x: auto;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.45);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+      }
+      .ai-doctor-demo .aid-table {
+        width: 100%; min-width: 1520px;
+        border-collapse: collapse;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.8rem; color: #e2e8f0;
+      }
+      .ai-doctor-demo .aid-table th {
+        font-family: 'Sora', sans-serif;
+        font-size: 0.68rem; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.07em;
+        color: #94a3b8; text-align: left;
+        padding: 0.8rem 0.9rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(15, 23, 42, 0.85);
+        position: sticky; top: 0; z-index: 1;
+      }
+      .ai-doctor-demo .aid-table td {
+        padding: 0.85rem 0.9rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        vertical-align: top;
+      }
+      .ai-doctor-demo .aid-table tbody tr { transition: background 0.15s ease; }
+      .ai-doctor-demo .aid-table tbody tr:hover { background: rgba(56, 189, 248, 0.04); }
+      .ai-doctor-demo .aid-row-high   { border-left: 3px solid #ef4444; }
+      .ai-doctor-demo .aid-row-medium { border-left: 3px solid #f59e0b; }
+      .ai-doctor-demo .aid-row-low    { border-left: 3px solid #22c55e; }
+
+      .ai-doctor-demo .aid-jobid {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem; color: #94a3b8;
+        cursor: help; white-space: nowrap;
+      }
+      .ai-doctor-demo .aid-user { color: #94a3b8; font-size: 0.76rem; word-break: break-all; min-width: 130px; }
+      .ai-doctor-demo .aid-num {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.76rem; text-align: right; white-space: nowrap;
+      }
+
+      /* Severity badges */
+      .ai-doctor-demo .aid-badge {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;
+        padding: 0.28rem 0.6rem; border-radius: 999px; white-space: nowrap;
+      }
+      .ai-doctor-demo .aid-badge-high   { background: rgba(239,68,68,0.15);  border: 1px solid rgba(239,68,68,0.4);  color: #ef4444; }
+      .ai-doctor-demo .aid-badge-medium { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.4); color: #f59e0b; }
+      .ai-doctor-demo .aid-badge-low    { background: rgba(34,197,94,0.15);  border: 1px solid rgba(34,197,94,0.4);  color: #22c55e; }
+
+      /* Cost cell */
+      .ai-doctor-demo .aid-cost { min-width: 120px; }
+      .ai-doctor-demo .aid-cost strong { font-family: 'Sora', sans-serif; font-size: 0.88rem; display: block; }
+      .ai-doctor-demo .aid-cost-usd { display: block; color: #94a3b8; font-size: 0.7rem; margin-top: 0.15rem; }
+      .ai-doctor-demo .aid-repeat-badge {
+        display: inline-flex; align-items: center; gap: 0.3rem;
+        margin-top: 0.4rem; font-size: 0.66rem; font-weight: 600;
+        color: #38bdf8; background: rgba(56, 189, 248, 0.1);
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        border-radius: 999px; padding: 0.15rem 0.5rem; white-space: nowrap;
+      }
+
+      /* SQL blocks */
+      .ai-doctor-demo .aid-sql { position: relative; min-width: 240px; }
+      .ai-doctor-demo .aid-sql pre {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.7rem; line-height: 1.5;
+        background: rgba(15, 23, 42, 0.65);
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
+        max-height: 120px; overflow-y: auto;
+        white-space: pre-wrap; word-break: break-word;
+        margin: 0;
+      }
+      .ai-doctor-demo .aid-sql-orig pre { color: #fb7185; border: 1px solid rgba(251, 113, 133, 0.2); }
+      .ai-doctor-demo .aid-sql-opt  pre { color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.2); }
+      .ai-doctor-demo .aid-copy {
+        position: absolute; top: 0.4rem; right: 0.4rem; z-index: 1;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 26px; height: 26px;
+        font-size: 0.68rem; color: #94a3b8;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 7px; cursor: pointer;
+        transition: color 0.2s ease, border-color 0.2s ease;
+      }
+      .ai-doctor-demo .aid-copy:hover { color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); }
+      .ai-doctor-demo .aid-copy:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+      .ai-doctor-demo .aid-copy.is-copied { color: #22c55e; border-color: rgba(34, 197, 94, 0.4); }
+
+      /* Schema badges */
+      .ai-doctor-demo .aid-schema {
+        font-size: 0.68rem; font-weight: 600; white-space: nowrap;
+        padding: 0.28rem 0.55rem; border-radius: 7px;
+      }
+      .ai-doctor-demo .aid-schema-ok   { color: #22c55e; background: rgba(34,197,94,0.1);  border: 1px solid rgba(34,197,94,0.25); }
+      .ai-doctor-demo .aid-schema-warn { color: #f59e0b; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25); }
+
+      /* Gemini advice (markdown-rendered) */
+      .ai-doctor-demo .aid-advice { position: relative; min-width: 300px; max-width: 420px; }
+      .ai-doctor-demo .aid-advice-body {
+        max-height: 150px; overflow: hidden;
+        transition: max-height 0.3s ease;
+        font-size: 0.76rem; line-height: 1.55; color: #94a3b8;
+      }
+      .ai-doctor-demo .aid-advice.is-open .aid-advice-body { max-height: 900px; overflow: visible; }
+      .ai-doctor-demo .aid-advice-body h4 {
+        font-family: 'Sora', sans-serif; font-size: 0.8rem; font-weight: 600;
+        color: #e2e8f0; margin: 0 0 0.45rem;
+      }
+      .ai-doctor-demo .aid-advice-body p { margin: 0 0 0.45rem; }
+      .ai-doctor-demo .aid-advice-body ul { margin: 0 0 0.45rem; padding-left: 1.1rem; }
+      .ai-doctor-demo .aid-advice-body li { margin-bottom: 0.2rem; }
+      .ai-doctor-demo .aid-advice-body strong { color: #e2e8f0; }
+      .ai-doctor-demo .aid-advice-body code {
+        font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
+        color: #38bdf8; background: rgba(56, 189, 248, 0.08);
+        border-radius: 4px; padding: 0.05rem 0.3rem;
+      }
+      .ai-doctor-demo .aid-advice-fade {
+        position: absolute; left: 0; right: 0; bottom: 1.5rem; height: 44px;
+        background: linear-gradient(to bottom, rgba(10, 14, 26, 0), rgba(10, 14, 26, 0.92));
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+      }
+      .ai-doctor-demo .aid-advice.is-open .aid-advice-fade { opacity: 0; }
+      .ai-doctor-demo .aid-advice-toggle {
+        display: inline-flex; align-items: center; gap: 0.3rem;
+        margin-top: 0.35rem;
+        font-family: 'Inter', sans-serif; font-size: 0.7rem; font-weight: 600;
+        color: #38bdf8; background: none; border: none; cursor: pointer; padding: 0;
+      }
+      .ai-doctor-demo .aid-advice-toggle:hover { text-decoration: underline; }
+      .ai-doctor-demo .aid-advice-toggle:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+
+      /* YAML accordion */
+      .ai-doctor-demo .aid-yaml-toggle {
+        display: flex; align-items: center; gap: 0.4rem; width: 100%;
+        margin-top: 0.5rem;
+        font-family: 'Inter', sans-serif; font-size: 0.7rem; font-weight: 600;
+        color: #94a3b8;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px; padding: 0.4rem 0.65rem;
+        cursor: pointer;
+        transition: color 0.2s ease, border-color 0.2s ease;
+      }
+      .ai-doctor-demo .aid-yaml-toggle:hover { color: #e2e8f0; border-color: rgba(56, 189, 248, 0.3); }
+      .ai-doctor-demo .aid-yaml-toggle:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+      .ai-doctor-demo .aid-yaml-toggle i { margin-left: auto; transition: transform 0.25s ease; font-size: 0.65rem; }
+      .ai-doctor-demo .aid-yaml-toggle[aria-expanded="true"] i { transform: rotate(180deg); }
+      .ai-doctor-demo .aid-yaml {
+        font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; line-height: 1.55;
+        color: #94a3b8;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px; padding: 0.6rem 0.75rem;
+        margin: 0.4rem 0 0; white-space: pre-wrap;
+      }
+
+      /* Misc */
+      .ai-doctor-demo .aid-no-rewrite {
+        display: flex; align-items: center; gap: 0.5rem;
+        min-width: 200px;
+        font-size: 0.74rem; color: #94a3b8; font-style: italic;
+        background: rgba(15, 23, 42, 0.5);
+        border: 1px dashed rgba(255, 255, 255, 0.12);
+        border-radius: 10px; padding: 0.75rem 0.85rem;
+      }
+      .ai-doctor-demo .aid-approx-flag {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        margin-top: 0.45rem;
+        font-size: 0.66rem; font-weight: 600; color: #f59e0b;
+        background: rgba(245, 158, 11, 0.1);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: 999px; padding: 0.2rem 0.55rem; white-space: nowrap;
+      }
+      .ai-doctor-demo .aid-empty {
+        text-align: center; color: #94a3b8; font-size: 0.85rem;
+        padding: 1.5rem 0; margin: 0;
+      }
+      .ai-doctor-demo .aid-empty i { color: #38bdf8; margin-right: 0.4rem; }
+
+      /* ---- Responsive ---- */
+      @media (max-width: 768px) {
+        .ai-doctor-demo .aid-kpis { grid-template-columns: repeat(2, 1fr); }
+        .ai-doctor-demo .aid-kpi-value { font-size: 1.15rem; }
+      }
+    </style>
 
     <!-- Preconnect to all external font origins -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -121,6 +465,7 @@
                 <a href="#features">Capabilities</a>
                 <a href="#trust">Security</a>
                 <a href="#workflow">Workflow</a>
+                <a href="#faq">FAQ</a>
                 <a href="simulator.html">Simulator</a>
             </div>
             <div class="nav-actions">
@@ -146,16 +491,17 @@
                 </div>
 
                 <h1 class="hero-title">
-                    <span class="sr-only">BQ FinOps Optimizer: </span>
+                    <span class="sr-only">BigQuery Cost Optimization — </span>
                     Stop Guessing.<br>
                     <span class="text-aurora">Start Attributing</span><br>
                     Every BigQuery Dollar.
                 </h1>
 
                 <p class="hero-sub">
-                    An enterprise-grade diagnostic &amp; simulation suite that dissects slot consumption,
-                    hunts SQL anti-patterns with Gemini, and right-sizes your Editions capacity —
-                    <strong>deployed entirely inside your own laptop.</strong>
+                    BQ FinOps Optimizer is an open-source tool that uses Gemini AI to analyze BigQuery queries,
+                    detect SQL anti-patterns, and cut cloud costs — an enterprise-grade diagnostic &amp; simulation
+                    suite that dissects slot consumption, hunts wasteful patterns, and right-sizes your Editions capacity.
+                    <strong>Deployed entirely inside your own laptop.</strong>
                 </p>
 
                 <div class="cta-group">
@@ -301,6 +647,10 @@
                     </button>
                     <button class="console-tab" role="tab" data-panel="panel-matrix" aria-selected="false">
                         <i class="fas fa-table-cells"></i><span>Edition Matrix</span>
+                    </button>
+                    <!-- ░░ AI DOCTOR DEMO — TAB BUTTON ░░ -->
+                    <button class="console-tab" role="tab" data-panel="panel-ai-doctor" aria-selected="false">
+                        <i class="fas fa-user-md"></i><span>AI Doctor</span>
                     </button>
                 </div>
 
@@ -460,6 +810,448 @@
                                 </table>
                                 </div>
                                 </div>
+
+<!-- ░░ AI DOCTOR DEMO — PANEL ░░ -->
+<div class="console-panel" id="panel-ai-doctor" role="tabpanel" aria-label="AI Doctor demo" hidden>
+  <div class="ai-doctor-demo">
+
+    <!-- ░░ A) EXECUTIVE KPI STRIP ░░ -->
+    <div class="aid-kpis reveal">
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Audited Spend</span>
+        <span class="aid-kpi-value"><em>$</em>14,720</span>
+        <span class="aid-kpi-sub">last 30 days</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Severity</span>
+        <span class="aid-kpi-value aid-kpi-sev">
+          <span><i class="aid-dot aid-dot-red"></i>3 HIGH</span>
+          <span><i class="aid-dot aid-dot-amber"></i>2 MED</span>
+          <span><i class="aid-dot aid-dot-green"></i>1 LOW</span>
+        </span>
+        <span class="aid-kpi-sub">6 queries diagnosed</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Schema Coverage</span>
+        <span class="aid-kpi-value">87%</span>
+        <span class="aid-kpi-sub">13/15 DDLs retrieved</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Data Scanned</span>
+        <span class="aid-kpi-value">2.4 <em>TiB</em></span>
+        <span class="aid-kpi-sub">across 6 queries</span>
+      </div>
+    </div>
+
+    <!-- ░░ B) FILTER PILLS ░░ -->
+    <div class="aid-pills reveal" role="group" aria-label="Filter diagnostic results">
+      <button type="button" class="aid-pill is-active" data-filter="all">All <span class="aid-pill-count">6</span></button>
+      <button type="button" class="aid-pill" data-filter="high"><i class="aid-dot aid-dot-red"></i>High <span class="aid-pill-count">3</span></button>
+      <button type="button" class="aid-pill" data-filter="medium"><i class="aid-dot aid-dot-amber"></i>Medium <span class="aid-pill-count">2</span></button>
+      <button type="button" class="aid-pill" data-filter="migration"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Migration <span class="aid-pill-count">2</span></button>
+      <button type="button" class="aid-pill" data-filter="schemagap"><i class="fas fa-puzzle-piece" aria-hidden="true"></i>Schema Gap <span class="aid-pill-count">1</span></button>
+      <button type="button" class="aid-pill" data-filter="repeat"><i class="fas fa-rotate" aria-hidden="true"></i>Repeat <span class="aid-pill-count">3</span></button>
+    </div>
+
+    <!-- ░░ C) RESULTS TABLE ░░ -->
+    <div class="aid-table-wrap reveal">
+      <table class="aid-table">
+        <thead>
+          <tr>
+            <th scope="col">Job ID</th>
+            <th scope="col">User</th>
+            <th scope="col">Slot-ms</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Original Cost</th>
+            <th scope="col">Original Query</th>
+            <th scope="col">Schema</th>
+            <th scope="col">Gemini Advice</th>
+            <th scope="col">Optimized SQL</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <!-- ROW 1 — HIGH · Full table scan -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-migration="1" data-repeat="1">
+            <td><code class="aid-jobid" title="job_etl_full_scan_2026_07_28_a1b2c3d4">job_etl_full_sc...</code></td>
+            <td class="aid-user">airflow-etl@company.com</td>
+            <td class="aid-num">48,720,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>3.0 TiB</strong>
+              <span class="aid-cost-usd">~$296,868 / yr</span>
+              <span class="aid-repeat-badge" title="Runs 14 times per day"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;14/day</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT *
+FROM `prod-analytics.warehouse.events`
+WHERE event_type = 'purchase'
+ORDER BY created_at DESC
+LIMIT 1000</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">2/2 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; Critical: Full Table Scan Without Partition Filter</h4>
+                  <p><strong>Problem:</strong> This query scans the entire <code>events</code> table (3.1 TiB) without a partition filter on <code>_PARTITIONDATE</code>. Since this job runs <strong>14 times per day</strong>, the annualized cost is <strong>~$297K</strong>.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>SELECT *</code> pulling all 47 columns when only 5 are used downstream</li>
+                    <li>No partition pruning on a date-partitioned table</li>
+                    <li>No clustering key alignment (<code>event_type</code> is a clustering column but appears only in WHERE)</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Add <code>WHERE _PARTITIONDATE &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)</code> to prune partitions</li>
+                    <li>Replace <code>SELECT *</code> with explicit column list</li>
+                    <li>Estimated <strong>97% scan reduction</strong> (~3.0 TiB &#8594; ~94 GiB per run)</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  event_id,
+  user_id,
+  event_type,
+  revenue_usd,
+  created_at
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+  AND event_type = 'purchase'
+ORDER BY created_at DESC
+LIMIT 1000</pre>
+              </div>
+              <button type="button" class="aid-yaml-toggle" aria-expanded="false">
+                &#129668; Migration API Config Applied <i class="fas fa-chevron-down" aria-hidden="true"></i>
+              </button>
+              <pre class="aid-yaml" hidden>translationConfigDetails:
+  sourceDialect: bigquery
+  requestedDialect: bigquery
+  runeEnforcedRules:
+    - addPartitionFilter
+    - convertSelectStar</pre>
+            </td>
+          </tr>
+
+          <!-- ROW 2 — HIGH · Cross join explosion -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-repeat="1">
+            <td><code class="aid-jobid" title="job_report_cross_join_e5f6g7h8">job_report_cro...</code></td>
+            <td class="aid-user">bi-dashboard@company.com</td>
+            <td class="aid-num">92,150,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>1.5 TiB</strong>
+              <span class="aid-cost-usd">$0 billed (Editions)</span>
+              <span class="aid-repeat-badge" title="Runs 7 times per day"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;7/day</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  d.dim_date,
+  p.product_name,
+  c.customer_segment,
+  SUM(f.revenue) AS total_revenue
+FROM `prod-analytics.warehouse.fact_sales` f
+CROSS JOIN `prod-analytics.warehouse.dim_dates` d
+JOIN `prod-analytics.warehouse.dim_products` p ON f.product_id = p.product_id
+JOIN `prod-analytics.warehouse.dim_customers` c ON f.customer_id = c.customer_id
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">3/3 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; Critical: CROSS JOIN Producing Cartesian Product</h4>
+                  <p><strong>Problem:</strong> The <code>CROSS JOIN</code> with <code>dim_dates</code> creates a Cartesian product &#8212; every sales row is multiplied by every calendar date. With 1.5 TiB scanned across Editions (billed = $0), this consumes massive slot capacity.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>CROSS JOIN</code> without a matching key (should use <code>sale_date = dim_date</code>)</li>
+                    <li>No date filter on the fact table &#8212; scans entire history</li>
+                    <li>Revenue is aggregated across an inflated row set, producing incorrect totals</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Replace <code>CROSS JOIN</code> with a date-keyed <code>JOIN</code> or simply use the <code>sale_date</code> column directly</li>
+                    <li>Add a <code>WHERE</code> clause for partition pruning</li>
+                    <li>Estimated <strong>99% slot reduction</strong> by eliminating the Cartesian explosion</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  f.sale_date AS dim_date,
+  p.product_name,
+  c.customer_segment,
+  SUM(f.revenue) AS total_revenue
+FROM `prod-analytics.warehouse.fact_sales` f
+JOIN `prod-analytics.warehouse.dim_products` p ON f.product_id = p.product_id
+JOIN `prod-analytics.warehouse.dim_customers` c ON f.customer_id = c.customer_id
+WHERE f.sale_date &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 3 — HIGH · Repeated micro-query -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-repeat="1">
+            <td><code class="aid-jobid" title="job_micro_cast_query_i9j0k1l2">job_micro_cast...</code></td>
+            <td class="aid-user">looker-svc@company.com</td>
+            <td class="aid-num">1,250,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>200 GiB</strong>
+              <span class="aid-cost-usd">~$11,726 / yr</span>
+              <span class="aid-repeat-badge" title="Runs 8,760 times per year (hourly)"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;8,760/yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT COUNT(*)
+FROM `prod-analytics.logs.user_events`
+WHERE CAST(event_timestamp AS STRING) LIKE '2026-07-28%'</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">1/1 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; High Frequency: 8,760 Executions with CAST Anti-Pattern</h4>
+                  <p><strong>Problem:</strong> This query runs <strong>every hour</strong> (8,760&#215;/year). The <code>CAST(timestamp AS STRING)</code> defeats partition pruning and forces a full column scan on every invocation.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>CAST(event_timestamp AS STRING)</code> prevents the query optimizer from using the partition index</li>
+                    <li><code>LIKE '2026-07-28%'</code> is a string comparison when a direct timestamp range would be prunable</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Replace <code>CAST/LIKE</code> with a native <code>TIMESTAMP</code> range comparison</li>
+                    <li>Enables partition pruning: ~200 GiB &#8594; ~5 GiB per run</li>
+                    <li>Estimated annual savings: <strong>~$11K</strong> from scan reduction alone</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT COUNT(*)
+FROM `prod-analytics.logs.user_events`
+WHERE event_timestamp &gt;= TIMESTAMP('2026-07-28')
+  AND event_timestamp &lt; TIMESTAMP('2026-07-29')</pre>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 4 — MEDIUM · Memory spill -->
+          <tr class="aid-row aid-row-medium" data-severity="MEDIUM" data-migration="1" data-schemagap="1">
+            <td><code class="aid-jobid" title="job_ml_feature_spill_m3n4o5p6">job_ml_feature...</code></td>
+            <td class="aid-user">data-science@company.com</td>
+            <td class="aid-num">34,500,000</td>
+            <td><span class="aid-badge aid-badge-medium"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>MEDIUM</span></td>
+            <td class="aid-cost">
+              <strong>512 GiB</strong>
+              <span class="aid-cost-usd">~$1,252 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT DISTINCT
+  u.user_id,
+  u.signup_date,
+  COUNT(DISTINCT o.order_id) AS order_count,
+  SUM(o.amount) AS lifetime_value,
+  AVG(s.session_duration) AS avg_session,
+  MAX(e.last_login) AS recency
+FROM `prod-analytics.core.users` u
+LEFT JOIN `prod-analytics.core.orders` o ON u.user_id = o.user_id
+LEFT JOIN `prod-analytics.core.sessions` s ON u.user_id = s.user_id
+LEFT JOIN `prod-analytics.core.events` e ON u.user_id = e.user_id
+GROUP BY 1, 2</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-warn">3/4 DDLs &#9888;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128993; Memory Spill: Multi-Table Fan-Out Causing Shuffle to Disk</h4>
+                  <p><strong>Problem:</strong> Four <code>LEFT JOIN</code>s on the same key without pre-aggregation causes a fan-out explosion. BigQuery spilled <strong>12.4 GiB</strong> to disk across 3 stages.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>SELECT DISTINCT</code> combined with <code>GROUP BY</code> &#8212; redundant and expensive</li>
+                    <li>Multi-way join without subquery pre-aggregation creates an O(n&#8308;) intermediate result</li>
+                    <li>1 of 4 table schemas could not be retrieved (cross-project permission)</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Pre-aggregate each dimension table in subqueries before joining</li>
+                    <li>Remove the outer <code>DISTINCT</code> (the <code>GROUP BY</code> already deduplicates)</li>
+                    <li>Estimated <strong>80% memory reduction</strong> &#8212; eliminates disk spill entirely</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  u.user_id,
+  u.signup_date,
+  COALESCE(o.order_count, 0) AS order_count,
+  COALESCE(o.lifetime_value, 0) AS lifetime_value,
+  COALESCE(s.avg_session, 0) AS avg_session,
+  e.recency AS recency
+FROM `prod-analytics.core.users` u
+LEFT JOIN (
+  SELECT user_id, COUNT(DISTINCT order_id) AS order_count, SUM(amount) AS lifetime_value
+  FROM `prod-analytics.core.orders`
+  GROUP BY 1
+) o ON u.user_id = o.user_id
+LEFT JOIN (
+  SELECT user_id, AVG(session_duration) AS avg_session
+  FROM `prod-analytics.core.sessions`
+  GROUP BY 1
+) s ON u.user_id = s.user_id
+LEFT JOIN (
+  SELECT user_id, MAX(last_login) AS recency
+  FROM `prod-analytics.core.events`
+  GROUP BY 1
+) e ON u.user_id = e.user_id</pre>
+              </div>
+              <button type="button" class="aid-yaml-toggle" aria-expanded="false">
+                &#129668; Migration API Config Applied <i class="fas fa-chevron-down" aria-hidden="true"></i>
+              </button>
+              <pre class="aid-yaml" hidden>translationConfigDetails:
+  sourceDialect: bigquery
+  requestedDialect: bigquery
+  runeEnforcedRules:
+    - rewriteDistinctToGroupBy</pre>
+            </td>
+          </tr>
+
+          <!-- ROW 5 — MEDIUM · MV candidate -->
+          <tr class="aid-row aid-row-medium" data-severity="MEDIUM">
+            <td><code class="aid-jobid" title="job_mv_refresh_stale_q7r8s9t0">job_mv_refresh...</code></td>
+            <td class="aid-user">scheduler-svc@company.com</td>
+            <td class="aid-num">18,200,000</td>
+            <td><span class="aid-badge aid-badge-medium"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>MEDIUM</span></td>
+            <td class="aid-cost">
+              <strong>307 GiB</strong>
+              <span class="aid-cost-usd">~$2,012 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  region,
+  product_category,
+  DATE_TRUNC(order_date, MONTH) AS month,
+  SUM(quantity * unit_price) AS revenue,
+  COUNT(DISTINCT customer_id) AS unique_customers
+FROM `prod-analytics.sales.orders`
+JOIN `prod-analytics.sales.products` USING (product_id)
+WHERE order_date &gt;= '2024-01-01'
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">2/2 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128993; Redundant Aggregation &#8212; Materialized View Candidate</h4>
+                  <p><strong>Problem:</strong> This exact aggregation pattern (region &#215; category &#215; month) runs <strong>4 times daily</strong> with identical <code>GROUP BY</code> output. Each run scans 307 GiB.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li>Aggregation query with a static <code>WHERE</code> clause scanning 2+ years of history every time</li>
+                    <li>No incremental processing &#8212; re-computes the full result on every run</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Create a BigQuery <strong>Materialized View</strong> with <code>enable_refresh = true</code> and <code>refresh_interval_minutes = 60</code></li>
+                    <li>The MV would serve subsequent reads from its pre-aggregated cache at zero scan cost</li>
+                    <li>Estimated <strong>90% cost reduction</strong> (~$2K/year savings)</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-no-rewrite">
+                <i class="fas fa-layer-group" aria-hidden="true"></i>
+                No rewrite &#8212; Materialized View recommended (see advice)
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 6 — LOW · Approx count opportunity -->
+          <tr class="aid-row aid-row-low" data-severity="LOW">
+            <td><code class="aid-jobid" title="job_dashboard_kpi_u1v2w3x4">job_dashboard_...</code></td>
+            <td class="aid-user">analyst@company.com</td>
+            <td class="aid-num">2,100,000</td>
+            <td><span class="aid-badge aid-badge-low"><i class="fas fa-circle-check" aria-hidden="true"></i>LOW</span></td>
+            <td class="aid-cost">
+              <strong>10 GiB</strong>
+              <span class="aid-cost-usd">~$24 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  COUNT(DISTINCT user_id) AS unique_users,
+  COUNT(*) AS total_events,
+  COUNTIF(event_type = 'conversion') AS conversions
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">1/1 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128994; Minor: APPROX_COUNT_DISTINCT Opportunity</h4>
+                  <p><strong>Problem:</strong> <code>COUNT(DISTINCT user_id)</code> on a high-cardinality column uses exact HyperLogLog computation. For a dashboard KPI, approximate counts are typically acceptable.</p>
+                  <p><strong>Recommendation:</strong></p>
+                  <ul>
+                    <li>Replace <code>COUNT(DISTINCT user_id)</code> with <code>APPROX_COUNT_DISTINCT(user_id)</code></li>
+                    <li>&#9888;&#65039; <strong>Trade-off:</strong> ~1% accuracy reduction in exchange for ~50% memory savings</li>
+                    <li>This is already a well-partitioned query with low total cost ($24/year) &#8212; optimization is optional</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  APPROX_COUNT_DISTINCT(user_id) AS unique_users,
+  COUNT(*) AS total_events,
+  COUNTIF(event_type = 'conversion') AS conversions
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
+              </div>
+              <span class="aid-approx-flag" title="Approximate function trade-off"><i class="fas fa-scale-unbalanced" aria-hidden="true"></i>~1% accuracy trade-off</span>
+            </td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+
+    <p class="aid-empty" hidden><i class="fas fa-filter-circle-xmark" aria-hidden="true"></i> No queries match this filter.</p>
+
+  </div>
+</div>
+<!-- ░░ /AI DOCTOR DEMO — PANEL ░░ -->
                                 </div>
                                 </div>
         </div>
@@ -744,6 +1536,95 @@
         </div>
     </section>
 
+    <!-- ░░ FAQ ░░ -->
+    <section id="faq" class="faq-section" aria-label="Frequently asked questions">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-circle-question"></i>FAQ</span>
+                <h2>Frequently Asked <span class="text-aurora">Questions</span></h2>
+                <p>Everything you need to know about reducing BigQuery costs with AI-powered query optimization.</p>
+            </div>
+
+            <div class="faq-grid reveal-group">
+                <details class="faq-item reveal" open>
+                    <summary class="faq-question">
+                        <span>How does the AI Doctor optimize BigQuery queries?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The AI Doctor pulls real queries from <code>INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION</code> across your entire Google Cloud organization. It evaluates each query using five Discovery Priority strategy modes — Balanced ROI Score, Cumulative Cost, High Frequency, Memory RAM Spill, and Total Slot Time — then classifies anti-pattern severity with <strong>Gemini AI</strong> and generates rewritten optimized SQL with estimated cost savings.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>Is BQ FinOps Optimizer free?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes, it is fully open source under the <strong>Apache 2.0 license</strong>. There are zero SaaS fees — you only pay for your own BigQuery compute and Vertex AI usage. The tool runs entirely on your local machine or within your own Cloud Run environment.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>Is this a Google Cloud product?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p><strong>No.</strong> BQ FinOps Optimizer is an independent, personal side project. It is <strong>not</strong> developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC. This tool comes with <strong>no warranty, no SLA, and no guarantee of correctness or completeness</strong>. It is provided as-is under the Apache 2.0 license — use it at your own risk.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>What BigQuery anti-patterns does it detect?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The tool detects common BigQuery anti-patterns including <code>CROSS JOIN</code> explosions, <code>SELECT *</code> on wide tables, <code>CAST</code> defeating partition pruning, missing clustering keys, unnecessary <code>ORDER BY</code> in subqueries, and redundant repeated queries. Gemini classifies each finding by severity (High, Medium, Low) and provides a rewritten optimized query with detailed reasoning.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>Does it work with BigQuery Editions?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes. The Editions Capacity Simulator models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis. It recommends the optimal edition and slot capacity tier (p80, p95, max) for your workload — and calculates the exact On-Demand Equivalent Cost for each BigQuery Editions reservation.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>Are you looking for beta testers and co-design partners?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Absolutely! We want to work with real users who are willing to test BQ FinOps Optimizer in their own environments and share honest feedback. Whether you're a FinOps practitioner, a Cloud administrator, or a data engineering lead — we'd love to hear from you. Reach out directly at <a href="mailto:bettan.michael@gmail.com" style="color: var(--cyan); text-decoration: underline;">bettan.michael@gmail.com</a>.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>How can I contribute or help?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>There are several ways to get involved:</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Report bugs</strong> — open an issue on <a href="https://github.com/mbettan/bq-finops-optimizer/issues" target="_blank" rel="noopener" style="color: var(--cyan); text-decoration: underline;">GitHub Issues</a>. Please keep reports generic and <strong>never include PII, credentials, or sensitive information</strong>.</li>
+                            <li><strong>Request features</strong> — open a GitHub issue describing the use case you'd like to see supported.</li>
+                            <li><strong>Submit pull requests</strong> — if you've fixed a bug, improved performance, or added a feature, PRs are welcome.</li>
+                            <li><strong>Share private feedback</strong> — if you prefer to share feedback confidentially, reach out at <a href="mailto:bettan.michael@gmail.com" style="color: var(--cyan); text-decoration: underline;">bettan.michael@gmail.com</a>.</li>
+                        </ul>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>
+
     </main>
 
     <!-- ░░ FOOTER ░░ -->
@@ -763,6 +1644,7 @@
                     <a href="#demo">Live Demo</a>
                     <a href="simulator.html">Simulator</a>
                     <a href="#workflow">Workflow</a>
+                    <a href="#faq">FAQ</a>
                 </div>
                 <div class="footer-col">
                     <h4>Resources</h4>
@@ -1017,5 +1899,109 @@
         </tr>`).join('');
     })();
     </script>
+
+<!-- ░░ AI DOCTOR DEMO — BEHAVIOR ░░ -->
+<script>
+(function () {
+  'use strict';
+  var panel = document.getElementById('panel-ai-doctor');
+  if (!panel) return;
+
+  var root = panel.querySelector('.ai-doctor-demo');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('tbody .aid-row'));
+  var emptyMsg = root.querySelector('.aid-empty');
+
+  /* ---------- 5.1 Filter Pills ---------- */
+  var pills = Array.prototype.slice.call(root.querySelectorAll('.aid-pill'));
+
+  function matchesFilter(row, filter) {
+    switch (filter) {
+      case 'all':       return true;
+      case 'high':      return row.dataset.severity === 'HIGH';
+      case 'medium':    return row.dataset.severity === 'MEDIUM';
+      case 'migration': return row.dataset.migration === '1';
+      case 'schemagap': return row.dataset.schemagap === '1';
+      case 'repeat':    return row.dataset.repeat === '1';
+      default:          return true;
+    }
+  }
+
+  pills.forEach(function (pill) {
+    pill.addEventListener('click', function () {
+      pills.forEach(function (p) { p.classList.remove('is-active'); });
+      pill.classList.add('is-active');
+
+      var filter = pill.dataset.filter;
+      var visibleCount = 0;
+      rows.forEach(function (row) {
+        var show = matchesFilter(row, filter);
+        row.hidden = !show;
+        if (show) visibleCount++;
+      });
+      if (emptyMsg) emptyMsg.hidden = visibleCount > 0;
+    });
+  });
+
+  /* ---------- 5.2 Copy SQL Buttons ---------- */
+  root.querySelectorAll('.aid-copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.parentElement.querySelector('pre');
+      if (!pre) return;
+      var sql = pre.textContent;
+
+      function onCopied() {
+        var icon = btn.querySelector('i');
+        btn.classList.add('is-copied');
+        if (icon) { icon.classList.remove('fa-copy'); icon.classList.add('fa-check'); }
+        window.setTimeout(function () {
+          btn.classList.remove('is-copied');
+          if (icon) { icon.classList.remove('fa-check'); icon.classList.add('fa-copy'); }
+        }, 1500);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(sql).then(onCopied).catch(function () { /* noop */ });
+      }
+    });
+  });
+
+  /* ---------- 5.3 Show More / Show Less (Gemini Advice) ---------- */
+  root.querySelectorAll('.aid-advice').forEach(function (advice) {
+    var body = advice.querySelector('.aid-advice-body');
+    if (!body || body.textContent.trim().length <= 300) return;
+
+    // Gradient fade over the clipped content
+    var fade = document.createElement('div');
+    fade.className = 'aid-advice-fade';
+    advice.appendChild(fade);
+
+    // Toggle link
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'aid-advice-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.textContent = '\u25BC Show more';
+    advice.appendChild(toggle);
+
+    toggle.addEventListener('click', function () {
+      var open = advice.classList.toggle('is-open');
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.textContent = open ? '\u25B2 Show less' : '\u25BC Show more';
+    });
+  });
+
+  /* ---------- 5.4 YAML Accordion (Migration Config) ---------- */
+  root.querySelectorAll('.aid-yaml-toggle').forEach(function (toggle) {
+    toggle.addEventListener('click', function () {
+      var yaml = toggle.nextElementSibling;
+      if (!yaml || !yaml.classList.contains('aid-yaml')) return;
+      var expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      yaml.hidden = expanded;
+    });
+  });
+})();
+</script>
+<!-- ░░ /AI DOCTOR DEMO — BEHAVIOR ░░ -->
 </body>
 </html>
