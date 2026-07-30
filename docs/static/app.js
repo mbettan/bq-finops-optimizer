@@ -56,14 +56,12 @@
             const sanitized = {};
             for (const key in data) {
                 if (Object.prototype.hasOwnProperty.call(data, key)) {
-                    // `ddl` is synthesized server-side from already-validated
-                    // identifiers and fixed templates (never raw user input),
-                    // and is written into <textarea>.value / clipboard as literal
-                    // text, so escaping it would corrupt copy/paste. Every other
-                    // field — including raw SQL query text and AI-generated
-                    // advice, both of which can contain attacker-influenced
-                    // content — is escaped like everything else by default.
-                    if (key === 'ddl') {
+                    // Keys that are consumed as raw text (clipboard, textarea,
+                    // <pre>.textContent, or POST body) must NOT be HTML-escaped
+                    // by the global proxy — doing so corrupts SQL operators,
+                    // quoted identifiers, and YAML.  Escape at the render sink.
+                    const RAW_KEYS = new Set(['ddl', 'optimized_query', 'query', 'migration_applied_yaml']);
+                    if (RAW_KEYS.has(key)) {
                         sanitized[key] = data[key];
                     } else {
                         sanitized[key] = sanitizeData(data[key]);
@@ -90,6 +88,26 @@ function safeParseJSON(raw, fallback) {
         console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
         return fallback;
     }
+}
+
+// F-M4: Extracts a human-readable message from FastAPI error details.
+// FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
+// renders as [object Object] if used directly. This handles string,
+// array-of-{loc,msg}, and absent cases.
+function detailToMessage(detail, fallback = 'Unknown error') {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map(d => {
+            if (typeof d === 'string') return d;
+            if (d && d.msg) {
+                const loc = Array.isArray(d.loc) ? d.loc.join(' → ') : '';
+                return loc ? `${loc}: ${d.msg}` : d.msg;
+            }
+            return String(d);
+        }).join('; ');
+    }
+    return String(detail);
 }
 
 // Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
@@ -175,9 +193,13 @@ async function loadScopeMap() {
 function buildPayload(endpoint, basePayload) {
     const scope = FOCUS_SCOPE_MAP[endpoint];
     if (!scope) {
-        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — focus_projects passed unchanged`);
+        // F-M6: Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // When the scope map fails to load (502, timeout), every endpoint is
+        // unmapped. Passing focus_projects to endpoints with extra='forbid'
+        // causes a hard 422. Defaulting to 'org' is the safer fallback.
+        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — defaulting to org scope`);
     }
-    if (scope === 'org') {
+    if (scope !== 'focus') {
         const { focus_projects, ...rest } = basePayload;
         return rest;
     }
@@ -374,7 +396,11 @@ const Snapshot = (() => {
       const sanitize = window.sanitizeData || (v => v);
       return JSON.stringify(sanitize(parsed));
     } catch {
-      return raw;
+      // F-L4: Bare strings (e.g. project IDs from scalar settings keys)
+      // must also be escaped — they bypass the JSON parse above and were
+      // returned raw, which is the XSS delivery path for H1.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      return escHtml(raw);
     }
   }
 
@@ -563,7 +589,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnAnalyzeHbo: document.getElementById('analyze-hbo-btn'),
         hboStatusPanel: document.getElementById('hbo-status-panel'),
-        hboStatusList: document.getElementById('hbo-status-list'),
+        hboStatusList: document.getElementById('hbo-status-tbody'),
+        hboStatusSummary: document.getElementById('hbo-status-summary'),
+        hboStatusPagination: document.getElementById('hbo-status-pagination'),
         
         // Storage Hygiene
 
@@ -587,6 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
         aiLimit: document.getElementById('ai-limit'),
+        aiDiscoveryStrategy: document.getElementById('ai-discovery-strategy'),
         aiLookback: document.getElementById('ai-lookback'),
         aiModel: document.getElementById('ai-model')
     };
@@ -648,72 +677,83 @@ document.addEventListener('DOMContentLoaded', () => {
         const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
         const validationErrors = [];
 
-        // --- Strip & validate Org Project ---
-        state.orgProject = elements.cfgOrgProject.value.trim();
-        elements.cfgOrgProject.value = state.orgProject;
-        if (state.orgProject && !PROJECT_ID_RE.test(state.orgProject)) {
-            validationErrors.push(`Invalid Organization Project ID "${state.orgProject}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
+        // --- F-M1: Validate into local variables FIRST, return before
+        // touching state or localStorage to prevent half-mutated scope. ---
+        const newOrg = elements.cfgOrgProject.value.trim();
+        elements.cfgOrgProject.value = newOrg;
+        if (newOrg && !PROJECT_ID_RE.test(newOrg)) {
+            validationErrors.push(`Invalid Organization Project ID "${newOrg}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
         }
 
-        // --- Strip & validate Admin Project ---
+        let newAdmin = '';
         if (elements.cfgAdminProject) {
-            state.adminProject = elements.cfgAdminProject.value.trim();
-            elements.cfgAdminProject.value = state.adminProject;
-            if (state.adminProject && !PROJECT_ID_RE.test(state.adminProject)) {
-                validationErrors.push(`Invalid Admin Project ID "${state.adminProject}". Must be 6-30 lowercase chars, starting with a letter.`);
+            newAdmin = elements.cfgAdminProject.value.trim();
+            elements.cfgAdminProject.value = newAdmin;
+            if (newAdmin && !PROJECT_ID_RE.test(newAdmin)) {
+                validationErrors.push(`Invalid Admin Project ID "${newAdmin}". Must be 6-30 lowercase chars, starting with a letter.`);
             }
-            localStorage.setItem('bq_admin_project', state.adminProject);
         }
 
-        // --- Region (dropdown, no validation needed — just trim) ---
-        state.region = elements.cfgRegion.value;
+        const newRegion = elements.cfgRegion.value;
 
-        // --- Strip & validate Max Bytes Billed ---
+        let newMaxBytes = null;
         if (elements.cfgMaxBytesBilled) {
             const val = parseInt(elements.cfgMaxBytesBilled.value);
-            state.maxBytesBilledGb = (val && val > 0) ? val : null;
-            if (state.maxBytesBilledGb) {
-                localStorage.setItem('bq_max_bytes_billed_gb', state.maxBytesBilledGb);
-            } else {
-                localStorage.removeItem('bq_max_bytes_billed_gb');
-            }
+            newMaxBytes = (val && val > 0) ? val : null;
         }
 
-        // --- Strip & validate Focus Projects ---
+        let newFocus = [];
         if (elements.cfgFocusProjects) {
             const raw = elements.cfgFocusProjects.value;
-            state.focusProjects = raw.split(',').map(s => s.trim()).filter(Boolean);
-            // Validate each focus project ID
-            const invalidProjects = state.focusProjects.filter(p => !PROJECT_ID_RE.test(p));
+            newFocus = raw.split(',').map(s => s.trim()).filter(Boolean);
+            const invalidProjects = newFocus.filter(p => !PROJECT_ID_RE.test(p));
             if (invalidProjects.length > 0) {
                 validationErrors.push(`Invalid Focus Project ID(s): ${invalidProjects.map(p => `"${p}"`).join(', ')}. Each must be 6-30 lowercase chars, starting with a letter.`);
             }
-            // Write back cleaned values to the input field
-            elements.cfgFocusProjects.value = state.focusProjects.join(', ');
-            if (state.focusProjects.length > 0) {
-                safeSetLocalStorage('bq_focus_projects', JSON.stringify(state.focusProjects));
-            } else {
-                localStorage.removeItem('bq_focus_projects');
-            }
         }
 
-        // --- Abort on validation errors ---
+        // --- Abort on validation errors (before any state mutation) ---
         if (validationErrors.length > 0) {
             showNotification(validationErrors.join('\n'), 'error');
             return;
         }
 
+        // --- Commit validated values to state and localStorage ---
+        state.orgProject = newOrg;
+        state.region = newRegion;
+        if (elements.cfgAdminProject) {
+            state.adminProject = newAdmin;
+            localStorage.setItem('bq_admin_project', newAdmin);
+        }
+        state.maxBytesBilledGb = newMaxBytes;
+        if (newMaxBytes) {
+            localStorage.setItem('bq_max_bytes_billed_gb', newMaxBytes);
+        } else {
+            localStorage.removeItem('bq_max_bytes_billed_gb');
+        }
+        state.focusProjects = newFocus;
+        if (elements.cfgFocusProjects) {
+            elements.cfgFocusProjects.value = newFocus.join(', ');
+        }
+        if (newFocus.length > 0) {
+            safeSetLocalStorage('bq_focus_projects', JSON.stringify(newFocus));
+        } else {
+            localStorage.removeItem('bq_focus_projects');
+        }
+
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
-        // Flush all cached module results — stale data from a previous scope
-        // (e.g., org-wide results before focus_projects was set) must not persist.
+        // F-M2: Flush ALL scope-dependent caches. Use an allow-list of
+        // scope-independent keys rather than a fragile deny-list.
+        const SCOPE_INDEPENDENT = new Set([
+            'bq_org_project', 'bq_admin_project', 'bq_region',
+            'bq_max_bytes_billed_gb', 'bq_focus_projects',
+            'bq_version_dismissed',
+        ]);
         const allKeys = Object.keys(localStorage);
-        const resultKeys = allKeys.filter(k => k.startsWith('bq_') && k.endsWith('_results'));
-        resultKeys.forEach(k => localStorage.removeItem(k));
-        // Also clear any cached summaries/timelines/status that are scope-dependent
-        ['bq_hbo_status', 'bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries',
-         'bq_top_spenders', 'bq_cost_attr_results', 'bq_cost_attr_config'].forEach(k => localStorage.removeItem(k));
+        allKeys.filter(k => k.startsWith('bq_') && !SCOPE_INDEPENDENT.has(k))
+            .forEach(k => localStorage.removeItem(k));
 
         elements.currentProject.textContent = state.orgProject || 'Not Set';
         if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
@@ -1323,6 +1363,8 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const formatNumber = (num) => {
+            // F-L1: Guard null/undefined/NaN from snapshot import
+            if (num == null || isNaN(num)) return '0';
             return num.toLocaleString();
         };
 
@@ -1703,7 +1745,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Simulation failed');
+                    throw new Error(detailToMessage(err.detail, 'Simulation failed'));
                 }
 
                 const data = await response.json();
@@ -1725,6 +1767,12 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#simulation-table').DataTable().destroy();
         }
         
+        // F-M9: Guard against empty simulation response (brand-new reservation, no jobs).
+        if (!data || data.length === 0) {
+            showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
+            return;
+        }
+
         // Find optimums for the summary table
         let bestPayg = data.reduce((prev, curr) => prev.total_payg < curr.total_payg ? prev : curr);
         let best1Yr = data.reduce((prev, curr) => prev.total_1yr < curr.total_1yr ? prev : curr);
@@ -2106,6 +2154,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
           .then(() => {
             const original = fresh.textContent;
             fresh.textContent = '✓ COPIED';
+            showNotification('DDL copied to clipboard!', 'success');
             setTimeout(() => { fresh.textContent = original; }, 1500);
           })
           .catch(err => console.error('Clipboard write failed:', err));
@@ -2463,6 +2512,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const formatNumber = (num) => {
+        // F-L1: Guard null/undefined/NaN from snapshot import
+        if (num == null || isNaN(num)) return '0';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
 
@@ -2482,25 +2533,45 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const showNotification = (message, type = 'info') => {
+        // If an identical notification is already showing, flash it to acknowledge the click without stacking duplicate popups
+        if (elements.notificationContainer) {
+            const activeNotifs = elements.notificationContainer.querySelectorAll('.notification');
+            for (const notif of activeNotifs) {
+                const contentEl = notif.querySelector('.notif-content');
+                if (contentEl && contentEl.textContent.trim() === message.trim()) {
+                    notif.style.transform = 'scale(1.05)';
+                    setTimeout(() => { notif.style.transform = 'scale(1)'; }, 150);
+                    return;
+                }
+            }
+        }
+
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
+        notification.style.transition = 'transform 0.15s ease-out';
         
         let icon = 'fa-circle-info';
         if (type === 'success') icon = 'fa-circle-check';
         if (type === 'error') icon = 'fa-circle-exclamation';
         if (type === 'warning') icon = 'fa-triangle-exclamation';
 
-        notification.innerHTML = `
-            <i class="fa-solid ${icon}"></i>
-            <div class="notif-content">${message}</div>
-        `;
+        // H1: Build the node with textContent to prevent XSS — message
+        // can contain DOM input values (e.g. project IDs from validation)
+        // that bypass the global fetch sanitizer.
+        const iconEl = document.createElement('i');
+        iconEl.className = `fa-solid ${icon}`;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'notif-content';
+        contentEl.textContent = message;
+        notification.appendChild(iconEl);
+        notification.appendChild(contentEl);
 
         elements.notificationContainer.appendChild(notification);
 
         setTimeout(() => {
             notification.style.animation = 'fadeOut 0.3s ease-out forwards';
             setTimeout(() => notification.remove(), 300);
-        }, 4000);
+        }, 3000);
     };
 
     window.showNotification = showNotification;
@@ -2631,11 +2702,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     reservations: getReservationsFromForm()
                 };
 
-                await fetch('/api/cost-attribution/config', {
+                const configResp = await fetch('/api/cost-attribution/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config)
                 });
+                if (!configResp.ok) {
+                    const errBody = await configResp.json().catch(() => ({}));
+                    throw new Error(errBody.detail || `Config save failed (HTTP ${configResp.status})`);
+                }
 
                 // Then calculate
                 const params = {
@@ -2656,7 +2731,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Calculation failed');
+                    throw new Error(detailToMessage(err.detail, 'Calculation failed'));
                 }
 
                 const data = await response.json();
@@ -2871,7 +2946,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             tr.innerHTML = `
                 <td>${row.user_email}</td>
                 <td>${formatNumber(row.query_count)}</td>
-                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TB</td>
+                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
                 <td>${formatNumber(row.total_slot_hours)}</td>
                 <td>${formatCurrency(row.est_on_demand_cost)}</td>
                 <td>${formatCurrency(row.est_editions_cost)}</td>
@@ -2886,7 +2961,69 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         $('#top-spenders-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
     };
 
-    const renderHboResults = (data) => {
+    // Build a DOM node for the optimization badges cell.
+    // Uses createElement + textContent to avoid XSS (§6.2).
+    const _buildBadgeCell = (optimizations) => {
+        const container = document.createElement('div');
+        container.className = 'opt-badges';
+
+        // null = undetermined
+        if (optimizations === null || optimizations === undefined) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = '—';
+            span.title = 'Could not determine (permissions or scope)';
+            container.appendChild(span);
+            return container;
+        }
+
+        // [] = checked, none applied
+        if (Array.isArray(optimizations) && optimizations.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = 'None detected';
+            container.appendChild(span);
+            return container;
+        }
+
+        // Array of badge objects
+        if (Array.isArray(optimizations)) {
+            optimizations.forEach(badge => {
+                const chip = document.createElement('span');
+                // Validate category to a CSS class — whitelist only
+                const validCats = ['hbo', 'engine', 'unknown'];
+                const cat = validCats.includes(badge.category) ? badge.category : 'unknown';
+                chip.className = `opt-badge opt-badge--${cat}`;
+                chip.textContent = badge.label || badge.key || 'Unknown';
+                chip.title = badge.description || '';
+                container.appendChild(chip);
+            });
+            return container;
+        }
+
+        // Fallback — loading state
+        const span = document.createElement('span');
+        span.className = 'opt-none';
+        span.textContent = 'Loading…';
+        container.appendChild(span);
+        return container;
+    };
+
+    // Store the last analyze data so enrichment can correlate
+    let _lastAnalyzeData = null;
+
+    const clearLoadingBadges = () => {
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        tableEl.querySelectorAll('tbody tr td:last-child').forEach(td => {
+            if (td.textContent.trim() === 'Loading…' || td.textContent.trim() === 'Loading...') {
+                td.innerHTML = '<span class="opt-none">—</span>';
+            }
+        });
+    };
+
+    const renderHboResults = (data, enrichmentData = null) => {
+        _lastAnalyzeData = data;
         let table;
         if ($.fn.DataTable.isDataTable('#hbo-results-table')) {
             table = $('#hbo-results-table').DataTable();
@@ -2894,12 +3031,22 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#hbo-results-table').DataTable({
                 pageLength: 10,
                 order: [[1, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [
+                    { targets: 4, orderable: false }
+                ]
             });
         }
-        
+
         table.clear();
-        
+
+        const lookup = {};
+        if (enrichmentData && Array.isArray(enrichmentData.jobs)) {
+            enrichmentData.jobs.forEach(j => {
+                lookup[j.job_id] = j.optimizations;
+            });
+        }
+
         let totalSlotsSaved = 0;
         let totalDollarsSaved = 0;
 
@@ -2907,80 +3054,162 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             totalSlotsSaved += row.saved_slot_hours || 0;
             totalDollarsSaved += row.estimated_savings_usd || 0;
 
+            const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
+            const badgeNode = _buildBadgeCell(optValue);
             table.row.add([
                 row.job_id,
                 `${row.percent_execution_time_saved.toFixed(2)}%`,
                 row.new_elapsed_ms.toLocaleString(),
-                row.original_elapsed_ms.toLocaleString()
+                row.original_elapsed_ms.toLocaleString(),
+                badgeNode.outerHTML
             ]);
         });
 
         table.draw();
 
-        const slotsEl = document.getElementById('hbo-total-slots');
-        const dollarsEl = document.getElementById('hbo-total-dollars');
+        // F-M3: Tile writing moved out of renderHboResults. The live handler
+        // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
+        // Keeping tile writes here caused a ~300× discrepancy on reload.
+    };
 
-        if (slotsEl) slotsEl.textContent = totalSlotsSaved.toFixed(2);
-        if (dollarsEl) dollarsEl.textContent = formatCurrency(totalDollarsSaved);
+    // Apply enrichment badges to the existing table rows.
+    const applyOptimizationBadges = (enrichmentData) => {
+        if (!enrichmentData || !enrichmentData.jobs) return;
+
+        // Build lookup: job_id -> optimizations
+        const lookup = {};
+        enrichmentData.jobs.forEach(j => {
+            lookup[j.job_id] = j.optimizations;
+        });
+
+        // Update table cells
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        const rows = tableEl.querySelectorAll('tbody tr');
+        rows.forEach(tr => {
+            const jobIdCell = tr.querySelector('td:first-child');
+            const badgeCell = tr.querySelector('td:last-child');
+            if (!jobIdCell || !badgeCell) return;
+
+            const jobId = jobIdCell.textContent.trim();
+            if (jobId in lookup) {
+                badgeCell.innerHTML = '';
+                badgeCell.appendChild(_buildBadgeCell(lookup[jobId]));
+            }
+        });
+
+        clearLoadingBadges();
+
+        // Show coverage warning if any projects were inaccessible
+        if (enrichmentData.coverage && enrichmentData.coverage.inaccessible_projects &&
+            enrichmentData.coverage.inaccessible_projects.length > 0) {
+            const names = enrichmentData.coverage.inaccessible_projects
+                .map(p => p.project_id).join(', ');
+            console.warn(`HBO enrichment: inaccessible projects: ${names}. ` +
+                `Grant roles/bigquery.resourceViewer on each project for full coverage.`);
+        }
     };
 
     const renderHboStatus = (data) => {
         const panel = elements.hboStatusPanel;
-        const list = elements.hboStatusList;
-        if (!panel || !list) return;
+        const tbody = elements.hboStatusList;
+        const summary = elements.hboStatusSummary;
+        const pagination = elements.hboStatusPagination;
+        if (!panel || !tbody) return;
 
         panel.style.display = 'block';
-        list.innerHTML = '';
 
-        data.forEach(item => {
-            const div = document.createElement('div');
-            div.style.marginBottom = '0.5rem';
+        const PAGE_SIZE = 10;
+        let currentPage = 1;
+        const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
 
-            if (item.error) {
-                div.innerHTML = `<i class="fa-solid fa-circle-question" style="color: #94a3b8; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: ${item.error}`;
-            } else if (item.enabled) {
-                div.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Enabled.`;
-            } else {
-                div.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15; margin-right: 5px;"></i> Project <strong>${item.project_id}</strong>: HBO is Disabled.`;
-                if (item.ddl) {
-                    const ddlContainer = document.createElement('div');
-                    ddlContainer.style.marginTop = '0.5rem';
-                    ddlContainer.style.display = 'flex';
-                    ddlContainer.style.alignItems = 'flex-start';
-                    ddlContainer.style.gap = '0.5rem';
-                    
-                    const ddlDiv = document.createElement('textarea');
-                    ddlDiv.readOnly = true;
-                    ddlDiv.style.flex = '1';
-                    ddlDiv.style.height = '40px';
-                    ddlDiv.style.background = 'rgba(15, 23, 42, 0.5)';
-                    ddlDiv.style.border = '1px solid rgba(255, 255, 255, 0.1)';
-                    ddlDiv.style.borderRadius = '0.25rem';
-                    ddlDiv.style.color = '#e2e8f0';
-                    ddlDiv.style.fontFamily = 'monospace';
-                    ddlDiv.style.fontSize = '0.85rem';
-                    ddlDiv.style.padding = '0.5rem';
-                    ddlDiv.style.resize = 'none';
-                    ddlDiv.value = item.ddl;
+        // Summary counts
+        const enabled = data.filter(d => d.enabled === true).length;
+        const disabled = data.filter(d => d.enabled === false).length;
+        const errors = data.filter(d => d.error).length;
+        if (summary) {
+            summary.textContent = `${enabled} enabled · ${disabled} disabled${errors ? ` · ${errors} errors` : ''} — ${data.length} projects`;
+        }
 
-                    const copyBtn = document.createElement('button');
-                    copyBtn.className = 'btn-action';
-                    copyBtn.textContent = 'Copy';
-                    copyBtn.title = 'Copy DDL';
-                    copyBtn.addEventListener('click', () => {
+        function renderPage(page) {
+            currentPage = page;
+            tbody.innerHTML = '';
+            const start = (page - 1) * PAGE_SIZE;
+            const slice = data.slice(start, start + PAGE_SIZE);
+
+            slice.forEach(item => {
+                const tr = document.createElement('tr');
+
+                // Project cell
+                const tdProject = document.createElement('td');
+                tdProject.style.fontWeight = '500';
+                tdProject.textContent = item.project_id;
+
+                // Status cell
+                const tdStatus = document.createElement('td');
+                if (item.error) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(148,163,184,0.15);color:#94a3b8;"><i class="fa-solid fa-circle-question" style="font-size:0.7rem;"></i> Error</span>`;
+                } else if (item.enabled) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(74,222,128,0.12);color:#4ade80;"><i class="fa-solid fa-circle-check" style="font-size:0.7rem;"></i> Enabled</span>`;
+                } else {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(250,204,21,0.12);color:#facc15;"><i class="fa-solid fa-circle-exclamation" style="font-size:0.7rem;"></i> Disabled</span>`;
+                }
+
+                // Action cell
+                const tdAction = document.createElement('td');
+                if (item.error) {
+                    tdAction.innerHTML = `<span style="color:#94a3b8;font-size:0.8rem;" title="${item.error}">Permission error</span>`;
+                } else if (item.enabled) {
+                    tdAction.innerHTML = `<span style="color:#64748b;font-size:0.8rem;">—</span>`;
+                } else if (item.ddl) {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-action';
+                    btn.style.fontSize = '0.75rem';
+                    btn.style.padding = '4px 10px';
+                    btn.textContent = 'Copy Enable DDL';
+                    btn.title = item.ddl;
+                    btn.addEventListener('click', () => {
                         copyToClipboard(item.ddl).then(() => {
-                            copyBtn.textContent = 'Copied!';
-                            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+                            btn.textContent = 'Copied!';
+                            setTimeout(() => { btn.textContent = 'Copy Enable DDL'; }, 2000);
                         });
                     });
-
-                    ddlContainer.appendChild(ddlDiv);
-                    ddlContainer.appendChild(copyBtn);
-                    div.appendChild(ddlContainer);
+                    tdAction.appendChild(btn);
+                } else {
+                    tdAction.innerHTML = `<span style="color:#64748b;font-size:0.8rem;">—</span>`;
                 }
+
+                tr.appendChild(tdProject);
+                tr.appendChild(tdStatus);
+                tr.appendChild(tdAction);
+                tbody.appendChild(tr);
+            });
+
+            renderPagination();
+        }
+
+        function renderPagination() {
+            if (!pagination) return;
+            pagination.innerHTML = '';
+            if (totalPages <= 1) return;
+
+            const btnStyle = (active) => `
+                padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+                background: ${active ? 'rgba(56,189,248,0.2)' : 'rgba(15,23,42,0.5)'};
+                color: ${active ? '#38bdf8' : '#94a3b8'}; cursor: pointer; font-size: 0.8rem;
+                font-weight: ${active ? '600' : '400'};
+            `;
+
+            for (let p = 1; p <= totalPages; p++) {
+                const btn = document.createElement('button');
+                btn.textContent = p;
+                btn.style.cssText = btnStyle(p === currentPage);
+                btn.addEventListener('click', () => renderPage(p));
+                pagination.appendChild(btn);
             }
-            list.appendChild(div);
-        });
+        }
+
+        renderPage(1);
     };
 
     if (elements.btnAnalyzeHbo) {
@@ -2992,39 +3221,40 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHbo, true);
-            clearModuleCache(['bq_hbo_results', 'bq_hbo_status'], ['#hbo-results-table']);
+            clearModuleCache(['bq_hbo_results', 'bq_hbo_status', 'bq_hbo_summary', 'bq_hbo_optimizations'], ['#hbo-results-table']);
 
             const projectOverride = document.getElementById('hbo-project-override')?.value;
             const lookbackOverride = document.getElementById('hbo-lookback-override')?.value;
 
             const targetProject = projectOverride || state.orgProject;
 
-            const params = {
+            const baseParams = {
                 org_project_id: targetProject,
                 region: state.region,
                 focus_projects: state.focusProjects,
-                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30),
-                limit: 10
+                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30)
             };
 
-            debug_log("Fetching HBO analysis with params:", params);
+            const analyzeParams = { ...baseParams, limit: 10 };
+
+            debug_log("Fetching HBO analysis with params:", analyzeParams);
 
             try {
                 const [analyzeRes, statusRes, summaryRes] = await Promise.all([
                     fetch('/api/hbo/analyze', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/analyze', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/analyze', analyzeParams))
                     }),
                     fetch('/api/hbo/status', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/status', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/status', baseParams))
                     }),
                     fetch('/api/hbo/summary', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/summary', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/summary', baseParams))
                     })
                 ]);
 
@@ -3036,7 +3266,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const statusData = await statusRes.json();
                 const summaryData = await summaryRes.json();
 
-                renderHboResults(analyzeData.slice(0, 10));
+                const slicedData = analyzeData.slice(0, 10);
+                renderHboResults(slicedData);
                 renderHboStatus(statusData);
 
                 // Update tiles
@@ -3045,8 +3276,43 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
                 if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
 
-                safeSetLocalStorage('bq_hbo_results', JSON.stringify(analyzeData.slice(0, 10)));
+                safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
+                // F-M3: Cache the summary so tiles survive reload.
+                safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
+
+                // Non-blocking: enrich jobs with optimization type badges.
+                // This is progressive enhancement — the table is already
+                // rendered and usable without it.
+                const refs = slicedData
+                    .filter(r => r.project_id && r.job_id && r.creation_time)
+                    .map(r => ({
+                        project_id: r.project_id,
+                        job_id: r.job_id,
+                        creation_time: r.creation_time
+                    }));
+                if (refs.length > 0) {
+                    fetch('/api/hbo/optimizations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/optimizations', {
+                            ...baseParams,
+                            jobs: refs
+                        }))
+                    })
+                    .then(r => r.ok ? r.json() : Promise.reject(r))
+                    .then(optData => {
+                        applyOptimizationBadges(optData);
+                        safeSetLocalStorage('bq_hbo_optimizations', JSON.stringify(optData));
+                    })
+                    .catch(e => {
+                        console.warn('Optimization badges unavailable:', e);
+                        clearLoadingBadges();
+                    });
+                } else {
+                    // No enrichable refs (missing project_id/creation_time) — clear loading state
+                    clearLoadingBadges();
+                }
 
                 showNotification('HBO analysis completed for the organization.', 'success');
             } catch (error) {
@@ -3172,7 +3438,18 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const cachedHboResults = localStorage.getItem('bq_hbo_results');
     if (cachedHboResults) {
         try {
-            renderHboResults(JSON.parse(cachedHboResults));
+            const parsedResults = JSON.parse(cachedHboResults);
+            const cachedOptBadges = localStorage.getItem('bq_hbo_optimizations');
+            let parsedOpt = null;
+            if (cachedOptBadges) {
+                try { parsedOpt = JSON.parse(cachedOptBadges); } catch (e2) { console.warn('Failed to parse cached HBO optimizations', e2); }
+            }
+            renderHboResults(parsedResults, parsedOpt);
+            if (parsedOpt) {
+                applyOptimizationBadges(parsedOpt);
+            } else {
+                clearLoadingBadges();
+            }
         } catch (e) { console.warn("Failed to parse cached HBO results", e); }
     }
     const cachedHboStatus = localStorage.getItem('bq_hbo_status');
@@ -3180,6 +3457,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         try {
             renderHboStatus(JSON.parse(cachedHboStatus));
         } catch (e) { console.warn("Failed to parse cached HBO status", e); }
+    }
+    // F-M3: Restore tiles from cached summary instead of recomputing from top-10.
+    const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
+    if (cachedHboSummary) {
+        try {
+            const summaryData = JSON.parse(cachedHboSummary);
+            const slotsEl = document.getElementById('hbo-total-slots');
+            const dollarsEl = document.getElementById('hbo-total-dollars');
+            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
+            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+        } catch (e) { console.warn("Failed to parse cached HBO summary", e); }
     }
 
     const renderHygieneResults = (data) => {
@@ -3351,10 +3639,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         tbody.innerHTML = '';
 
         const formatDataSize = (gb) => {
-            if (gb >= 1000) {
-                return `${formatNumber(gb / 1024)} TB`;
+            // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+            if (gb >= 1024) {
+                return `${formatNumber(gb / 1024)} TiB`;
             }
-            return `${formatNumber(gb)} GB`;
+            return `${formatNumber(gb)} GiB`;
         };
 
         const getAbuseBadge = (type) => {
@@ -3582,7 +3871,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan query linter');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan query linter'));
                 }
                 const data = await response.json();
                 renderLinterResults(data);
@@ -3618,7 +3907,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan DML abuse');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan DML abuse'));
                 }
                 const data = await response.json();
                 renderAntiPatternsResults(data);
@@ -3653,7 +3942,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan MV costs');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV costs'));
                 }
                 const data = await response.json();
                 renderMvResults(data);
@@ -3689,7 +3978,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan data skew');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan data skew'));
                 }
                 const data = await response.json();
                 renderSkewResults(data);
@@ -3725,7 +4014,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan batch candidates');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan batch candidates'));
                 }
                 const data = await response.json();
                 renderBatchCandidatesResults(data);
@@ -3744,7 +4033,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
-            clearModuleCache(['bq_gov_results'], ['#expiration-results-table']);
+            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Clearing the key wipes the sibling scan's cached data.
+            clearModuleCache([], ['#expiration-results-table']);
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -3760,7 +4051,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan governance');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
                 }
                 const govData = await response.json();
                 renderExpirationResults(govData.expiration_issues || []);
@@ -3786,7 +4077,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
-            clearModuleCache(['bq_gov_results'], ['#filter-results-table']);
+            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            clearModuleCache([], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -3802,7 +4094,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan governance');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
                 }
                 const govData = await response.json();
                 renderFilterResults(govData.filter_issues || []);
@@ -3844,7 +4136,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan MV rejections');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV rejections'));
                 }
                 const data = await response.json();
                 renderMvRejectionResults(data);
@@ -3879,7 +4171,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 });
                 if (!response.ok) {
                     const err = await response.json();
-                    throw new Error(err.detail || 'Failed to scan resource warnings');
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan resource warnings'));
                 }
                 const data = await response.json();
                 renderWarningResults(data);
@@ -4055,30 +4347,160 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached BI results", e); }
     }
 
+    // XSS-safe escape for raw (un-proxy-escaped) fields like optimized_query,
+    // query, and migration_applied_yaml, which are now exempted from the
+    // global sanitizeData proxy so they remain usable for clipboard / POST.
+    // Apply this helper when interpolating them into innerHTML.  [R3]
+    const escHtml = s => String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    // Module-scoped variable to hold current results for Copy SQL reference
+    let currentAiResults = [];
+
     const renderAiResults = (data) => {
-        const tbody = document.querySelector('#ai-results-table tbody');
-        if (!tbody) return;
-        tbody.innerHTML = '';
+        const oldTbody = document.querySelector('#ai-results-table tbody');
+        if (!oldTbody) return;
+        const tbody = oldTbody.cloneNode(false);
+        oldTbody.parentNode.replaceChild(tbody, oldTbody);
+        currentAiResults = data;
+
+        // --- KPI Summary Strip ---
+        const kpiStrip = document.getElementById('aidoc-kpis');
+        const filtersBar = document.getElementById('aidoc-filters');
+        if (kpiStrip && data.length > 0) {
+            let totalCostUsd = 0, totalBytes = 0;
+            let nHigh = 0, nMed = 0, nLow = 0;
+            let totalReferenced = 0, totalFound = 0;
+            let nMigration = 0, nSchemaGap = 0, nRepeat = 0;
+
+            data.forEach(r => {
+                const rate = r.on_demand_rate_usd_per_tb || 6.25;
+                const bytes = r.bytes_billed_original || r.bytes_scanned_original || 0;
+                totalBytes += bytes;
+                totalCostUsd += (bytes / (1024**4)) * rate;
+                if (r.severity === 'HIGH') nHigh++;
+                else if (r.severity === 'MEDIUM') nMed++;
+                else if (r.severity === 'LOW') nLow++;
+                totalReferenced += (r.tables_referenced_count || 0);
+                totalFound += (r.tables_found_count || 0);
+                if (r.migration_applied_yaml) nMigration++;
+                if ((r.tables_referenced_count || 0) > (r.tables_found_count || 0)) nSchemaGap++;
+                if (r.execution_count && r.execution_count > 1) nRepeat++;
+            });
+
+            // Populate KPI values
+            const spendEl = document.getElementById('kpi-spend');
+            const bytesEl = document.getElementById('kpi-bytes');
+            if (spendEl) spendEl.textContent = `$${Math.round(totalCostUsd).toLocaleString()}`;
+            const totalTib = totalBytes / (1024**4);
+            if (bytesEl) bytesEl.textContent = totalTib >= 1 ? `${totalTib.toFixed(1)} TiB scanned` : `${Math.round(totalBytes / (1024**3))} GiB scanned`;
+
+            const nHighEl = document.getElementById('kpi-n-high');
+            const nMedEl = document.getElementById('kpi-n-med');
+            const nLowEl = document.getElementById('kpi-n-low');
+            if (nHighEl) nHighEl.textContent = nHigh;
+            if (nMedEl) nMedEl.textContent = nMed;
+            if (nLowEl) nLowEl.textContent = nLow;
+
+            const covEl = document.getElementById('kpi-coverage');
+            const covMeta = document.getElementById('kpi-coverage-meta');
+            if (covEl) covEl.textContent = totalReferenced > 0 ? `${Math.round((totalFound / totalReferenced) * 100)}%` : 'N/A';
+            if (covMeta) covMeta.textContent = `${totalFound}/${totalReferenced} DDLs supplied to model`;
+
+            kpiStrip.style.display = 'grid';
+
+            // Populate filter pill counts
+            const setCount = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+            setCount('pill-all', data.length);
+            setCount('pill-high', nHigh);
+            setCount('pill-med', nMed);
+            setCount('pill-migration', nMigration);
+            setCount('pill-schemagap', nSchemaGap);
+            setCount('pill-repeat', nRepeat);
+            if (filtersBar) filtersBar.style.display = 'flex';
+        }
+
+        // Severity badge config with numeric rank for DataTable sorting [R2]
+        const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+        const severityColors = {
+            HIGH:   { bg: 'rgba(239, 68, 68, 0.15)',  border: 'rgba(239, 68, 68, 0.4)',  text: '#ef4444', icon: 'fa-circle-exclamation' },
+            MEDIUM: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.4)', text: '#f59e0b', icon: 'fa-triangle-exclamation' },
+            LOW:    { bg: 'rgba(34, 197, 94, 0.15)',   border: 'rgba(34, 197, 94, 0.4)',  text: '#22c55e', icon: 'fa-circle-check' }
+        };
 
         data.forEach(row => {
             const tr = document.createElement('tr');
+            // Severity-based row stripe + filter data attributes
+            if (row.severity) {
+                tr.className = `severity-${row.severity.toLowerCase()}`;
+            }
+            tr.dataset.severity = (row.severity || '').toUpperCase();
+            tr.dataset.migration = row.migration_applied_yaml ? '1' : '0';
+            tr.dataset.schemagap = (row.tables_referenced_count || 0) > (row.tables_found_count || 0) ? '1' : '0';
+            tr.dataset.repeat = (row.execution_count && row.execution_count > 1) ? '1' : '0';
             
-            // Build Schema Coverage Badge
+            // --- Severity Badge [R2] ---
+            let severityBadge = '<span style="color: var(--text-secondary);">—</span>';
+            let severityOrder = 3;
+            if (row.severity) {
+                severityOrder = severityRank[row.severity] ?? 3;
+                const s = severityColors[row.severity] || severityColors.LOW;
+                severityBadge = `
+                    <span style="background: ${s.bg}; border: 1px solid ${s.border}; color: ${s.text};
+                        padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;
+                        display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;">
+                        <i class="fa-solid ${s.icon}" style="font-size: 0.85rem;"></i> ${row.severity}
+                    </span>`;
+            }
+
+            // --- Zero-Click Original Cost [R7] ---
+            const rate = row.on_demand_rate_usd_per_tb || 6.25;
+            const billedBytes = row.bytes_billed_original || 0;
+            const scannedBytes = row.bytes_scanned_original || 0;
+            const displayBytes = billedBytes > 0 ? billedBytes : scannedBytes;
+            const costLabel = billedBytes > 0 ? 'Billed' : 'Scanned';
+            let originalCost = '<span style="color: var(--text-secondary);">—</span>';
+            if (displayBytes > 0) {
+                const gib = displayBytes / (1024**3);
+                const sizeLabel = gib >= 1024
+                    ? `${Math.round(gib / 1024)} TiB`
+                    : `${Math.round(gib)} GiB`;
+                const usd = Math.round((displayBytes / (1024**4)) * rate);
+                const execBadge = row.execution_count && row.execution_count > 1 
+                    ? `<div style="color: #38bdf8; font-size: 0.75rem; margin-top: 2px;"><i class="fa-solid fa-repeat"></i> ${row.execution_count.toLocaleString()} runs</div>`
+                    : '';
+                originalCost = `
+                    <div style="font-size: 0.85rem;">
+                        <div style="color: #e2e8f0; font-weight: 600;">${sizeLabel}</div>
+                        <div style="color: ${billedBytes > 0 ? '#f59e0b' : '#94a3b8'}; font-size: 0.8rem;">
+                            ~$${usd} <span style="font-size: 0.7rem;">(${costLabel})</span>
+                        </div>
+                        ${execBadge}
+                    </div>`;
+            }
+
+            // --- Schema Coverage Badge ---
             let coverageBadge = '<span style="color: var(--text-secondary); font-size: 0.85rem;">N/A</span>';
             const referenced = row.tables_referenced_count || 0;
             const found = row.tables_found_count || 0;
             
             if (referenced > 0) {
+                const missing = referenced - found;
+                const schemaNote = `This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI.${missing > 0 ? ` (${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}`;
                 if (found === referenced) {
                     coverageBadge = `
-                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="All ${found} referenced table DDL schemas were successfully retrieved and analyzed.">
+                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="${schemaNote}">
                             <i class="fa-solid fa-circle-check" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
                         </span>`;
                 } else {
                     const isInfoSchema = row.query && row.query.toUpperCase().includes('INFORMATION_SCHEMA');
                     const badgeTitle = isInfoSchema
-                        ? "System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns."
-                        : `${referenced - found} out of ${referenced} referenced table DDLs could not be retrieved (likely due to cross-project boundaries or permission constraints).`;
+                        ? `System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns.`
+                        : schemaNote;
                     const badgeBg = isInfoSchema ? "rgba(148, 163, 184, 0.12)" : "rgba(245, 158, 11, 0.12)";
                     const badgeBorder = isInfoSchema ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)";
                     const badgeColor = isInfoSchema ? "#94a3b8" : "#f59e0b";
@@ -4090,35 +4512,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                         </span>`;
                 }
             }
-            
-            // Add inline notes at the bottom of the advice
-            let inlineNote = '';
-            if (referenced > 0) {
-                const missing = referenced - found;
-                inlineNote = `
-                    <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.05); font-size: 0.75rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; font-style: italic;">
-                        <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i>
-                        This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI. 
-                        ${missing > 0 ? `(${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}
-                    </div>`;
-            }
+
 
             const renderMarkdown = (text) => {
                 if (!text) return '';
-
-                // text is already HTML-escaped by the global sanitizeData()
-                // fetch wrapper — do not escape again here.
                 let html = text;
-
-                // 2. Extract and mask triple-backtick code blocks
                 const codeBlocks = [];
                 html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
                     const placeholder = `__CODE_BLOCK_PLACEHOLDER_${codeBlocks.length}__`;
                     codeBlocks.push(`<pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); padding: 1rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #e2e8f0; overflow-x: auto; margin: 0.75rem 0; line-height: 1.5; white-space: pre;"><code style="color: #38bdf8;">${code}</code></pre>`);
                     return placeholder;
                 });
-                
-                // 3. Do all other markdown replacements
                 html = html.replace(/^### (.*?)$/gm, '<h3 style="margin: 1rem 0 0.5rem 0; color: white; font-size: 1.05rem; font-weight: 600;">$1</h3>');
                 html = html.replace(/^#### (.*?)$/gm, '<h4 style="margin: 0.75rem 0 0.25rem 0; color: #94a3b8; font-size: 0.95rem; font-weight: 600;">$1</h4>');
                 html = html.replace(/`(.*?)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.15rem 0.35rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #38bdf8;">$1</code>');
@@ -4126,28 +4530,106 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
-                
-                // 4. Restore the masked code blocks
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
                 });
-                
                 return html;
             };
 
-            // row.query is already HTML-escaped by the global sanitizeData()
-            // fetch wrapper — do not escape again here.
-            const sqlPreview = row.query ? (row.query.length > 60 ? row.query.substring(0, 60) + '...' : row.query) : 'N/A';
-            const escapedQuery = row.query || '';
-            const escapedPreview = sqlPreview;
+            // --- Query SQL Preview ---
+            let originalQueryCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (row.query) {
+                const escapedOrigSqlPreview = escHtml(
+                    row.query.length > 200
+                        ? row.query.substring(0, 200) + '...'
+                        : row.query
+                );
+                originalQueryCell = `
+                    <div style="position: relative; min-width: 220px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(251, 113, 133, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #fb7185; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedOrigSqlPreview}</pre>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <button class="copy-orig-sql-btn" style="background: rgba(251,113,133,0.15); border: 1px solid rgba(251,113,133,0.3);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                        </div>
+                    </div>`;
+            }
+
+            // --- Optimized Query Cell [R3] ---
+            let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (row.optimized_query) {
+                const escapedSqlPreview = escHtml(
+                    row.optimized_query.length > 200
+                        ? row.optimized_query.substring(0, 200) + '...'
+                        : row.optimized_query
+                );
+                let approxBadge = '';
+                if (row.approx_warning_flag) {
+                    approxBadge = `<div style="margin-top: 0.4rem; font-size: 0.7rem; color: #f59e0b;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Uses APPROX_COUNT_DISTINCT
+                    </div>`;
+                }
+                optimizedCell = `
+                    <div style="position: relative; min-width: 250px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #38bdf8; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedSqlPreview}</pre>
+                        ${approxBadge}
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                            <button class="copy-sql-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                        </div>
+                        __YAML_BADGE_PLACEHOLDER__
+                    </div>`;
+            }
+
+            let yamlBadge = '';
+            if (row.migration_applied_yaml) {
+                const escapedYaml = escHtml(row.migration_applied_yaml.trim());
+                yamlBadge = `
+                    <div style="margin-top: 0.5rem; border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8; overflow: hidden;">
+                        <div class="yaml-toggle-btn" style="padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none;">
+                            <i class="fa-solid fa-chevron-right yaml-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i>
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Migration API Config Applied
+                        </div>
+                        <div class="yaml-content" style="display: none; padding: 0.4rem 0.6rem; background: rgba(15,23,42,0.4);">
+                            <pre style="margin: 0; font-family: monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; word-break: break-all;">${escapedYaml}</pre>
+                        </div>
+                    </div>`;
+            }
+            optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.user_email}</td>
                 <td>${row.total_slot_ms.toLocaleString()}</td>
-                <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help;" title="${escapedQuery}">${escapedPreview}</td>
+                <td data-order="${severityOrder}">${severityBadge}</td>
+                <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
+                <td>${originalQueryCell}</td>
                 <td>${coverageBadge}</td>
-                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">${renderMarkdown(row.gemini_optimization_advice)}${inlineNote}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                    <div class="advice-wrapper" style="position: relative;">
+                        <div class="advice-content" style="max-height: 150px; overflow: hidden; transition: max-height 0.3s ease;">
+                            ${renderMarkdown(row.gemini_optimization_advice)}
+                        </div>
+                        ${(row.gemini_optimization_advice || '').length > 300 ? `
+                        <div class="advice-toggle"
+                            style="text-align: center; padding: 0.3rem; font-size: 0.72rem; color: #38bdf8; cursor: pointer;
+                            background: linear-gradient(to bottom, transparent, rgba(15,23,42,0.95) 40%); margin-top: -1.5rem; position: relative; z-index: 1;">
+                            ▼ Show more
+                        </div>` : ''}
+                    </div>
+                </td>
+                <td>${optimizedCell}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -4155,7 +4637,133 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if ($.fn.DataTable.isDataTable('#ai-results-table')) {
             $('#ai-results-table').DataTable().destroy();
         }
-        $('#ai-results-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+        $('#ai-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
+
+        // --- Filter Pills (DataTables custom search) ---
+        let activeFilter = 'all';
+        // Clear any previously-registered AI Doctor filter functions
+        $.fn.dataTable.ext.search = $.fn.dataTable.ext.search.filter(fn => !fn._aidocFilter);
+        const filterFn = (settings, searchData, dataIndex, rowData, counter) => {
+            if (settings.nTable.id !== 'ai-results-table') return true;
+            if (activeFilter === 'all') return true;
+            const tr = settings.aoData[dataIndex].nTr;
+            if (!tr) return true;
+            if (activeFilter === 'high') return tr.dataset.severity === 'HIGH';
+            if (activeFilter === 'medium') return tr.dataset.severity === 'MEDIUM';
+            if (activeFilter === 'migration') return tr.dataset.migration === '1';
+            if (activeFilter === 'schemagap') return tr.dataset.schemagap === '1';
+            if (activeFilter === 'repeat') return tr.dataset.repeat === '1';
+            return true;
+        };
+        filterFn._aidocFilter = true;
+        $.fn.dataTable.ext.search.push(filterFn);
+
+        if (filtersBar) {
+            // Clone to strip stacked event listeners from previous renders
+            const freshBar = filtersBar.cloneNode(true);
+            filtersBar.parentNode.replaceChild(freshBar, filtersBar);
+            freshBar.querySelectorAll('.aidoc-pill').forEach(pill => {
+                pill.addEventListener('click', () => {
+                    freshBar.querySelectorAll('.aidoc-pill').forEach(p => p.classList.remove('is-active'));
+                    pill.classList.add('is-active');
+                    activeFilter = pill.dataset.filter;
+                    $('#ai-results-table').DataTable().draw();
+                });
+            });
+        }
+
+        // --- Event Delegation for interactive buttons ---
+        tbody.addEventListener('click', async (e) => {
+            // Copy Optimized SQL button [R-clipboard]
+            const copyBtn = e.target.closest('.copy-sql-btn');
+            if (copyBtn) {
+                const tr = copyBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const sql = rowData?.optimized_query || '';
+                
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
+                    } else {
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                    showNotification('Optimized SQL copied to clipboard.', 'success');
+                } catch (err) {
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
+                }
+                return;
+            }
+
+            // Copy Original SQL button
+            const copyOrigBtn = e.target.closest('.copy-orig-sql-btn');
+            if (copyOrigBtn) {
+                const tr = copyOrigBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const sql = rowData?.query || '';
+                
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
+                    } else {
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                    showNotification('Original SQL copied to clipboard.', 'success');
+                } catch (err) {
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
+                }
+                return;
+            }
+
+            // YAML accordion toggle
+            const yamlBtn = e.target.closest('.yaml-toggle-btn');
+            if (yamlBtn) {
+                const content = yamlBtn.nextElementSibling;
+                const chevron = yamlBtn.querySelector('.yaml-chevron');
+                if (content.style.display === 'none') {
+                    content.style.display = 'block';
+                    if (chevron) chevron.style.transform = 'rotate(90deg)';
+                } else {
+                    content.style.display = 'none';
+                    if (chevron) chevron.style.transform = 'rotate(0deg)';
+                }
+                return;
+            }
+
+            // Advice Show more/less toggle
+            const adviceBtn = e.target.closest('.advice-toggle');
+            if (adviceBtn) {
+                const wrapper = adviceBtn.parentElement;
+                const content = wrapper.querySelector('.advice-content');
+                if (content.style.maxHeight === '150px') {
+                    content.style.maxHeight = 'none';
+                    content.style.overflow = 'visible';
+                    adviceBtn.textContent = '▲ Show less';
+                    adviceBtn.style.marginTop = '0';
+                    adviceBtn.style.background = 'none';
+                } else {
+                    content.style.maxHeight = '150px';
+                    content.style.overflow = 'hidden';
+                    adviceBtn.textContent = '▼ Show more';
+                    adviceBtn.style.marginTop = '-1.5rem';
+                    adviceBtn.style.background = 'linear-gradient(to bottom, transparent, rgba(15,23,42,0.95) 40%)';
+                }
+                return;
+            }
+        });
     };
 
     // DDL Learn More Drawer Toggle
@@ -4174,6 +4782,18 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         learnMoreClose.addEventListener('click', () => {
             learnMoreDrawer.style.display = 'none';
             if (learnMoreToggle) learnMoreToggle.textContent = 'Learn more →';
+        });
+    }
+
+    // AI Scope (What it checks / Out of scope) Toggle
+    const aiScopeToggle = document.getElementById('ai-scope-toggle');
+    const aiScopeContent = document.getElementById('ai-scope-content');
+    const aiScopeChevron = document.getElementById('ai-scope-chevron');
+    if (aiScopeToggle && aiScopeContent) {
+        aiScopeToggle.addEventListener('click', () => {
+            const isHidden = aiScopeContent.style.display === 'none';
+            aiScopeContent.style.display = isHidden ? 'block' : 'none';
+            if (aiScopeChevron) aiScopeChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
         });
     }
 
@@ -4224,6 +4844,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 region: state.region,
                 focus_projects: state.focusProjects,
                 limit: parseInt(elements.aiLimit.value),
+                discovery_strategy: elements.aiDiscoveryStrategy ? elements.aiDiscoveryStrategy.value : 'composite',
                 lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7'),
                 model: elements.aiModel ? elements.aiModel.value : 'gemini-3.6-flash'
             };
@@ -4247,7 +4868,20 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 renderAiResults(data);
                 safeSetLocalStorage('bq_ai_results', JSON.stringify(data));
-                showNotification('AI analysis completed.', 'success');
+
+                if (data.length === 0) {
+                    const strategy = params.discovery_strategy;
+                    const emptyMessages = {
+                        execution_frequency: 'All analyzed high-frequency queries passed clean with no anti-patterns found! Try increasing the lookback window or using a different strategy (e.g. Cumulative Cost or Composite ROI).',
+                        memory_spill: 'No queries with RAM spill anti-patterns detected in this lookback window. Your workloads are not spilling shuffle data to disk.',
+                        composite: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        cumulative_cost: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        slot_ms: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!'
+                    };
+                    showNotification(emptyMessages[strategy] || 'No query anti-patterns found to audit.', 'info');
+                } else {
+                    showNotification('AI analysis completed.', 'success');
+                }
             } catch (error) {
                 if (progress && progress.stop) progress.stop();
                 console.error("AI Error:", error);
@@ -4296,6 +4930,22 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             // Execute directly if consent has been accepted previously
             runActualAiAnalysis();
+        });
+    }
+
+    if (elements.aiDiscoveryStrategy) {
+        const strategyDescs = {
+            composite: '⚖️ Ranks candidates by Cost + Run Frequency + Slot Time + RAM Spill.',
+            cumulative_cost: '💰 Ranks workloads by On-Demand cost or On-Demand Equivalent cost for BigQuery Editions (using bytes scanned when bytes billed is 0).',
+            execution_frequency: '🔄 Targets dashboard micro-offenders executing repeatedly (COUNT(*) > 1).',
+            memory_spill: '💾 Filters for queries spilling intermediate shuffle data from RAM to disk.',
+            slot_ms: '⏱️ Focuses on heavy compute queries consuming the highest aggregate CPU slot milliseconds.'
+        };
+        elements.aiDiscoveryStrategy.addEventListener('change', (e) => {
+            const descEl = document.getElementById('ai-strategy-desc');
+            if (descEl && strategyDescs[e.target.value]) {
+                descEl.textContent = strategyDescs[e.target.value];
+            }
         });
     }
 
@@ -4765,9 +5415,14 @@ const Dashboard = (() => {
     const cached = !force ? readCache() : null;
 
     if (cached) {
-      render(cached.data);
-      updateFreshness(cached.fetchedAt);
-      return;
+      try {
+        render(cached.data);
+        updateFreshness(cached.fetchedAt);
+        return;
+      } catch (cacheErr) {
+        console.warn('Cached dashboard data failed to render — refetching', cacheErr);
+        // Fall through to fresh fetch
+      }
     }
 
     renderSkeletons();
@@ -4789,8 +5444,8 @@ const Dashboard = (() => {
         anomalies: settled(anomalies)
       };
 
-      writeCache(data);
       render(data);
+      writeCache(data);  // only cache after successful render
       updateFreshness(Date.now());
     } catch (err) {
       console.error('Dashboard load failed', err);
@@ -4855,7 +5510,7 @@ const Dashboard = (() => {
 
   function renderKpis(kpis) {
     const container = document.getElementById('dashboard-kpis');
-    if (!kpis) {
+    if (!kpis || kpis.stub === true) {
       UIState.renderError(container, {
         title: 'KPIs unavailable',
         message: 'Could not load summary metrics.',
@@ -4867,27 +5522,27 @@ const Dashboard = (() => {
     container.innerHTML = `
       ${kpiCard({
         label: 'Month-to-Date Spend',
-        value: formatCurrency(kpis.mtdSpend),
+        value: formatCurrency(kpis.mtdSpend ?? 0),
         delta: kpis.mtdSpendDelta,
         deltaLabel: 'vs last month',
-        deltaDirection: kpis.mtdSpendDelta > 0 ? 'up' : 'down'
+        deltaDirection: (kpis.mtdSpendDelta ?? 0) > 0 ? 'up' : 'down'
       })}
       ${kpiCard({
         label: 'Forecast (EOM)',
-        value: formatCurrency(kpis.forecastSpend),
+        value: formatCurrency(kpis.forecastSpend ?? 0),
         delta: null,
-        deltaLabel: `vs ${formatCurrency(kpis.lastMonthSpend)} last month`
+        deltaLabel: `vs ${formatCurrency(kpis.lastMonthSpend ?? 0)} last month`
       })}
       ${kpiCard({
         label: 'Potential Savings',
-        value: formatCurrency(kpis.potentialSavings),
+        value: formatCurrency(kpis.potentialSavings ?? 0),
         delta: null,
-        deltaLabel: `${kpis.opportunityCount} opportunities`,
+        deltaLabel: `${kpis.opportunityCount ?? 0} opportunities`,
         savings: true
       })}
       ${kpiCard({
         label: 'Anomalies Detected',
-        value: kpis.anomalyCount.toString(),
+        value: (kpis.anomalyCount ?? 0).toString(),
         delta: null,
         deltaLabel: 'last 7 days'
       })}
@@ -5936,6 +6591,33 @@ Router.register('fluid-scaling', {
         releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
           const isLatest = index === 0;
           const showDate = release.version !== release.release_date;
+          const highlights = release.highlights || [];
+          const MAX_VISIBLE = 5;
+          const hasOverflow = highlights.length > MAX_VISIBLE;
+          const cardId = `release-card-${index}`;
+
+          const renderItem = (h) => {
+              let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
+                  const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
+                  const c = colors[tag] || '#94a3b8';
+                  return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
+              });
+              formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
+              return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                  <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
+              </li>`;
+          };
+
+          const visibleItems = highlights.slice(0, MAX_VISIBLE).map(renderItem).join('');
+          const hiddenItems = hasOverflow ? highlights.slice(MAX_VISIBLE).map(renderItem).join('') : '';
+          const toggleBtn = hasOverflow ? `
+              <button class="release-expand-btn" data-card="${cardId}"
+                  style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0 0 0; display: flex; align-items: center; gap: 4px;">
+                  <i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i>
+                  Show all ${highlights.length} items
+              </button>` : '';
+
           return `
             <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
@@ -5945,24 +6627,30 @@ Router.register('fluid-scaling', {
                     ${showDate ? `<span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>` : ''}
                 </div>
                 <ul style="list-style: none; padding: 0; margin: 0;">
-                    ${(release.highlights || []).map(h => {
-                        // Bold and color-code [Tag] prefixes
-                        let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
-                            const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
-                            const c = colors[tag] || '#94a3b8';
-                            return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
-                        });
-                        // Convert markdown bold and inline code to HTML
-                        formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-                        formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
-                        return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
-                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
-                        </li>`;
-                    }).join('')}
+                    ${visibleItems}
                 </ul>
+                ${hasOverflow ? `<ul id="${cardId}-hidden" style="list-style: none; padding: 0; margin: 0; display: none;">${hiddenItems}</ul>` : ''}
+                ${toggleBtn}
             </div>
           `;
         }).join('');
+
+        // Wire up expand/collapse buttons
+        releasesContainer.querySelectorAll('.release-expand-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const cardId = btn.dataset.card;
+                const hidden = document.getElementById(`${cardId}-hidden`);
+                if (!hidden) return;
+                const isHidden = hidden.style.display === 'none';
+                hidden.style.display = isHidden ? 'block' : 'none';
+                const chevron = btn.querySelector('i');
+                if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
+                const total = btn.textContent.match(/\d+/);
+                btn.innerHTML = isHidden
+                    ? `<i class="fa-solid fa-chevron-up" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show less`
+                    : `<i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show all ${total ? total[0] : ''} items`;
+            });
+        });
       }
 
       // Links

@@ -2067,20 +2067,38 @@
                             <div>
                                 <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">What is History-Based Optimization (HBO)?</h3>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    BigQuery's History-Based Optimization (HBO) is a native feature that uses telemetry from completed executions of similar queries to apply additional optimizations and improve query performance (both slot time and latency). <strong>History-Based Optimization is not for reservations only. It applies to all queries in BigQuery, including those running on the On-Demand pricing model.</strong>
+                                    BigQuery's History-Based Optimization (HBO) is a native feature — <strong>enabled by default since GA</strong> — that uses telemetry from completed executions of similar queries to automatically apply additional optimizations and improve query performance. <strong>HBO applies to all queries in BigQuery, including On-Demand pricing — it is not limited to reservations.</strong>
                                 </p>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    When you run a query repeatedly, BigQuery learns from each run and applies optimizations like <strong>semi-join reduction</strong>, <strong>join commutation</strong>, and <strong>parallelism adjustment</strong>. This continuous learning continues until no more optimizations can be applied. Optimizations are only used if there is high confidence of benefit, and are revoked if they fail to improve performance.
+                                    When you run a query repeatedly, BigQuery learns from each run and applies optimizations. These are split into two categories:
                                 </p>
-                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05); margin-top: 1rem;">
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem;">
+                                    <div style="background: rgba(56, 189, 248, 0.08); padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(56, 189, 248, 0.15);">
+                                        <h5 style="color: #38bdf8; font-size: 0.8rem; margin: 0 0 0.4rem 0;"><i class="fa-solid fa-clock-rotate-left"></i> History-Based (requires prior runs)</h5>
+                                        <ul style="color: var(--text-secondary); font-size: 0.8rem; margin: 0; padding-left: 1.2rem; line-height: 1.6;">
+                                            <li><strong>Semi-join reduction</strong> — reduces shuffled data volume</li>
+                                            <li><strong>Join commutation</strong> — swaps join sides for efficiency</li>
+                                            <li><strong>Join pushdown</strong> — executes selective joins earlier</li>
+                                            <li><strong>Parallelism adjustment</strong> — optimizes stage parallelism</li>
+                                        </ul>
+                                    </div>
+                                    <div style="background: rgba(45, 212, 191, 0.08); padding: 0.75rem; border-radius: 0.5rem; border: 1px solid rgba(45, 212, 191, 0.15);">
+                                        <h5 style="color: #2dd4bf; font-size: 0.8rem; margin: 0 0 0.4rem 0;"><i class="fa-solid fa-bolt"></i> Engine-Level (applied at runtime)</h5>
+                                        <ul style="color: var(--text-secondary); font-size: 0.8rem; margin: 0; padding-left: 1.2rem; line-height: 1.6;">
+                                            <li><strong>Enhanced vectorization</strong> — hardware-specific execution</li>
+                                            <li><strong>Short query optimization</strong> — fast-tracks simple queries</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                                <div style="background: rgba(15, 23, 42, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.05);">
                                     <h4 style="color: #38bdf8; font-size: 0.95rem; margin-bottom: 0.5rem;"><i class="fa-solid fa-chart-pie"></i> Quantifying the Impact</h4>
                                     <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5;">
-                                        Since HBO is enabled by default and cannot be easily toggled off for A/B testing in some environments, this tool helps you estimate its impact. We compare optimized queries with their most recent unoptimized runs to show you the percentage of execution time saved.
+                                        This tool estimates HBO's impact by comparing each query's execution time against its historical average (<code>avg_previous_execution_ms</code>), filtering out jobs where data volume increased. Savings are projected to monthly slot-hours and dollars.
                                     </p>
                                 </div>
                                 <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-top: 1rem;">
                                     <i class="fa-solid fa-circle-info" style="color: #38bdf8; margin-right: 5px;"></i>
-                                    <strong>Note:</strong> If HBO has been disabled for a project or organization, you can use the provided DDL in the status panel to re-enable it.
+                                    <strong>HBO Status:</strong> The status panel below checks each project's <code>PROJECT_OPTIONS</code> for the <code>adaptive</code> setting. If HBO has been disabled, you can re-enable it with the provided DDL.
                                 </p>
                             </div>
                         </div>
@@ -2110,14 +2128,29 @@
 
                     <!-- Status Panel -->
                     <div class="glass-card org-rec-panel" id="hbo-status-panel" style="display: none; margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3);">
-                        <div style="display: flex; align-items: flex-start; gap: 1rem;">
-                            <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
-                            <div style="flex: 1;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.25rem;"></i>
                                 <h3 style="margin: 0; color: #38bdf8;">HBO Status</h3>
-                                <div id="hbo-status-list" style="margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;">
-                                    <!-- Status items will be injected here -->
-                                </div>
                             </div>
+                            <span id="hbo-status-summary" style="color: var(--text-secondary); font-size: 0.8rem;"></span>
+                        </div>
+                        <div class="table-responsive">
+                            <table id="hbo-status-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 45%;">Project</th>
+                                        <th style="width: 30%;">Status</th>
+                                        <th style="width: 25%;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="hbo-status-tbody">
+                                    <!-- Rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="hbo-status-pagination" style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-top: 1rem;">
+                            <!-- Pagination buttons injected by JS -->
                         </div>
                     </div>
 
@@ -2148,6 +2181,7 @@
                                         <th>% Time Saved</th>
                                         <th>New Elapsed (ms)</th>
                                         <th>Original Elapsed (ms)</th>
+                                        <th>Optimizations Applied</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2770,24 +2804,143 @@
                         <div style="display: flex; align-items: flex-start; gap: 1rem;">
                             <i class="fa-solid fa-circle-info" style="color: #38bdf8; font-size: 1.5rem; margin-top: 0.25rem;"></i>
                             <div>
-                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How to use this feature</h3>
+                                <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How AI Doctor Optimizes Your BigQuery Workloads</h3>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    This feature uses BigQuery's native Vertex AI integration (<code>AI.GENERATE_TEXT</code>) to analyze your top expensive queries.
+                                    AI Doctor combines <strong>Gemini LLM semantic auditing</strong> with <strong>BigQuery Migration Service API v2</strong> to automatically discover and rewrite expensive, resource-hungry queries across your GCP organization.
                                 </p>
-                                <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    <strong>Prerequisites:</strong>
-                                    <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
-                                        <li>Configure your <strong>GCP Project ID</strong> in the Global Settings panel.</li>
-                                        <li>No remote model or connection setup is required! The query runs serverlessly using your own GCP user credentials.</li>
-                                        <li>Your authenticated GCP account (or Cloud Run service account) must have the <strong>Vertex AI User</strong> (<code>roles/aiplatform.user</code>) role assigned on the project.</li>
-                                    </ul>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                                    <div style="background: rgba(15, 23, 42, 0.6); padding: 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                                        <div style="color: #38bdf8; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem;">
+                                            <i class="fa-solid fa-wand-magic-sparkles"></i> BigQuery Migration API v2
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.4;">
+                                            Executes an autonomous 2-stage discovery & opt-in YAML pipeline (<code>BigQuery2BigQuery_Translation</code>) to rewrite CTEs, precompute subqueries, and convert string join functions.
+                                        </div>
+                                    </div>
+
+                                    <div style="background: rgba(15, 23, 42, 0.6); padding: 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                                        <div style="color: #a855f7; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.25rem;">
+                                            <i class="fa-solid fa-brain"></i> Gemini LLM (Vertex AI)
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.4;">
+                                            Analyzes query telemetry against 100% grounded table DDL schemas from <code>INFORMATION_SCHEMA</code> to classify anti-pattern severity (HIGH, MEDIUM, LOW).
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- What AI Doctor Checks vs. Out of Scope (collapsible) -->
+                                <div style="margin-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem;">
+                                    <button id="ai-scope-toggle" style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.825rem; font-weight: 600; padding: 0; display: flex; align-items: center; gap: 5px;">
+                                        <i class="fa-solid fa-chevron-right" id="ai-scope-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i> Learn more — What AI Doctor checks &amp; out of scope
+                                    </button>
+                                    <div id="ai-scope-content" style="display: none; margin-top: 0.75rem;">
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+                                            <!-- WHAT IT CHECKS -->
+                                            <div>
+                                                <div style="color: #22c55e; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-circle-check"></i> What AI Doctor Checks
+                                                </div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Query tuning</strong> — SELECT *, CROSS JOIN, ORDER BY w/o LIMIT, REGEXP_CONTAINS → LIKE, COUNT(DISTINCT) → APPROX_COUNT_DISTINCT</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition alignment</strong> — Detects queries that filter on the wrong column (not the partition key) and adds the correct partition predicate</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Clustering alignment</strong> — Flags queries not filtering/ordering on existing cluster keys</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Join optimization</strong> — Push WHERE filters before JOINs, flag suboptimal join order</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Require partition filter</strong> — Ensures rewritten SQL respects <code>require_partition_filter = true</code></li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Full SQL rewrite</strong> — Generates a complete, runnable optimized query (not just advice)</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition recommendations</strong> — Flags large unpartitioned tables (>1 GB) and recommends which column to PARTITION BY</li>
+                                                    <li><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Cluster recommendations</strong> — Suggests CLUSTER BY columns based on the query's WHERE, JOIN, and GROUP BY patterns</li>
+                                                </ul>
+                                            </div>
+                                            <!-- WHAT IT DOES NOT CHECK -->
+                                            <div>
+                                                <div style="color: #f59e0b; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-circle-exclamation"></i> Out of scope
+                                                </div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>DDL execution</strong> — Recommends partition/cluster changes but does not generate or execute ALTER TABLE / CREATE TABLE DDL scripts</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Materialized View creation</strong> — Does not suggest creating MVs for repeated aggregations (use BI Optimizer tab)</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Storage billing model</strong> — Does not advise switching physical ↔ logical billing (use Storage Cost tab)</li>
+                                                    <li><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Pipeline-specific advice</strong> — Advice is SQL-level; does not tailor to Looker LookML, dbt YAML, or Dataform configs</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 1.25rem; margin-bottom: 1.25rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 1rem;">
+                                    <div style="color: #e2e8f0; font-weight: 600; font-size: 0.875rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 6px;">
+                                        <i class="fa-solid fa-layer-group" style="color: #38bdf8;"></i> Discovery Priority Modes
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.75rem;">
+                                        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 0.75rem;">
+                                            <div style="color: #38bdf8; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 4px;">
+                                                ⚖️ Balanced ROI Score
+                                            </div>
+                                            <div style="color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35;">
+                                                Multi-factor score ranking candidates by <strong>Cost + Frequency + Slot Time + RAM Spill</strong>.
+                                            </div>
+                                        </div>
+                                        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.75rem;">
+                                            <div style="color: #f59e0b; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 4px;">
+                                                💰 Cumulative Cost ($)
+                                            </div>
+                                            <div style="color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35;">
+                                                Ranks workload templates by total <strong>bytes billed</strong> ($ impact) across all executions.
+                                            </div>
+                                        </div>
+                                        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.75rem;">
+                                            <div style="color: #a855f7; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 4px;">
+                                                🔄 High Frequency (BI)
+                                            </div>
+                                            <div style="color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35;">
+                                                Targets dashboard micro-offenders executing repeatedly (<code>COUNT(*) > 1</code>).
+                                            </div>
+                                        </div>
+                                        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.75rem;">
+                                            <div style="color: #ec4899; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 4px;">
+                                                💾 Memory RAM Spill
+                                            </div>
+                                            <div style="color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35;">
+                                                Filters for queries spilling intermediate shuffle data from RAM to disk.
+                                            </div>
+                                        </div>
+                                        <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.75rem;">
+                                            <div style="color: #3b82f6; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.35rem; display: flex; align-items: center; gap: 4px;">
+                                                ⏱️ Total Slot Time
+                                            </div>
+                                            <div style="color: var(--text-secondary); font-size: 0.75rem; line-height: 1.35;">
+                                                Focuses on heavy compute queries consuming the highest aggregate CPU slot milliseconds.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                   <div style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin-bottom: 1rem;">
+                                    <strong>Required Roles</strong> <span style="font-size: 0.8rem; color: #64748b;">(on the execution project)</span>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
+                                        <div style="background: rgba(56, 189, 248, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #38bdf8; margin-bottom: 0.2rem;"><i class="fa-solid fa-arrows-rotate"></i> Migration Editor</div>
+                                            <code style="font-size: 0.7rem; color: #a5f3fc;">roles/bigquerymigration.editor</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">SQL optimization workflows (create, get, delete)</div>
+                                        </div>
+                                        <div style="background: rgba(56, 189, 248, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #38bdf8; margin-bottom: 0.2rem;"><i class="fa-solid fa-flask"></i> BigQuery User</div>
+                                            <code style="font-size: 0.7rem; color: #a5f3fc;">roles/bigquery.user</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">$0.00 dry-run byte validation</div>
+                                        </div>
+                                        <div style="background: rgba(168, 85, 247, 0.06); padding: 0.6rem; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.12);">
+                                            <div style="font-size: 0.75rem; font-weight: 600; color: #a855f7; margin-bottom: 0.2rem;"><i class="fa-solid fa-brain"></i> Vertex AI User</div>
+                                            <code style="font-size: 0.7rem; color: #d8b4fe;">roles/aiplatform.user</code>
+                                            <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 0.2rem;">Gemini-powered recommendations</div>
+                                        </div>
+                                    </div>
                                 </div>
                                 
                                 <!-- Subtle inline security and privacy note -->
                                 <p style="color: var(--text-secondary); font-size: 0.825rem; margin-top: 1rem; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 0.75rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0;">
                                     <span>
                                         <i class="fa-solid fa-shield-halved" style="color: #38bdf8; margin-right: 4px;"></i> 
-                                        This analysis sends table schemas (DDLs) to Vertex AI to verify partitioning/clustering. <strong>Row-level data is NEVER sent.</strong>
+                                        This analysis sends table schemas (DDLs) and SQL query text. <strong>Row-level data is NEVER sent or stored.</strong>
                                     </span>
                                     <button id="ddl-learn-more-toggle" style="background: none; border: none; color: #38bdf8; text-decoration: underline; cursor: pointer; font-size: 0.825rem; font-weight: 600; padding: 0; white-space: nowrap;">Learn more →</button>
                                 </p>
@@ -2802,14 +2955,29 @@
                             Audits your most expensive queries (Top 5, 10, or 20) based on slot usage. The system dynamically over-fetches the highest-cost jobs from BigQuery, automatically filtering out queries containing deleted tables or system views that lack sufficient schema context, ensuring you only receive the precise number of valid, actionable recommendations you requested. Gemini then audits the final list for performance anti-patterns, hiding perfectly optimized queries.
                         </p>
                         
-                        <div style="margin-bottom: 1.5rem; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                        <div style="margin-bottom: 1.5rem; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem;">
                             <div>
                                 <label for="ai-limit" style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Analyze Top N Queries:</label>
                                 <select id="ai-limit" class="input-field" style="width: 100%; padding: 0.75rem; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.5rem; color: white; cursor: pointer;">
                                     <option value="5" selected>Top 5 (Fastest)</option>
                                     <option value="10">Top 10</option>
                                     <option value="20">Top 20</option>
+                                    <option value="25">Top 25</option>
+                                    <option value="50">Top 50</option>
                                 </select>
+                            </div>
+                            <div>
+                                <label for="ai-discovery-strategy" style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);"><i class="fa-solid fa-filter" style="color: #38bdf8; margin-right: 4px;"></i> Discovery Priority:</label>
+                                <select id="ai-discovery-strategy" class="input-field" style="width: 100%; padding: 0.75rem; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 0.5rem; color: white; cursor: pointer;">
+                                    <option value="composite" selected>⚖️ Balanced ROI Score</option>
+                                    <option value="cumulative_cost">💰 Cumulative Cost ($)</option>
+                                    <option value="execution_frequency">🔄 High Frequency (BI)</option>
+                                    <option value="memory_spill">💾 Memory RAM Spill</option>
+                                    <option value="slot_ms">⏱️ Total Slot Time</option>
+                                </select>
+                                <div id="ai-strategy-desc" style="margin-top: 0.4rem; font-size: 0.75rem; color: #94a3b8; line-height: 1.3;">
+                                    ⚖️ Ranks candidates by Cost + Run Frequency + Slot Time + RAM Spill.
+                                </div>
                             </div>
                             <div>
                                 <label for="ai-lookback" style="display: block; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);">Lookback Window:</label>
@@ -2838,6 +3006,39 @@
                             A semantic, serverless audit of your most resource-hungry SQL queries. 
                             The system analyzes raw query telemetry, retrieves referenced table schemas (DDLs) from the metadata catalog, and leverages Gemini to highlight performance anti-patterns with tailored refactoring advice.
                         </p>
+
+                        <!-- KPI Summary Strip -->
+                        <div class="aidoc-kpis" id="aidoc-kpis" style="display: none;">
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-coins" style="color: #f59e0b;"></i> Audited Spend</p>
+                                <p class="aidoc-kpi__value" id="kpi-spend">—</p>
+                                <p class="aidoc-kpi__meta" id="kpi-bytes">—</p>
+                            </article>
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-chart-pie" style="color: #818cf8;"></i> Findings</p>
+                                <div class="aidoc-kpi__sevpills" id="kpi-severity">
+                                    <span class="aidoc-sevpill aidoc-sevpill--high"><i class="fa-solid fa-circle-exclamation"></i> <b id="kpi-n-high">0</b> High</span>
+                                    <span class="aidoc-sevpill aidoc-sevpill--medium"><i class="fa-solid fa-triangle-exclamation"></i> <b id="kpi-n-med">0</b> Med</span>
+                                    <span class="aidoc-sevpill aidoc-sevpill--low"><i class="fa-solid fa-circle-check"></i> <b id="kpi-n-low">0</b> Low</span>
+                                </div>
+                            </article>
+                            <article class="aidoc-kpi">
+                                <p class="aidoc-kpi__label"><i class="fa-solid fa-database" style="color: #38bdf8;"></i> Schema Coverage</p>
+                                <p class="aidoc-kpi__value" id="kpi-coverage">—</p>
+                                <p class="aidoc-kpi__meta" id="kpi-coverage-meta">DDLs supplied to model</p>
+                            </article>
+                        </div>
+
+                        <!-- Filter Pills -->
+                        <div class="aidoc-filters" id="aidoc-filters" style="display: none;">
+                            <button class="aidoc-pill is-active" data-filter="all">All <b id="pill-all">0</b></button>
+                            <button class="aidoc-pill" data-filter="high"><i class="fa-solid fa-circle-exclamation"></i> High <b id="pill-high">0</b></button>
+                            <button class="aidoc-pill" data-filter="medium"><i class="fa-solid fa-triangle-exclamation"></i> Medium <b id="pill-med">0</b></button>
+                            <button class="aidoc-pill" data-filter="migration"><i class="fa-solid fa-wand-magic-sparkles"></i> Has Migration Config <b id="pill-migration">0</b></button>
+                            <button class="aidoc-pill" data-filter="schemagap"><i class="fa-solid fa-triangle-exclamation"></i> Schema Gap <b id="pill-schemagap">0</b></button>
+                            <button class="aidoc-pill" data-filter="repeat"><i class="fa-solid fa-repeat"></i> Repeat Offenders <b id="pill-repeat">0</b></button>
+                        </div>
+
                         <div class="table-responsive">
                             <table id="ai-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -2845,9 +3046,12 @@
                                         <th>Job ID</th>
                                         <th>User Email</th>
                                         <th>Total Slot MS</th>
+                                        <th>Severity</th>
+                                        <th>Original Cost</th>
                                         <th>Query SQL</th>
                                         <th>Schema Coverage</th>
                                         <th>AI Optimization Advice</th>
+                                        <th>Optimized Query</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2878,18 +3082,28 @@
             </div>
             
             <p style="color: var(--text-primary); font-weight: 600; margin-bottom: 0.75rem; font-size: 0.95rem;">
-                ⚠️ Schema Context Will Be Sent to Vertex AI
+                ⚠️ Schema &amp; Query Context Will Be Sent to Google Cloud APIs
             </p>
             
             <p style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.6; margin-bottom: 1rem;">
-                To provide deeper, metadata-aware optimization advice (like checking partition and cluster keys), this tool reads the <strong>DDL (table definitions)</strong> of tables referenced in your queries and includes them in prompts sent to <a href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start" target="_blank" style="color: #38bdf8; text-decoration: underline;">Agent Platform</a>.
+                To provide deeper optimization advice, this tool sends metadata to two Google Cloud services:
             </p>
-            
+
             <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
                 <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0 0 0.5rem 0;">
-                    <strong>DDLs may contain sensitive information, including:</strong>
+                    <strong>1. <a href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start" target="_blank" style="color: #38bdf8; text-decoration: underline;">Vertex AI Agent Platform</a></strong> — receives DDL (table definitions) and query text for Gemini-powered analysis.
+                </p>
+                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0;">
+                    <strong>2. <a href="https://cloud.google.com/bigquery/docs/migration-service-overview" target="_blank" style="color: #38bdf8; text-decoration: underline;">BigQuery Migration Service API</a></strong> — receives SQL queries and auto-resolved schema DDL for automated query rewriting and translation.
+                </p>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.4); border-left: 4px solid #f59e0b; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
+                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin: 0 0 0.5rem 0;">
+                    <strong>Metadata that may be transmitted includes:</strong>
                 </p>
                 <ul style="margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5;">
+                    <li>SQL query text (full query statements)</li>
                     <li>Column names revealing business logic or data structure</li>
                     <li>Table/column descriptions and comments (<code>OPTIONS</code>)</li>
                     <li>Partitioning and clustering strategies</li>
@@ -2898,12 +3112,12 @@
             
             <div style="background: rgba(56, 189, 248, 0.08); border-left: 4px solid #38bdf8; padding: 1rem; border-radius: 0.25rem; margin-bottom: 1rem;">
                 <p style="color: #38bdf8; font-size: 0.8rem; font-weight: 600; margin: 0;">
-                    <i class="fa-solid fa-shield-halved"></i> Reassurance: Row-level data is NEVER read, processed, or transmitted. Only structural metadata and query text are analyzed.
+                    <i class="fa-solid fa-shield-halved"></i> Reassurance: Row-level data is NEVER read, processed, or transmitted. Only structural metadata and query text are analyzed. Both services are Google Cloud first-party APIs within your project's security perimeter.
                 </p>
             </div>
             
             <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 1.25rem;">
-                By proceeding, you confirm you are authorized to send this metadata to Agent Platform. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
+                By proceeding, you confirm you are authorized to send this metadata to the above Google Cloud services. <strong>Do not run this on datasets governed by data-residency, sovereignty, or contractual restrictions without prior security review.</strong>
             </p>
             
             <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem;">
