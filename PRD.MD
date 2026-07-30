@@ -394,7 +394,7 @@ gcloud run deploy ${APP_NAME} \
 
 ## 9. Future roadmap
 
-*Roadmap is currently maintained internally.*
+*Roadmap is updated as features are prioritized.*
 
 ---
 
@@ -451,4 +451,4 @@ Because FinOps tools require access to highly sensitive billing and organization
 *   All asynchronous data requests in `app.js` are intercepted in simulator mode, returning the dummy payload instantly. This allows prospective users to explore the interactive visualizations (e.g., slot contention, storage comparisons, fluid scaling models) entirely in their browser.
 
 ### 12.3 Data Security & Anonymization
-When publishing dummy data to the `docs/` folder, strict sanitization protocols are enforced. Any exported "snapshot" JSON used for the simulator must have all PII, corporate domains, client project IDs, and internal system/Landing Zone (`LZ_`) database table names scrubbed to prevent leaking confidential architecture details.
+When publishing dummy data to the `docs/` folder, strict sanitization protocols are enforced. Any exported "snapshot" JSON used for the simulator must have all PII, corporate domains, client project IDs, and Landing Zone (`LZ_`) database table names scrubbed to prevent leaking confidential architecture details.

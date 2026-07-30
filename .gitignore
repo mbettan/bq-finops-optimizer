@@ -33,5 +33,3 @@ Thumbs.db
 # Docker
 *.tar
 
-# Internal docs (not for public repo)
-# Move any internal docs into scratch/ or use generic wildcards if applicable.

@@ -125,7 +125,7 @@ def test_translate_endpoint_schema(mock_run):
         "/api/ai/translate",
         json={
             "query": "SELECT 1 AS test",
-            "project_id": "gcp-sbx-prj-test-prcs01",
+            "project_id": "dev-test-project01",
             "auto_ddl": False,
             "dry_run_compare": False,
         },
