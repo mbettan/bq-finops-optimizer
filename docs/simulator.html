@@ -33,17 +33,105 @@
             }
         }
 
-        fetch('finops-snapshot_dummy.json')
-            .then(res => res.json())
-            .then(data => {
-                window.SIMULATOR_JSON_DATA = data.data || data;
-                loadApp();
-            })
-            .catch(err => {
-                console.error("Failed to load dummy data:", err);
-                window.SIMULATOR_JSON_DATA = {};
-                loadApp();
-            });
+        // ── Parse RELEASE_NOTES.md (JS port of _parse_release_notes in main.py) ──
+        function parseReleaseNotes(text) {
+            const releases = [];
+            let current = null;
+
+            const dateRe = /^##\s+(?:(?<month>[A-Z][a-z]+)\s+(?<day>\d{1,2}),\s+(?<year>\d{4})(?:\s*—\s*v(?<dver>[\d.]+))?|v(?<ver>[\d.]+)\s*—\s*(?<date>.+))$/;
+            const bqTags = new Set(['Feature', 'Fixed', 'Change', 'Security', 'Issue', 'Announcement', 'Breaking', 'Deprecated']);
+
+            for (const line of text.split('\n')) {
+                const s = line.trim();
+                const m = s.match(dateRe);
+                if (m) {
+                    if (current) releases.push(current);
+                    const g = m.groups;
+                    let version, dateStr;
+                    if (g.ver) {
+                        version = g.ver;
+                        dateStr = g.date.trim();
+                    } else {
+                        dateStr = `${g.month} ${g.day}, ${g.year}`;
+                        version = g.dver || null;
+                    }
+                    current = { version, release_date: dateStr, highlights: [], _tag: null };
+                    continue;
+                }
+                if (!current) continue;
+
+                // Legacy #### entries
+                if (s.startsWith('#### ')) {
+                    let title = s.slice(5);
+                    if (title.length > 2 && /^\d/.test(title)) {
+                        const dp = title.indexOf('. ');
+                        if (dp !== -1) title = title.slice(dp + 2);
+                    }
+                    title = title.replace(/^[\u2600-\u27BF\uFE0F\s]+/, '').trim();
+                    if (title) current.highlights.push(title);
+                    continue;
+                }
+
+                // Bold tags: **Feature (desc)** or bare **Fixed**
+                if (s.startsWith('**') && s.endsWith('**')) {
+                    const inner = s.slice(2, -2);
+                    const baseTag = (inner.split(/\s/)[0]) || '';
+                    if (bqTags.has(baseTag)) {
+                        const rest = inner.slice(baseTag.length).trim();
+                        if (rest.startsWith('(') && rest.endsWith(')')) {
+                            current.highlights.push(`[${baseTag}] ${rest.slice(1, -1).trim()}`);
+                            current._tag = null;
+                        } else {
+                            current._tag = baseTag;
+                        }
+                        continue;
+                    }
+                }
+
+                if (s === '---') { current._tag = null; continue; }
+
+                // Bullets under a tag
+                if (s.startsWith('* ') && current._tag) {
+                    const bullet = s.slice(2).trim();
+                    const dp = bullet.indexOf('. ');
+                    const summary = dp !== -1 ? bullet.slice(0, dp + 1) : bullet.replace(/\.$/, '');
+                    current.highlights.push(`[${current._tag}] ${summary}`);
+                    continue;
+                }
+
+                // Paragraph body (first sentence)
+                if (current._tag && s) {
+                    const tag = current._tag;
+                    current._tag = null;
+                    const dp = s.indexOf('. ');
+                    const summary = dp !== -1 ? s.slice(0, dp + 1) : s.replace(/\.$/, '');
+                    current.highlights.push(`[${tag}] ${summary}`);
+                    continue;
+                }
+
+                if (!s) current._tag = null;
+            }
+            if (current) releases.push(current);
+
+            // Clean up internal state and set fallback versions
+            for (const r of releases) {
+                delete r._tag;
+                if (!r.version) r.version = r.release_date;
+            }
+            return releases;
+        }
+
+        // ── Load dummy JSON + RELEASE_NOTES.md in parallel ──
+        const RELEASE_NOTES_URL = 'https://raw.githubusercontent.com/mbettan/bq-finops-optimizer/refs/heads/main/RELEASE_NOTES.md';
+
+        Promise.all([
+            fetch('finops-snapshot_dummy.json').then(r => r.json()).catch(() => ({})),
+            fetch(RELEASE_NOTES_URL).then(r => r.ok ? r.text() : '').catch(() => '')
+        ]).then(([snapshot, releaseNotesMd]) => {
+            window.SIMULATOR_JSON_DATA = snapshot.data || snapshot;
+            window.SIMULATOR_PARSED_RELEASES = releaseNotesMd ? parseReleaseNotes(releaseNotesMd) : [];
+            loadApp();
+        });
 
         
         const simStorage = {};
@@ -126,15 +214,35 @@
                 };
 
                 if (urlStr.includes('/api/about')) {
+                    const releases = window.SIMULATOR_PARSED_RELEASES || [];
+                    const latestVersion = releases.length ? releases[0].version : '1.3.0';
+                    const latestDate = releases.length ? releases[0].release_date : '—';
                     return new Response(JSON.stringify({
                         "name": "BigQuery FinOps Optimizer",
-                        "version": "1.2.1",
-                        "release_date": "July 2026",
+                        "version": latestVersion,
+                        "release_date": latestDate,
                         "repo_url": "https://github.com/mbettan/bq-finops-optimizer",
                         "changelog_url": "https://github.com/mbettan/bq-finops-optimizer/blob/main/RELEASE_NOTES.md",
                         "demo_url": "https://mbettan.github.io/bq-finops-optimizer/simulator.html",
-                        "releases": [{"version": "1.2.1", "release_date": "July 2026", "highlights": ["AI Doctor UI Terminology Update", "AI Doctor Strict 0-DDL Frontend Handling", "AI Doctor Project Scan Performance", "AI Doctor System View 403 Access Denied"]}, {"version": "1.2.0", "release_date": "July 2026", "highlights": ["Simulator Mode"]}]
+                        "releases": releases
                     }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                // HBO Optimizations enrichment — serve from snapshot if available
+                if (urlStr.includes('/api/hbo/optimizations')) {
+                    const cached = window.SIMULATOR_JSON_DATA['bq_hbo_optimizations'];
+                    if (cached) {
+                        const body = typeof cached === 'string' ? cached : JSON.stringify(cached);
+                        return new Response(body, {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    // Fallback: empty enrichment
+                    return new Response(JSON.stringify({ jobs: [], coverage: { inaccessible_projects: [] } }), {
                         status: 200,
                         headers: { 'Content-Type': 'application/json' }
                     });

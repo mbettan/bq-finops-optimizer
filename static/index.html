@@ -2525,7 +2525,7 @@
                             <div>
                                 <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">How AI Doctor Optimizes Your BigQuery Workloads</h3>
                                 <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 1rem;">
-                                    AI Doctor combines <strong>Gemini LLM semantic auditing</strong> with <strong>Google Cloud's official BigQuery Migration Service API v2</strong> to automatically discover and rewrite expensive, resource-hungry queries across your GCP organization.
+                                    AI Doctor combines <strong>Gemini LLM semantic auditing</strong> with <strong>BigQuery Migration Service API v2</strong> to automatically discover and rewrite expensive, resource-hungry queries across your GCP organization.
                                 </p>
                                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
                                     <div style="background: rgba(15, 23, 42, 0.6); padding: 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
@@ -2547,36 +2547,41 @@
                                     </div>
                                 </div>
 
-                                <!-- What AI Doctor Checks vs. Out of Scope -->
-                                <div style="margin-top: 1.25rem; margin-bottom: 1.25rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 1rem;">
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
-                                        <!-- WHAT IT CHECKS -->
-                                        <div>
-                                            <div style="color: #22c55e; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
-                                                <i class="fa-solid fa-circle-check"></i> What AI Doctor Checks
+                                <!-- What AI Doctor Checks vs. Out of Scope (collapsible) -->
+                                <div style="margin-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem;">
+                                    <button id="ai-scope-toggle" style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.825rem; font-weight: 600; padding: 0; display: flex; align-items: center; gap: 5px;">
+                                        <i class="fa-solid fa-chevron-right" id="ai-scope-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i> Learn more — What AI Doctor checks &amp; out of scope
+                                    </button>
+                                    <div id="ai-scope-content" style="display: none; margin-top: 0.75rem;">
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+                                            <!-- WHAT IT CHECKS -->
+                                            <div>
+                                                <div style="color: #22c55e; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-circle-check"></i> What AI Doctor Checks
+                                                </div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Query tuning</strong> — SELECT *, CROSS JOIN, ORDER BY w/o LIMIT, REGEXP_CONTAINS → LIKE, COUNT(DISTINCT) → APPROX_COUNT_DISTINCT</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition alignment</strong> — Detects queries that filter on the wrong column (not the partition key) and adds the correct partition predicate</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Clustering alignment</strong> — Flags queries not filtering/ordering on existing cluster keys</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Join optimization</strong> — Push WHERE filters before JOINs, flag suboptimal join order</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Require partition filter</strong> — Ensures rewritten SQL respects <code>require_partition_filter = true</code></li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Full SQL rewrite</strong> — Generates a complete, runnable optimized query (not just advice)</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition recommendations</strong> — Flags large unpartitioned tables (>1 GB) and recommends which column to PARTITION BY</li>
+                                                    <li><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Cluster recommendations</strong> — Suggests CLUSTER BY columns based on the query's WHERE, JOIN, and GROUP BY patterns</li>
+                                                </ul>
                                             </div>
-                                            <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Query tuning</strong> — SELECT *, CROSS JOIN, ORDER BY w/o LIMIT, REGEXP_CONTAINS → LIKE, COUNT(DISTINCT) → APPROX_COUNT_DISTINCT</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition alignment</strong> — Detects queries that filter on the wrong column (not the partition key) and adds the correct partition predicate</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Clustering alignment</strong> — Flags queries not filtering/ordering on existing cluster keys</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Join optimization</strong> — Push WHERE filters before JOINs, flag suboptimal join order</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Require partition filter</strong> — Ensures rewritten SQL respects <code>require_partition_filter = true</code></li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Full SQL rewrite</strong> — Generates a complete, runnable optimized query (not just advice)</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Partition recommendations</strong> — Flags large unpartitioned tables (>1 GB) and recommends which column to PARTITION BY</li>
-                                                <li><span style="color: #22c55e; margin-right: 4px;">✓</span> <strong>Cluster recommendations</strong> — Suggests CLUSTER BY columns based on the query's WHERE, JOIN, and GROUP BY patterns</li>
-                                            </ul>
-                                        </div>
-                                        <!-- WHAT IT DOES NOT CHECK -->
-                                        <div>
-                                            <div style="color: #f59e0b; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
-                                                <i class="fa-solid fa-circle-exclamation"></i> Out of Scope (Today)
+                                            <!-- WHAT IT DOES NOT CHECK -->
+                                            <div>
+                                                <div style="color: #f59e0b; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.6rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-circle-exclamation"></i> Out of scope
+                                                </div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>DDL execution</strong> — Recommends partition/cluster changes but does not generate or execute ALTER TABLE / CREATE TABLE DDL scripts</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Materialized View creation</strong> — Does not suggest creating MVs for repeated aggregations (use BI Optimizer tab)</li>
+                                                    <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Storage billing model</strong> — Does not advise switching physical ↔ logical billing (use Storage Cost tab)</li>
+                                                    <li><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Pipeline-specific advice</strong> — Advice is SQL-level; does not tailor to Looker LookML, dbt YAML, or Dataform configs</li>
+                                                </ul>
                                             </div>
-                                            <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.8rem; line-height: 1.6; list-style: none;">
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>DDL execution</strong> — Recommends partition/cluster changes but does not generate or execute ALTER TABLE / CREATE TABLE DDL scripts</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Materialized View creation</strong> — Does not suggest creating MVs for repeated aggregations (use BI Optimizer tab)</li>
-                                                <li style="margin-bottom: 0.3rem;"><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Storage billing model</strong> — Does not advise switching physical ↔ logical billing (use Storage Cost tab)</li>
-                                                <li><span style="color: #f59e0b; margin-right: 4px;">✗</span> <strong>Pipeline-specific advice</strong> — Advice is SQL-level; does not tailor to Looker LookML, dbt YAML, or Dataform configs</li>
-                                            </ul>
                                         </div>
                                     </div>
                                 </div>

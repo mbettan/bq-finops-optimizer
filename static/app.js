@@ -3012,7 +3012,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     // Store the last analyze data so enrichment can correlate
     let _lastAnalyzeData = null;
 
-    const renderHboResults = (data) => {
+    const clearLoadingBadges = () => {
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        tableEl.querySelectorAll('tbody tr td:last-child').forEach(td => {
+            if (td.textContent.trim() === 'Loading…' || td.textContent.trim() === 'Loading...') {
+                td.innerHTML = '<span class="opt-none">—</span>';
+            }
+        });
+    };
+
+    const renderHboResults = (data, enrichmentData = null) => {
         _lastAnalyzeData = data;
         let table;
         if ($.fn.DataTable.isDataTable('#hbo-results-table')) {
@@ -3030,6 +3040,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         table.clear();
 
+        const lookup = {};
+        if (enrichmentData && Array.isArray(enrichmentData.jobs)) {
+            enrichmentData.jobs.forEach(j => {
+                lookup[j.job_id] = j.optimizations;
+            });
+        }
+
         let totalSlotsSaved = 0;
         let totalDollarsSaved = 0;
 
@@ -3037,14 +3054,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             totalSlotsSaved += row.saved_slot_hours || 0;
             totalDollarsSaved += row.estimated_savings_usd || 0;
 
-            // Show a loading placeholder until enrichment resolves
-            const badgeNode = _buildBadgeCell('_loading');
+            const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
+            const badgeNode = _buildBadgeCell(optValue);
             table.row.add([
                 row.job_id,
                 `${row.percent_execution_time_saved.toFixed(2)}%`,
                 row.new_elapsed_ms.toLocaleString(),
                 row.original_elapsed_ms.toLocaleString(),
-                badgeNode
+                badgeNode.outerHTML
             ]);
         });
 
@@ -3080,6 +3097,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 badgeCell.appendChild(_buildBadgeCell(lookup[jobId]));
             }
         });
+
+        clearLoadingBadges();
 
         // Show coverage warning if any projects were inaccessible
         if (enrichmentData.coverage && enrichmentData.coverage.inaccessible_projects &&
@@ -3209,32 +3228,33 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const targetProject = projectOverride || state.orgProject;
 
-            const params = {
+            const baseParams = {
                 org_project_id: targetProject,
                 region: state.region,
                 focus_projects: state.focusProjects,
-                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30),
-                limit: 10
+                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30)
             };
 
-            debug_log("Fetching HBO analysis with params:", params);
+            const analyzeParams = { ...baseParams, limit: 10 };
+
+            debug_log("Fetching HBO analysis with params:", analyzeParams);
 
             try {
                 const [analyzeRes, statusRes, summaryRes] = await Promise.all([
                     fetch('/api/hbo/analyze', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/analyze', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/analyze', analyzeParams))
                     }),
                     fetch('/api/hbo/status', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/status', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/status', baseParams))
                     }),
                     fetch('/api/hbo/summary', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(buildPayload('/api/hbo/summary', params))
+                        body: JSON.stringify(buildPayload('/api/hbo/summary', baseParams))
                     })
                 ]);
 
@@ -3276,7 +3296,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(buildPayload('/api/hbo/optimizations', {
-                            ...params,
+                            ...baseParams,
                             jobs: refs
                         }))
                     })
@@ -3285,7 +3305,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                         applyOptimizationBadges(optData);
                         safeSetLocalStorage('bq_hbo_optimizations', JSON.stringify(optData));
                     })
-                    .catch(e => console.warn('Optimization badges unavailable:', e));
+                    .catch(e => {
+                        console.warn('Optimization badges unavailable:', e);
+                        clearLoadingBadges();
+                    });
+                } else {
+                    // No enrichable refs (missing project_id/creation_time) — clear loading state
+                    clearLoadingBadges();
                 }
 
                 showNotification('HBO analysis completed for the organization.', 'success');
@@ -3412,13 +3438,17 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const cachedHboResults = localStorage.getItem('bq_hbo_results');
     if (cachedHboResults) {
         try {
-            renderHboResults(JSON.parse(cachedHboResults));
-            // Restore cached optimization badges
+            const parsedResults = JSON.parse(cachedHboResults);
             const cachedOptBadges = localStorage.getItem('bq_hbo_optimizations');
+            let parsedOpt = null;
             if (cachedOptBadges) {
-                try {
-                    applyOptimizationBadges(JSON.parse(cachedOptBadges));
-                } catch (e2) { console.warn('Failed to restore optimization badges', e2); }
+                try { parsedOpt = JSON.parse(cachedOptBadges); } catch (e2) { console.warn('Failed to parse cached HBO optimizations', e2); }
+            }
+            renderHboResults(parsedResults, parsedOpt);
+            if (parsedOpt) {
+                applyOptimizationBadges(parsedOpt);
+            } else {
+                clearLoadingBadges();
             }
         } catch (e) { console.warn("Failed to parse cached HBO results", e); }
     }
@@ -4752,6 +4782,18 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         learnMoreClose.addEventListener('click', () => {
             learnMoreDrawer.style.display = 'none';
             if (learnMoreToggle) learnMoreToggle.textContent = 'Learn more →';
+        });
+    }
+
+    // AI Scope (What it checks / Out of scope) Toggle
+    const aiScopeToggle = document.getElementById('ai-scope-toggle');
+    const aiScopeContent = document.getElementById('ai-scope-content');
+    const aiScopeChevron = document.getElementById('ai-scope-chevron');
+    if (aiScopeToggle && aiScopeContent) {
+        aiScopeToggle.addEventListener('click', () => {
+            const isHidden = aiScopeContent.style.display === 'none';
+            aiScopeContent.style.display = isHidden ? 'block' : 'none';
+            if (aiScopeChevron) aiScopeChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
         });
     }
 
@@ -6549,6 +6591,33 @@ Router.register('fluid-scaling', {
         releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
           const isLatest = index === 0;
           const showDate = release.version !== release.release_date;
+          const highlights = release.highlights || [];
+          const MAX_VISIBLE = 5;
+          const hasOverflow = highlights.length > MAX_VISIBLE;
+          const cardId = `release-card-${index}`;
+
+          const renderItem = (h) => {
+              let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
+                  const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
+                  const c = colors[tag] || '#94a3b8';
+                  return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
+              });
+              formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
+              return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                  <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
+              </li>`;
+          };
+
+          const visibleItems = highlights.slice(0, MAX_VISIBLE).map(renderItem).join('');
+          const hiddenItems = hasOverflow ? highlights.slice(MAX_VISIBLE).map(renderItem).join('') : '';
+          const toggleBtn = hasOverflow ? `
+              <button class="release-expand-btn" data-card="${cardId}"
+                  style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0 0 0; display: flex; align-items: center; gap: 4px;">
+                  <i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i>
+                  Show all ${highlights.length} items
+              </button>` : '';
+
           return `
             <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 1rem;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
@@ -6558,24 +6627,30 @@ Router.register('fluid-scaling', {
                     ${showDate ? `<span style="font-size: 0.85rem; color: var(--text-secondary);">${release.release_date}</span>` : ''}
                 </div>
                 <ul style="list-style: none; padding: 0; margin: 0;">
-                    ${(release.highlights || []).map(h => {
-                        // Bold and color-code [Tag] prefixes
-                        let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
-                            const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
-                            const c = colors[tag] || '#94a3b8';
-                            return `<span style="font-weight: 600; color: ${c};">[${tag}]</span> `;
-                        });
-                        // Convert markdown bold and inline code to HTML
-                        formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-                        formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em;">$1</code>');
-                        return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
-                            <i class="fa-solid fa-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
-                        </li>`;
-                    }).join('')}
+                    ${visibleItems}
                 </ul>
+                ${hasOverflow ? `<ul id="${cardId}-hidden" style="list-style: none; padding: 0; margin: 0; display: none;">${hiddenItems}</ul>` : ''}
+                ${toggleBtn}
             </div>
           `;
         }).join('');
+
+        // Wire up expand/collapse buttons
+        releasesContainer.querySelectorAll('.release-expand-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const cardId = btn.dataset.card;
+                const hidden = document.getElementById(`${cardId}-hidden`);
+                if (!hidden) return;
+                const isHidden = hidden.style.display === 'none';
+                hidden.style.display = isHidden ? 'block' : 'none';
+                const chevron = btn.querySelector('i');
+                if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
+                const total = btn.textContent.match(/\d+/);
+                btn.innerHTML = isHidden
+                    ? `<i class="fa-solid fa-chevron-up" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show less`
+                    : `<i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show all ${total ? total[0] : ''} items`;
+            });
+        });
       }
 
       // Links

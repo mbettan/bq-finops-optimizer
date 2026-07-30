@@ -187,7 +187,7 @@ def reject_dummy_project(project_id: str):
     if not project_id:
         return
     cleaned = project_id.strip()
-    if cleaned in ("your-project-id", "mbettan-sandbox"):
+    if cleaned in ("your-project-id", "mbettan-sandbox", "dummy-project-id", "dummy-project"):
         raise HTTPException(
             status_code=400,
             detail=f"The project ID '{project_id}' is a dummy placeholder. Please set a valid GCP Project ID."
