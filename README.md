@@ -22,6 +22,7 @@ An enterprise-grade BigQuery FinOps diagnostic suite and interactive simulation 
 *   **Cost Attribution**: Overcomes GCP billing limitations to proportionally distribute unallocated reservation waste back to business units.
 *   **Project-Focus Scoping**: Isolates analytics to specific project boundaries without corrupting org-wide mathematical invariants (like capacity planning or attribution denominators).
 *   **AI-Powered Query Analysis**: Uses Gemini models via BigQuery's `AI.GENERATE` function to perform semantic SQL review at scale.
+*   **Findings You Can Act On**: Every results table exports to CSV, every job ID deep-links into the BigQuery Console, and the Anti-Pattern Linter rolls per-job findings up by owner so the output is a work queue rather than a log.
 
 ---
 
@@ -85,7 +86,13 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 *   **3-Tier Error Handling:** The backend extracts the full Vertex AI response struct (`result`, `status`, `full_response`) to distinguish between function-level failures (NULL struct), API errors (status populated), and model-level blocks (`finish_reason: MAX_TOKENS` or `SAFETY`).
 
 
-### 6. Built-in Security & Access Guardrails
+### 6. Operator Workflow: Export, Deep-Link, Triage
+A diagnostic that can't leave the browser doesn't get acted on. Three cross-cutting capabilities apply to every module:
+*   **Universal CSV Export**: Every results table renders a **Download CSV** button. The export covers the entire DataTables result set matching the current search and filter state — not just the visible page — and writes a UTF-8 BOM so Excel opens it without mangling. Cell text is read from the rendered DOM, so byte sizes, currency, and badge labels export exactly as displayed.
+*   **BigQuery Console Deep-Links**: Job IDs render monospaced with hover- and focus-revealed **Copy** and **Open in Console** actions; dataset and table names link straight to the Console explorer. Every org-wide result model (`MVResult`, `WarningResult`, `BIResult`, `AIResult`) carries `project_id`, because `JOBS_BY_ORGANIZATION` spans the whole organization and a link built from the execution project would resolve to the wrong one.
+*   **Notification Center**: Toasts are archived to a bell-icon dropdown with relative timestamps, an unread badge, and clear-all — so a warning raised during a long scan is still readable afterwards. Bodies render via `textContent`, since notifications routinely carry query text and user emails.
+
+### 7. Built-in Security & Access Guardrails
 *   **Defense-in-Depth Validation**: All BigQuery-derived identifiers (e.g., project IDs, reservation names) are actively sanitized via `_safe_ident()` before DDL generation or query interpolation to prevent second-order SQL injection.
 *   **Strict Scope Preservation**: Endpoints correctly differentiate between scoped views (e.g., usage filtering) and mathematical invariants (e.g., capacity planning, fluid scaling estimation, cost attribution) which explicitly reject or bypass scope filters to guarantee financial accuracy.
 *   **Data Sanitization**: Complete frontend HTML escaping prevents XSS across anomaly logs, AI recommendations, and query snippets.
@@ -104,13 +111,13 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 | **Fluid Scaling Simulator** | Cooldown tax and Fluid Scaling evaluation | Billing time-blocks, execution frequencies | High-frequency workload isolation candidates |
 | **Cost Attribution Engine** | Custom cost splitting and billing attribution | `JOBS_BY_ORGANIZATION` telemetry | Split-cost CSV/JSON reports |
 | **Workload Profiler** | Continuous-trickle query detection | Short execution patterns, reservation usage | Isolated reservation strategies & top queries |
-| **Query Anti-Pattern Linter** | Static SQL auditing and performance advice | `SELECT *` patterns, unclustered limits | "SQL Wall of Shame" reporting |
-| **Storage Hygiene Auditor** | Table churn and time travel tracking | Time travel physical bytes, table updates | Time travel window reductions |
+| **Query Anti-Pattern Linter** | Static SQL auditing and performance advice | `SELECT *` patterns, unclustered limits | "SQL Wall of Shame" reporting, filtered by identity/project/pattern with an owner-level summary roll-up |
+| **Storage Hygiene Auditor** | Table churn and time travel tracking | Time travel physical bytes, table updates, `default_time_travel_days` | Time travel window reductions with current TTL shown per dataset |
 | **BI Engine Optimizer** | BI Engine utilization analysis | BI Engine mode (FULL/PARTIAL/NONE), miss reasons | BI Engine cache diagnostics |
 | **Governance & Expiration** | Schema policies and safety check | Expiration settings, partition filters | Non-compliant resource inventory |
 | **Resource Warnings** | Dataset/table security & config flags | Public access, stale data, missing policies | Risk-scored warning inventory |
-| **DML & MV Auditor** | Materialized view and write operations audits | Refresh costs, single-row DML write loops | MV and ingestion refactoring alerts |
-| **Interactive vs. Batch** | Batch candidate identification | Priority flags, off-peak times, runtime | Batch priority suggestion dashboard |
+| **DML & MV Auditor** | Materialized view and write operations audits | Refresh costs, single-row DML write loops, per-table insert counts / active days / avg inserts per day | MV and ingestion refactoring alerts (Storage Write API migration candidates) |
+| **Interactive vs. Batch** | Workload concurrency & priority optimization | Lineage labels (dbt / Airflow / Dataform / BI / `requestor`), priority mix, queue delay, slot-hours | `UNDER_BATCHED` / `OVER_BATCHED` workload findings with copy-pasteable priority remediation snippets |
 | **Data Skew Analyzer** | Join and partition bottlenecks | Max stage duration vs. Avg duration ratios | Code optimization tips for data skew |
 | **AI Doctor (GenAI)** | Gemini-powered semantic SQL review via `AI.GENERATE` | SQL query texts, slot consumption | Per-query anti-pattern analysis & rewrite suggestions |
 | **HBO Tracker** | History-Based Optimization proof of value | Normalized query hashes, plan expiry dates | Performance ROI & plan warm-up alerts |

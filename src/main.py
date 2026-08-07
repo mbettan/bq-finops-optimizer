@@ -41,6 +41,7 @@ from .utils import (
     build_project_filter,
     log_endpoint_start,
     log_endpoint_end,
+    time_period_query_params,
     request_id_var,
     RequestIdFilter,
     run_query_with_retry_limit,
@@ -55,7 +56,7 @@ import time
 import uuid
 
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # Centralized on-demand pricing — single source of truth [R-pricing]
 ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))
@@ -1152,6 +1153,16 @@ def analyze_jobs(params: JobAnalysisParams):
         handle_endpoint_exception(e, "Job analysis")
 
 
+# BigQuery's out-of-the-box time travel window when a dataset has no
+# explicit `default_time_travel_days` option set.
+DEFAULT_TIME_TRAVEL_DAYS = 7
+
+# Ceiling on how many projects the hygiene TTL lookup will union together.
+# HygieneParams.limit allows 500 rows, and each distinct project adds a branch
+# to the union; past this point the query text itself becomes the bottleneck.
+MAX_TTL_LOOKUP_PROJECTS = 50
+
+
 class HygieneParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
@@ -1166,6 +1177,10 @@ class HygieneResult(BaseModel):
     time_travel_gb: float
     churn_ratio: float
     health_status: str
+    # Dataset-level time travel window in days. BigQuery's default is 7;
+    # shortening it to 2 is the single highest-leverage fix for a high-churn
+    # table, so the value is surfaced next to the churn ratio.
+    time_travel_days: int = DEFAULT_TIME_TRAVEL_DAYS
 
 @app.post("/api/storage/hygiene", response_model=List[HygieneResult])
 def analyze_storage_hygiene(params: HygieneParams):
@@ -1194,10 +1209,70 @@ def analyze_storage_hygiene(params: HygieneParams):
         """
         
 
-        results = run_query_and_log(scoped_client, sql, "Storage Hygiene", params=params, query_parameters=focus_params)
-        
+        rows_raw = list(run_query_and_log(
+            scoped_client, sql, "Storage Hygiene", params=params, query_parameters=focus_params
+        ))
+
+        # SCHEMATA_OPTIONS is region-qualified per project, so the only way to
+        # read several projects at once is a UNION ALL. One round-trip keeps a
+        # wide result set from turning this endpoint into a minutes-long chain
+        # of sequential metadata queries. Everything here is non-fatal: a dataset
+        # we can't read simply falls back to BigQuery's 7-day default.
+        ttl_lookup: dict = {}  # {(project, dataset): int}
+        projects_in_results = {r.project_id for r in rows_raw}
+
+        safe_projects = []
+        for proj in sorted(projects_in_results):
+            try:
+                safe_projects.append(_safe_ident(proj, "ttl_project_id"))
+            except Exception:
+                logger.warning(f"Skipping TTL lookup for unsafe project identifier: {proj!r}")
+
+        if len(safe_projects) > MAX_TTL_LOOKUP_PROJECTS:
+            logger.warning(
+                "TTL lookup covers %d of %d projects (cap: %d); the remaining %d "
+                "will display the %d-day default",
+                MAX_TTL_LOOKUP_PROJECTS, len(safe_projects), MAX_TTL_LOOKUP_PROJECTS,
+                len(safe_projects) - MAX_TTL_LOOKUP_PROJECTS, DEFAULT_TIME_TRAVEL_DAYS,
+            )
+            safe_projects = safe_projects[:MAX_TTL_LOOKUP_PROJECTS]
+
+        def _ttl_branch(project: str) -> str:
+            # SAFE_CAST, not CAST: one unparseable option_value must not abort
+            # the whole union and blank out every other project's TTL.
+            return f"""
+            SELECT '{project}' AS ttl_project_id, schema_name,
+                   SAFE_CAST(option_value AS INT64) AS ttl_days
+            FROM `{project}`.`{params.region}`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS
+            WHERE option_name = 'default_time_travel_days'
+            """
+
+        def _collect_ttl(ttl_results) -> None:
+            for ttl_row in ttl_results:
+                if ttl_row.ttl_days is None:
+                    continue
+                ttl_lookup[(ttl_row.ttl_project_id, ttl_row.schema_name)] = int(ttl_row.ttl_days)
+
+        if safe_projects:
+            try:
+                _collect_ttl(run_query_and_log(
+                    scoped_client, "\nUNION ALL\n".join(_ttl_branch(p) for p in safe_projects),
+                    "Storage Hygiene TTL Lookup", params=params,
+                ))
+            except Exception as ttl_err:
+                # A single project the caller cannot read fails the whole union.
+                # Retry per project so partial access still yields partial data.
+                logger.warning(f"Batched TTL lookup failed ({ttl_err}); retrying per project")
+                for proj in safe_projects:
+                    try:
+                        _collect_ttl(run_query_and_log(
+                            scoped_client, _ttl_branch(proj), f"TTL Lookup ({proj})", params=params,
+                        ))
+                    except Exception as proj_err:
+                        logger.warning(f"Failed to query TTL for project {proj}: {proj_err}")
+
         output = []
-        for row in results:
+        for row in rows_raw:
             output.append(HygieneResult(
                 project_id=row.project_id,
                 dataset=row.dataset,
@@ -1205,7 +1280,10 @@ def analyze_storage_hygiene(params: HygieneParams):
                 live_active_physical_gb=float(row.live_active_physical_gb or 0),
                 time_travel_gb=float(row.time_travel_gb or 0),
                 churn_ratio=float(row.churn_ratio or 0),
-                health_status=row.health_status
+                health_status=row.health_status,
+                time_travel_days=ttl_lookup.get(
+                    (row.project_id, row.dataset), DEFAULT_TIME_TRAVEL_DAYS
+                ),
             ))
         log_endpoint_end("Storage Hygiene", t0, _logger=logger)
         return output
@@ -1217,7 +1295,12 @@ class DMLAbuseParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=1, ge=1, le=90)
-    threshold: int = Field(default=1000, ge=1)
+    # Applies per (destination table, user, project) — NOT per user. The old
+    # per-user default of 1000 hid pipelines that fan a large insert volume
+    # out across many tables. BigQuery caps a table at 1500 table-modifying
+    # operations per day, so 100/day against one table is already a pipeline
+    # worth migrating to the Storage Write API.
+    threshold: int = Field(default=100, ge=1)
     max_bytes_billed_gb: Optional[int] = None
 
 class DMLAbuseResult(BaseModel):
@@ -1225,6 +1308,14 @@ class DMLAbuseResult(BaseModel):
     project_id: str
     insert_job_count: int
     wasted_slot_hours: float
+    # Table-centric attribution: the destination table is the unit that
+    # actually gets migrated to the Storage Write API, so it — not the
+    # writing identity — is the primary grouping key.
+    dest_project_id: Optional[str] = None
+    dest_dataset_id: Optional[str] = None
+    dest_table_id: Optional[str] = None
+    active_days: int = 1
+    avg_inserts_per_day: float = 0.0
 
 @app.post("/api/antipatterns/dml", response_model=List[DMLAbuseResult])
 def analyze_dml_abuse(params: DMLAbuseParams):
@@ -1236,35 +1327,47 @@ def analyze_dml_abuse(params: DMLAbuseParams):
         
         sql = f"""
         SELECT
+          destination_table.project_id AS dest_project_id,
+          destination_table.dataset_id AS dest_dataset_id,
+          destination_table.table_id   AS dest_table_id,
           user_email,
           project_id,
           COUNT(job_id) AS insert_job_count,
-          SUM(total_slot_ms) / (1000 * 60 * 60) AS wasted_slot_hours
+          SUM(total_slot_ms) / (1000 * 60 * 60) AS wasted_slot_hours,
+          COUNT(DISTINCT DATE(creation_time)) AS active_days,
+          SAFE_DIVIDE(COUNT(job_id), GREATEST(COUNT(DISTINCT DATE(creation_time)), 1)) AS avg_inserts_per_day
         FROM
           `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE
           statement_type = 'INSERT'
           AND state = 'DONE'
+          AND destination_table.table_id IS NOT NULL
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           {focus_clause}
         GROUP BY
-          user_email, project_id
-        HAVING 
+          dest_project_id, dest_dataset_id, dest_table_id, user_email, project_id
+        HAVING
           insert_job_count > {params.threshold}
         ORDER BY
           wasted_slot_hours DESC
         """
-        
+
 
         results = run_query_and_log(scoped_client, sql, "DML Abuse", params=params, query_parameters=focus_params)
-        
+
         output = []
         for row in results:
+            active_days = int(row.active_days or 1) or 1
             output.append(DMLAbuseResult(
                 user_email=row.user_email,
                 project_id=row.project_id,
                 insert_job_count=row.insert_job_count,
-                wasted_slot_hours=row.wasted_slot_hours
+                wasted_slot_hours=row.wasted_slot_hours or 0.0,
+                dest_project_id=row.dest_project_id,
+                dest_dataset_id=row.dest_dataset_id,
+                dest_table_id=row.dest_table_id,
+                active_days=active_days,
+                avg_inserts_per_day=float(row.avg_inserts_per_day or 0.0),
             ))
         log_endpoint_end("DML Abuse Auditor", t0, _logger=logger)
         return output
@@ -1538,68 +1641,304 @@ def analyze_data_skew(params: AntiPatternParams):
         handle_endpoint_exception(e, "Skew analysis")
 
 class BatchCandidateResult(BaseModel):
+    workload_name: str
+    workload_type: str
     project_id: str
-    job_id: str
-    user_email: str
-    duration_minutes: float
-    total_slot_ms: int
-    batch_candidate_reason: str
+    total_job_runs: int
+    total_slot_hours: float
+    avg_duration_minutes: Optional[float] = 0.0
+    pct_interactive: float
+    pct_batch: float
+    pct_on_demand: float
+    total_human_wait_seconds: float
+    p95_queue_delay_seconds: Optional[int] = 0
+    sample_job_id: str
+    finding_category: str
+    recommended_priority: str
+    confidence: str
+    has_remediation: bool
+    detection_reasons: List[str]
+    impact_score: float
 
 @app.post("/api/antipatterns/batch_candidates", response_model=List[BatchCandidateResult])
 def analyze_batch_candidates(params: AntiPatternParams):
+    """Workload-centric concurrency & priority engine.
+
+    Aggregates individual job executions into logical workloads (dbt / Airflow /
+    Dataform / Scheduled Queries / BI connections / service accounts) via lineage
+    labels, then classifies each workload as:
+
+      • UNDER_BATCHED — automated pipeline or heavy DML burning the 100-query
+        INTERACTIVE concurrency limit that live dashboards depend on.
+      • OVER_BATCHED  — human / BI workload stuck behind a >30s BATCH queue.
+
+    BATCH and INTERACTIVE bill identically (same hardware, same slot-hour and
+    per-byte pricing), so these are pure concurrency wins, not cost trade-offs.
+    """
     _validate_safe_params(params)
     t0 = log_endpoint_start("Batch Candidates Analysis", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
     focus_clause, focus_params = build_project_filter(params.focus_projects)
+
+    region = _normalize_region(params.region)
+
+    # Prefer the org-wide jobs view; fall back to project scope when the caller
+    # lacks the org-level IAM role. A dry run costs nothing and never executes.
+    probe_sql = f"SELECT 1 FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION LIMIT 1"
+    jobs_target_view = "INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
     try:
-        
+        scoped_client.query(probe_sql, job_config=bigquery.QueryJobConfig(dry_run=True))
+    except Exception as e:
+        # Log the decision, not the payload: a BigQuery permission error embeds the
+        # caller's service-account identity and the fully-qualified table name, and
+        # this branch is an expected configuration (the org view simply is not
+        # granted) rather than a failure worth capturing verbatim.
+        logger.info(
+            f"Org-level jobs view unavailable ({type(e).__name__}); "
+            "falling back to JOBS_BY_PROJECT"
+        )
+        jobs_target_view = "INFORMATION_SCHEMA.JOBS_BY_PROJECT"
+
+    try:
         sql = f"""
+        WITH raw_jobs AS (
+          SELECT
+            job_id,
+            project_id,
+            user_email,
+            priority,
+            statement_type,
+            reservation_id,
+            edition,
+            total_slot_ms,
+            TIMESTAMP_DIFF(start_time, creation_time, SECOND) AS queue_delay_seconds,
+            TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS execution_ms,
+
+            -- Average slots consumed by the job = slot-ms burned / wall-clock ms.
+            SAFE_DIVIDE(total_slot_ms, NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS job_slots,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('dbt_model', 'dbt_node', 'dbt')) AS dbt_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('airflow_dag_id', 'dag_id', 'composer')) AS airflow_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('dataform', 'dataform_workspace')) AS dataform_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('looker', 'tableau', 'dashboard_id')) AS bi_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') = 'requestor') AS requestor_label,
+
+            session_info.session_id AS session_id
+          FROM
+            `{target_project}`.`{region}`.{jobs_target_view}
+          WHERE
+            job_type = 'QUERY'
+            AND state = 'DONE'
+            AND error_result IS NULL
+            AND (cache_hit IS FALSE OR cache_hit IS NULL)
+            AND parent_job_id IS NULL
+            AND creation_time >= @start_time_period AND creation_time < @end_time_period
+            {focus_clause}
+        ),
+
+        workload_grouped AS (
+          SELECT
+            COALESCE(
+              dbt_label,
+              airflow_label,
+              dataform_label,
+              IF(STARTS_WITH(job_id, 'scheduled_query_'), 'Scheduled Query Pipeline', NULL),
+              IF(bi_label IS NOT NULL, CONCAT('BI (', bi_label, ')'), NULL),
+              IF(requestor_label = 'connected_sheets', 'Connected Sheets User', NULL),
+              IF(requestor_label = 'looker_studio', 'Looker Studio Dashboard', NULL),
+              user_email,
+              'Unattributed'
+            ) AS workload_name,
+
+            COALESCE(
+              IF(dbt_label IS NOT NULL, 'dbt Pipeline', NULL),
+              IF(airflow_label IS NOT NULL, 'Airflow DAG', NULL),
+              IF(dataform_label IS NOT NULL, 'Dataform Pipeline', NULL),
+              IF(STARTS_WITH(job_id, 'scheduled_query_'), 'Scheduled Query', NULL),
+              IF(bi_label IS NOT NULL OR requestor_label IN ('connected_sheets', 'looker_studio'), 'BI Dashboard Connection', NULL),
+              IF(user_email LIKE '%.gserviceaccount.com', 'Service Account Workload', 'Human Ad-hoc')
+            ) AS workload_type,
+
+            project_id,
+
+            COUNT(1) AS total_job_runs,
+            -- IFNULL, not a bare SUM: total_slot_ms is NULL for jobs that never
+            -- reserved slots (metadata-only queries, script parents whose slots
+            -- are attributed to child jobs). A workload made up entirely of
+            -- those would otherwise emit NULL into a required response field.
+            ROUND(IFNULL(SUM(total_slot_ms), 0) / 3600000.0, 2) AS total_slot_hours,
+            ROUND(SAFE_DIVIDE(AVG(execution_ms), 60000.0), 1) AS avg_duration_minutes,
+
+            -- Share of runs carrying real lineage provenance — drives HIGH/LOW confidence.
+            SAFE_DIVIDE(COUNTIF(dbt_label IS NOT NULL OR airflow_label IS NOT NULL OR dataform_label IS NOT NULL OR bi_label IS NOT NULL OR requestor_label IS NOT NULL OR STARTS_WITH(job_id, 'scheduled_query_')), COUNT(1)) AS label_provenance_ratio,
+
+            ROUND(COUNTIF(priority = 'INTERACTIVE') / COUNT(1) * 100.0, 1) AS pct_interactive,
+            ROUND(COUNTIF(priority = 'BATCH') / COUNT(1) * 100.0, 1) AS pct_batch,
+            ROUND(COUNTIF(reservation_id IS NULL) / COUNT(1) * 100.0, 1) AS pct_on_demand,
+
+            -- Only count queue lag a human actually waited on; service-account
+            -- pipelines are supposed to queue.
+            SUM(IF(priority = 'BATCH' AND (bi_label IS NOT NULL OR requestor_label IN ('connected_sheets', 'looker_studio') OR user_email NOT LIKE '%.gserviceaccount.com'), COALESCE(queue_delay_seconds, 0), 0)) AS total_human_wait_seconds,
+
+            APPROX_QUANTILES(IF(priority = 'BATCH', queue_delay_seconds, NULL), 100)[SAFE_OFFSET(95)] AS p95_batch_queue_delay_seconds,
+            APPROX_QUANTILES(IF(priority = 'INTERACTIVE', job_slots, NULL), 100)[SAFE_OFFSET(50)] AS p50_interactive_job_slots,
+            APPROX_QUANTILES(IF(priority = 'INTERACTIVE', total_slot_ms, NULL), 100)[SAFE_OFFSET(50)] AS p50_interactive_slot_ms,
+
+            ARRAY_AGG(DISTINCT statement_type IGNORE NULLS) AS statement_types,
+            LOGICAL_OR(user_email LIKE '%.gserviceaccount.com') AS has_service_account,
+            LOGICAL_OR(session_id IS NOT NULL) AS has_interactive_session,
+
+            ANY_VALUE(job_id) AS sample_job_id
+          FROM
+            raw_jobs
+          GROUP BY
+            1, 2, 3
+        ),
+
+        workload_flags AS (
+          SELECT
+            *,
+            -- Flag 1: Labeled pipeline running interactive (dbt, Airflow, Dataform, Scheduled Query)
+            (pct_interactive > 5.0 AND workload_type IN ('dbt Pipeline', 'Airflow DAG', 'Dataform Pipeline', 'Scheduled Query')) AS flag_pipeline_interactive,
+            -- Flag 2: Heavy DML SA (>= 10 slots, >= 10min slot-ms, mutation statements)
+            (pct_interactive > 5.0 AND has_service_account AND p50_interactive_slot_ms >= 600000 AND p50_interactive_job_slots >= 10.0 AND EXISTS(SELECT 1 FROM UNNEST(statement_types) s WHERE s IN ('MERGE', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE_TABLE', 'CREATE_TABLE_AS_SELECT'))) AS flag_heavy_dml_interactive,
+            -- Flag 3: Any SA running majority-interactive with meaningful slot-hours (catch unlabeled pipelines)
+            (pct_interactive > 50.0 AND has_service_account AND total_slot_hours > 1.0 AND workload_type = 'Service Account Workload') AS flag_sa_interactive,
+            -- Flag 4: Human/BI workload stuck in batch queue
+            (pct_batch > 5.0 AND p95_batch_queue_delay_seconds > 30 AND (workload_type = 'BI Dashboard Connection' OR NOT has_service_account OR has_interactive_session)) AS flag_human_batch_queued
+          FROM
+            workload_grouped
+        ),
+
+        scored_workloads AS (
+          SELECT
+            workload_name,
+            workload_type,
+            project_id,
+            total_job_runs,
+            total_slot_hours,
+            avg_duration_minutes,
+            pct_interactive,
+            pct_batch,
+            pct_on_demand,
+            total_human_wait_seconds,
+            p95_batch_queue_delay_seconds,
+            p50_interactive_job_slots,
+            sample_job_id,
+
+            CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN 'UNDER_BATCHED'
+              WHEN flag_human_batch_queued THEN 'OVER_BATCHED'
+              ELSE 'OPTIMAL'
+            END AS finding_category,
+
+            CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN 'BATCH'
+              WHEN flag_human_batch_queued THEN 'INTERACTIVE'
+              ELSE IF(pct_interactive >= 50.0, 'INTERACTIVE', 'BATCH')
+            END AS recommended_priority,
+
+            CASE
+              WHEN label_provenance_ratio > 0.5 THEN 'HIGH'
+              ELSE 'LOW'
+            END AS confidence,
+
+            -- Dataform and Scheduled Queries expose no priority flag — guidance only.
+            CASE
+              WHEN workload_type IN ('Dataform Pipeline', 'Scheduled Query') THEN FALSE
+              ELSE TRUE
+            END AS has_remediation,
+
+            ARRAY(
+              SELECT tag FROM UNNEST([
+                IF(flag_pipeline_interactive, CONCAT('Automated pipeline running ', CAST(pct_interactive AS STRING), '% of queries in INTERACTIVE mode'), NULL),
+                IF(flag_heavy_dml_interactive, CONCAT('Heavy DML transformation (p50 at or above 10 slots) running ', CAST(pct_interactive AS STRING), '% in INTERACTIVE mode'), NULL),
+                IF(flag_sa_interactive AND NOT flag_pipeline_interactive AND NOT flag_heavy_dml_interactive, CONCAT('Service account running ', CAST(pct_interactive AS STRING), '% interactive (', CAST(ROUND(total_slot_hours, 1) AS STRING), ' slot-hrs)'), NULL),
+                -- Plain "over 30s" rather than ">30s": the client HTML-escapes API
+                -- strings globally and again at the render sink, so a literal '>'
+                -- would surface to the user as "&gt;".
+                IF(flag_human_batch_queued, CONCAT('Human/BI workload facing over 30s BATCH queue delay (p95: ', CAST(p95_batch_queue_delay_seconds AS STRING), 's)'), NULL)
+              ]) AS tag WHERE tag IS NOT NULL
+            ) AS detection_reasons,
+
+            IFNULL(CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN ROUND(total_slot_hours * (pct_interactive / 100.0), 2)
+              WHEN flag_human_batch_queued THEN ROUND(total_human_wait_seconds / 3600.0, 2)
+              ELSE 0.0
+            END, 0.0) AS impact_score
+
+          FROM workload_flags
+        )
+
         SELECT
-          job_id,
-          user_email,
+          workload_name,
+          workload_type,
           project_id,
-          total_slot_ms,
-          TIMESTAMP_DIFF(end_time, start_time, MINUTE) AS duration_minutes,
-          CASE 
-            WHEN user_email LIKE '%.gserviceaccount.com' THEN 'Service Account'
-            WHEN TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5 THEN 'Long-Running ETL'
-            WHEN EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23 THEN 'Off-Peak Hours (US)'
-            ELSE 'Other'
-          END AS batch_candidate_reason
-        FROM
-          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-        WHERE
-          job_type = 'QUERY'
-          AND priority = 'INTERACTIVE'
-          AND total_slot_ms > 10000
-          AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-          AND (
-            user_email LIKE '%.gserviceaccount.com'
-            OR TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5
-            OR EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23
-          )
-          {focus_clause}
-        ORDER BY
-          total_slot_ms DESC
+          total_job_runs,
+          total_slot_hours,
+          avg_duration_minutes,
+          pct_interactive,
+          pct_batch,
+          pct_on_demand,
+          total_human_wait_seconds,
+          p95_batch_queue_delay_seconds AS p95_queue_delay_seconds,
+          sample_job_id,
+          finding_category,
+          recommended_priority,
+          confidence,
+          has_remediation,
+          detection_reasons,
+          impact_score
+        FROM scored_workloads
+        WHERE ARRAY_LENGTH(detection_reasons) > 0
+        ORDER BY impact_score DESC
         LIMIT {params.limit_per_project}
         """
-        
 
-        results = run_query_and_log(scoped_client, sql, "Batch Candidates", params=params, query_parameters=focus_params)
-        
+        results = run_query_and_log(
+            scoped_client, sql, "Batch Candidates", params=params,
+            query_parameters=time_period_query_params(params) + focus_params,
+        )
+
         output = []
         for row in results:
             output.append(BatchCandidateResult(
+                workload_name=row.workload_name,
+                workload_type=row.workload_type,
                 project_id=row.project_id,
-                job_id=row.job_id,
-                user_email=row.user_email,
-                duration_minutes=row.duration_minutes or 0.0,
-                total_slot_ms=row.total_slot_ms or 0,
-                batch_candidate_reason=row.batch_candidate_reason or 'Other'
+                total_job_runs=row.total_job_runs,
+                total_slot_hours=row.total_slot_hours or 0.0,
+                avg_duration_minutes=row.avg_duration_minutes or 0.0,
+                pct_interactive=row.pct_interactive or 0.0,
+                pct_batch=row.pct_batch or 0.0,
+                pct_on_demand=row.pct_on_demand or 0.0,
+                total_human_wait_seconds=row.total_human_wait_seconds or 0.0,
+                p95_queue_delay_seconds=row.p95_queue_delay_seconds or 0,
+                sample_job_id=row.sample_job_id or '',
+                finding_category=row.finding_category,
+                recommended_priority=row.recommended_priority,
+                confidence=row.confidence,
+                has_remediation=bool(row.has_remediation),
+                detection_reasons=list(row.detection_reasons) if row.detection_reasons else [],
+                impact_score=row.impact_score or 0.0
             ))
         log_endpoint_end("Batch Candidates Analysis", t0, _logger=logger)
         return output
-        
+
     except Exception as e:
         handle_endpoint_exception(e, "Batch candidates analysis")
 
@@ -1627,6 +1966,7 @@ ALLOWED_QUERY_PREFIX_RE = re.compile(
 class AIResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     total_slot_ms: int
     query: str
     optimized_query: Optional[str] = None
@@ -1813,6 +2153,9 @@ def analyze_ai_query(params: AIParams):
                 expensive_queries.append({
                     "job_id": w["job_id"],
                     "user_email": w.get("user_email") or 'unknown',
+                    # Carried through to AIResult so the UI can build a Console
+                    # deep-link to the project that actually ran the job.
+                    "project_id": pid,
                     "total_slot_ms": r.total_slot_ms or 0,
                     "query": query_text,
                     "total_bytes_billed": r.total_bytes_billed or 0,
@@ -2041,6 +2384,7 @@ def analyze_ai_query(params: AIParams):
             audits_to_run.append({
                 "job_id": item["job_id"],
                 "user_email": item["user_email"],
+                "project_id": item.get("project_id"),
                 "total_slot_ms": item["total_slot_ms"],
                 "query": raw_sql,
                 "total_bytes_billed": item["total_bytes_billed"],
@@ -2250,10 +2594,24 @@ def analyze_ai_query(params: AIParams):
                     except Exception as mig_err:
                         logger.warning(f"Migration API integration skipped for Job {row.job_id}: {mig_err}")
 
+                    # Echo suppression: both the model and the Migration API
+                    # sometimes hand back the input verbatim. Rendering that as
+                    # an "Optimized SQL" column implies a rewrite that isn't
+                    # there, so drop it and leave the cell empty instead.
+                    if optimized_query and optimized_query.strip() == (row.query or '').strip():
+                        logger.info(f"Optimized SQL for Job {row.job_id} is identical to the original — suppressing echo")
+                        optimized_query = None
+                        # The Migration API config demonstrably changed nothing,
+                        # so advertising "config applied" would overstate it.
+                        migration_applied_yaml = None
+
                     logger.info(f"AI Doctor advice generated for Job {row.job_id}")
                     output.append(AIResult(
                         job_id=str(row.job_id),
                         user_email=str(row.user_email),
+                        # From the audit dict, not `row` — the AI.GENERATE
+                        # subquery only selects the columns it needs.
+                        project_id=audit.get("project_id"),
                         total_slot_ms=int(row.total_slot_ms or 0),
                         query=str(row.query or ''),
                         optimized_query=optimized_query,
@@ -2323,6 +2681,7 @@ class BIParams(FocusMixin):
 class BIResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     processed_gb: float
     billed_gb: float
     estimated_dollars_saved: float
@@ -2341,6 +2700,7 @@ def analyze_bi_engine(params: BIParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           total_bytes_processed / POW(1024, 3) AS processed_gb,
           total_bytes_billed / POW(1024, 3) AS billed_gb,
           ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * 6.25 AS estimated_dollars_saved,
@@ -2367,6 +2727,7 @@ def analyze_bi_engine(params: BIParams):
             output.append(BIResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 processed_gb=row.processed_gb or 0.0,
                 billed_gb=row.billed_gb or 0.0,
                 estimated_dollars_saved=row.estimated_dollars_saved or 0.0,
@@ -2579,6 +2940,10 @@ def analyze_governance(params: GovernanceParams):
 class MVResult(BaseModel):
     job_id: str
     user_email: str
+    # The project the job ran in. JOBS_BY_ORGANIZATION spans the whole org, so
+    # without this the UI can only guess at the Console deep-link project and
+    # every cross-project link 404s.
+    project_id: Optional[str] = None
     mv_name: str
     chosen: bool
     rejected_reason: str
@@ -2595,6 +2960,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           mv.table_reference.table_id AS mv_name,
           mv.chosen,
           mv.rejected_reason
@@ -2615,6 +2981,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
             output.append(MVResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 mv_name=row.mv_name,
                 chosen=row.chosen,
                 rejected_reason=row.rejected_reason or ''
@@ -2628,6 +2995,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
 class WarningResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     resource_warning: str
 
 @app.post("/api/resource_warnings/analyze", response_model=List[WarningResult])
@@ -2642,6 +3010,7 @@ def analyze_resource_warnings(params: JobGovernanceParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           query_info.resource_warning
         FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
@@ -2659,6 +3028,7 @@ def analyze_resource_warnings(params: JobGovernanceParams):
             output.append(WarningResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 resource_warning=row.resource_warning or ''
             ))
         log_endpoint_end("Resource Warnings", t0, _logger=logger)

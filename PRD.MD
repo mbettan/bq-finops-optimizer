@@ -139,15 +139,16 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Scan `INFORMATION_SCHEMA.TABLE_STORAGE` to find tables where `time_travel_physical_bytes` exceeds `active_logical_bytes` (indicating drop/recreate or high churn).
     - Flag datasets for potential reduction of Time Travel window from 7 to 2 days.
     - Flag tables frequently overwritten in datasets using the physical storage billing model.
-- **Visualization:** Data table showing Dataset, Table, Live Size, and Time Travel Size with a health status.
+    - Resolve each dataset's configured `default_time_travel_days` from `INFORMATION_SCHEMA.SCHEMATA_OPTIONS` and display it beside the time-travel bytes, so the operator can see whether the window has already been reduced before recommending a change. `SCHEMATA_OPTIONS` is region-qualified per project, so the lookup batches all in-scope projects into one `UNION ALL` (capped at 50, with a per-project retry fallback); any dataset that cannot be read falls back to BigQuery's 7-day default rather than failing the scan.
+- **Visualization:** Data table showing Dataset, Table, Live Size, Time Travel Size, and current Time Travel TTL with a health status.
 
 ### 4.9 Module 8: Architectural Anti-Pattern Detection `[STATUS: IMPLEMENTED]`
 
 - **Objective:** Detect inefficient ingestion APIs, DML abuse, and Materialized View refresh costs.
 - **Acceptance Criteria:**
-    - **DML Abuse Tracker:** Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` for high-frequency single-row `INSERT` statements.
+    - **DML Abuse Tracker:** Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` for high-frequency single-row `INSERT` statements. Aggregation is keyed on the **destination table** (not the user alone), since the table is the unit that hits BigQuery's 1500 table-modifying-operations-per-day ceiling and the unit that gets migrated to the Storage Write API. Reports Active Days and Avg Inserts / Day so a sustained pipeline is distinguishable from a single-day backfill. Default threshold is 100 operations per (destination table, user, project).
     - **Materialized Views:** Detect high refresh costs (Moved to Module 10).
-- **Visualization:** List of flagged users/projects abusing DML with counts and wasted costs.
+- **Visualization:** List of flagged destination tables with owning user/project, insert count, active days, average inserts per day, wasted slot hours, and estimated waste.
 
 ### 4.10 Module 9: BI Engine ROI & Optimization Doctor `[STATUS: IMPLEMENTED]`
 
@@ -171,7 +172,9 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
     - Scan `INFORMATION_SCHEMA.JOBS_BY_PROJECT` (looping through active projects) for expensive jobs (>100GB).
     - Use regex to flag `SELECT *` abuse.
     - Flag queries using `LIMIT` on non-clustered tables for exploration, suggesting free preview options instead.
-- **Visualization:** "SQL Wall of Shame" listing offending users and queries.
+    - Filter findings by identity type (human vs. service account, inferred from the `gserviceaccount.com` domain), user, project, and anti-pattern type. Filter option lists are rebuilt from the current result set on each scan; a selection that no longer exists in the new data is cleared rather than left silently applied.
+    - Offer a **Summary** view that aggregates the per-job rows by (user, project, anti-pattern) into query count, cumulative data billed, and total estimated waste — converting a list of individual offences into a ranked list of owners to contact.
+- **Visualization:** "SQL Wall of Shame" listing offending users and queries, with a Detail/Summary toggle and a filter toolbar.
 
 ### 4.13 Module 12: Schema & Storage Governance Auditor `[STATUS: PARTIALLY IMPLEMENTED]`
 
@@ -210,11 +213,16 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
 
 ### 4.16 Module 15: Interactive vs. Batch Optimizer `[STATUS: IMPLEMENTED]`
 
-- **Objective:** Identify queries submitted with Interactive priority that are candidates for Batch priority to smooth out slot usage peaks.
+- **Objective:** Protect interactive slot capacity by assigning each *workload* — not each individual job — the correct BigQuery execution priority. BigQuery caps a project at 100 concurrent `INTERACTIVE` queries (and 2,000 concurrent slots on On-Demand); automated pipelines that default to `INTERACTIVE` consume that headroom and starve live dashboards. `BATCH` and `INTERACTIVE` share identical hardware, slot performance, and per-byte/slot-hour pricing, so the recommendation is cost-neutral by construction.
+- **Workload Aggregation:** Job executions are grouped into logical workloads via lineage labels (`dbt_model` / `dbt_node` / `dbt`, `airflow_dag_id` / `dag_id` / `composer`, `dataform` / `dataform_workspace`, `looker` / `tableau` / `dashboard_id`, `requestor`), the `scheduled_query_` job-ID prefix, and finally `user_email`. Label keys are matched case-insensitively with `-`/`_` normalized.
 - **Acceptance Criteria:**
-    - Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` for jobs with `priority = 'INTERACTIVE'`.
-    - Flag jobs that are long-running (>5 minutes), executed during off-peak hours, or generated by service accounts.
-- **Visualization:** Data table of candidates for Batch priority with reasoning, dynamic tags, and tooltips.
+    - Scan `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION`, falling back to `JOBS_BY_PROJECT` via a dry-run permission probe when org-level IAM is unavailable.
+    - Exclude cache hits, script child jobs (`parent_job_id IS NULL`), and failed jobs so run counts reflect real executions.
+    - Classify each workload as:
+        - **`UNDER_BATCHED`** — a labeled pipeline running `INTERACTIVE`; a service account running heavy DML (p50 ≥ 10 slots and ≥ 10 min slot-ms on `MERGE`/`INSERT`/`UPDATE`/`DELETE`/`TRUNCATE_TABLE`/`CREATE_TABLE_AS_SELECT`); or any service account majority-`INTERACTIVE` above 1 slot-hour.
+        - **`OVER_BATCHED`** — a human or BI connection with p95 `BATCH` queue delay > 30s.
+    - Grade confidence `HIGH`/`LOW` from the share of runs carrying lineage labels, and rank by an impact score (interactive slot-hours at risk, or human wait-hours).
+- **Visualization:** Workload table with detection-reason tooltips, confidence badges, and a remediation modal emitting tooling-specific snippets — dbt `profiles.yml`, Airflow `BigQueryInsertJobOperator`, Python SDK / `bq` CLI. Dataform and Scheduled Queries expose no priority flag and surface migration guidance instead.
 
 ### 4.17 Module 16: Execution Plan & Data Skew Analyzer `[STATUS: IMPLEMENTED]`
 
@@ -296,8 +304,13 @@ Currently, the native GCP Billing export cannot accurately attribute BigQuery Ed
 
 - **Layout:**
   - **Sidebar:** Navigation to "Storage Optimizer".
-  - **Top Bar:** Global Settings (Project ID, Region selector).
+  - **Top Bar:** Global Settings (Project ID, Region selector), Snapshot export/import, and the Notification Center.
+- **Cross-Cutting Table Behaviour:** Every results table must expose a **Download CSV** action. The export covers the full DataTables result set matching the active search and filter state — not only the rendered page — reads cell text from the DOM so formatted values export as displayed, and prefixes a UTF-8 BOM for Excel compatibility. Tables constructed at render time (rather than present in the initial markup) must register their own export control.
+- **Cross-Cutting Deep-Linking:** Job IDs render monospaced with Copy and "Open in BigQuery Console" actions; dataset and table names link to the Console explorer. Any result model sourced from an `*_BY_ORGANIZATION` view must carry the originating `project_id`, since the execution project is not the project that ran the job.
+- **Notification Center:** Transient toasts are archived to a bell-icon dropdown with relative timestamps, an unread badge, and clear-all. Notification bodies frequently contain query text and user emails and must be rendered as text, never as markup.
+- **Settings Guidance:** Configuration fields state the IAM roles they require and the financial consequence of each choice inline, rather than restating the field name.
 - **Responsiveness:** Must be fully responsive on any modern browser.
+- **Accessibility:** Controls revealed on hover must toggle `visibility` rather than `opacity` (an opacity-hidden control still accepts keyboard focus), must also reveal on `:focus-within`, and must remain visible under `@media (hover: none)` so touch devices can reach them.
 
 ---
 

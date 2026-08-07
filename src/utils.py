@@ -2,6 +2,7 @@ import logging
 import re
 import time
 import contextvars
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from fastapi import HTTPException
 from google.cloud import bigquery
@@ -163,6 +164,24 @@ def build_project_filter(
     logger.info("Focus filter active: %d projects", len(focus_projects))
     param = bigquery.ArrayQueryParameter("focus_projects", "STRING", focus_projects)
     return f"AND {qualified_col} IN UNNEST(@focus_projects)", [param]
+
+def time_period_query_params(params) -> List[bigquery.ScalarQueryParameter]:
+    """Returns the ``@start_time_period`` / ``@end_time_period`` TIMESTAMP params
+    for a half-open lookback window ending now (UTC).
+
+    Parameterizing the window (instead of interpolating
+    ``TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL n DAY)``) keeps the SQL text
+    stable across calls, which lets BigQuery reuse partition pruning plans and
+    makes the emitted SQL safe to log verbatim.
+    """
+    lookback_days = int(getattr(params, "lookback_days", 7) or 7)
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(days=lookback_days)
+    return [
+        bigquery.ScalarQueryParameter("start_time_period", "TIMESTAMP", start_time),
+        bigquery.ScalarQueryParameter("end_time_period", "TIMESTAMP", end_time),
+    ]
+
 
 def _safe_ident(value: str, name: str) -> str:
     """Validates that a string is a safe GCP identifier (project, dataset, table, etc.)."""

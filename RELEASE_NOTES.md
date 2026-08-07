@@ -7,6 +7,53 @@ For architecture details and tech stack information, see the [README](README.md)
 ---
 
 
+## August 6, 2026 — v1.4.0
+
+**Feature (Interactive vs. Batch Priority Engine)**
+The Batch Candidates scan is now workload-centric rather than job-centric. Executions are aggregated into logical workloads using lineage labels (`dbt_model`, `airflow_dag_id`/`dag_id`, `dataform`, `looker`/`tableau`/`dashboard_id`, `requestor`), the `scheduled_query_` job-ID prefix, and service-account identity, then classified as **UNDER_BATCHED** (automated pipelines and heavy service-account DML burning the 100-query INTERACTIVE concurrency limit that live dashboards depend on) or **OVER_BATCHED** (human and BI connections stuck behind a >30s BATCH queue). BATCH and INTERACTIVE bill identically — same hardware, same slot-hour and per-byte pricing — so every finding is a pure concurrency win, not a cost trade-off.
+
+Each row carries its detection reasons, a HIGH/LOW confidence grade derived from label provenance, and a copy-pasteable remediation snippet for the detected tooling: dbt `profiles.yml`, Airflow `BigQueryInsertJobOperator`, or the Python SDK / `bq` CLI. Dataform and Scheduled Queries expose no priority flag, so those rows show migration guidance instead of a snippet.
+
+The scan probes `JOBS_BY_ORGANIZATION` with a dry run and transparently falls back to `JOBS_BY_PROJECT` when org-level IAM is unavailable. Cache hits, script child jobs, and failed jobs are excluded so a workload's run count reflects real executions, and the lookback window is bound as `@start_time_period` / `@end_time_period` query parameters instead of being interpolated into the SQL text.
+
+**Feature (Universal CSV Export)**
+Every results table across the application now carries a **Download CSV** button, injected automatically at page load and after any table that renders dynamically. Exports the full DataTables result set matching the current search and filter state — not just the visible page — with a UTF-8 BOM for Excel, HTML entity decoding, and RFC 4180 quote escaping. Cell text is read from the rendered DOM, so badges, formatted byte sizes, and currency cells export exactly as displayed.
+
+**Feature (BigQuery Console Deep-Links)**
+Job IDs render in monospace with hover- and focus-revealed actions to copy the ID or open the job directly in the BigQuery Console. Dataset and table names link to their Console explorer pages. `MVResult`, `WarningResult`, `BIResult`, and `AIResult` now carry `project_id` — `JOBS_BY_ORGANIZATION` spans the whole organization, so without it every cross-project deep-link resolved to the wrong project.
+
+**Feature (Notification Center)**
+A bell icon in the header archives every toast into a dropdown history with relative timestamps, an unread badge, and clear-all. Messages render via `textContent` so notification bodies carrying query text or user emails cannot inject markup.
+
+**Feature (Anti-Pattern Linter: Filtering & Aggregation)**
+New toolbar filters the SQL Wall of Shame by identity type (humans vs. service accounts), user, project, and anti-pattern type, with a one-click reset. A **Summary** view toggle swaps the per-job detail table for an aggregated roll-up grouped by (user, project, anti-pattern) showing query counts, cumulative data billed, and total estimated waste — turning a list of individual offences into a ranked list of owners.
+
+**Feature (Storage Hygiene: Time Travel TTL)**
+The hygiene auditor now surfaces each dataset's `default_time_travel_days` alongside its time-travel physical bytes, so the tables where lowering the window actually pays are visible without a second lookup. Values are read from `INFORMATION_SCHEMA.SCHEMATA_OPTIONS` in a single batched `UNION ALL` across up to 50 projects rather than one query per project.
+
+**Feature (Settings & Cost Attribution Guidance)**
+The Execution Project and Admin Project fields are now labelled by what they scope, with the exact IAM roles each one needs stated inline. Waste Rule, Central IT Project, Borrowing Rule, billing window, SKU rate, and Total Bill each gained tooltips explaining the financial trade-off rather than restating the field name. Cost attribution auto-populates its reservation list from the last Slots Optimizer run when the table is empty.
+
+**Change (DML Abuse Detection: Per-Table Attribution)**
+The DML abuse auditor now aggregates by destination table rather than by user alone, adding **Active Days** and **Avg Inserts / Day** columns so a steady pipeline is distinguishable from a one-day backfill. The default threshold drops from 1000 to 100: it applies per (destination table, user, project), and BigQuery caps a table at 1500 table-modifying operations per day, so 100/day against a single table already warrants the Storage Write API. Large counts render through a new `formatCompact()` helper with numeric `data-order` attributes preserved for sorting.
+
+**Fixed (AI Doctor: Echo Suppression)**
+When the optimizer returned SQL byte-identical to the input, the UI presented it as a rewrite. The backend now suppresses the echoed SQL and clears `migration_applied_yaml` with it — a config that demonstrably changed nothing should not advertise "Migration API Config Applied". The frontend repeats the test so snapshots captured before this fix behave identically, and the Migration filter pill and its KPI count both honour it.
+
+**Fixed (Snapshot Redaction: value-level email scrubbing)**
+Redacted snapshot exports previously decided what to scrub from the *key name* — anything matching `email`. The workload engine reports an operator under `workload_name` (the address is used as the workload identity when a query carries no lineage label), which that rule does not match, so those addresses would have survived a redacted export. Redaction now also scrubs any email-shaped value regardless of the key it sits under, in both object fields and string arrays. This strictly widens coverage; nothing previously redacted is now exported.
+
+**Fixed (Anti-Pattern Filter State)**
+Rebuilding the filter dropdowns after a new scan dropped stale values from the `<select>` without clearing them from the filter state, leaving a filter silently active — the table emptied while the dropdown read "All users". Selections are now retained only when still present in the new data, and the state is updated in lockstep.
+
+**Fixed (Storage Hygiene TTL Robustness)**
+`SAFE_CAST` replaces `CAST` on `option_value`, so one unparseable setting no longer aborts the union and blanks every other project's TTL. A single unreadable project triggers a per-project retry so partial access still yields partial data, and the 50-project cap logs exactly how many datasets fall back to the 7-day default instead of truncating silently.
+
+**Fixed (Accessibility & Input)**
+Job ID row actions used `opacity: 0`, which still accepts keyboard focus — tabbing through a results table landed on invisible buttons. They now toggle `visibility`, reveal on `:focus-within`, and stay pinned visible under `@media (hover: none)` so touch devices can reach them at all.
+
+---
+
 ## July 28, 2026 — v1.3.0
 
 **Feature (AI Doctor: Multi-Strategy Discovery & ROI Engine)**

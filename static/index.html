@@ -240,6 +240,23 @@
                         <span class="value" id="scope-badge" style="color: var(--accent-primary); font-weight: 600;"></span>
                     </div>
 
+                    <!-- Notification Center -->
+                    <div id="notification-center">
+                        <button id="btn-notification-bell" class="btn-snapshot" title="Notification history">
+                            <i class="fa-solid fa-bell"></i>
+                            <span id="notification-badge" class="notif-badge" style="display: none;">0</span>
+                        </button>
+                        <div id="notification-dropdown" class="notif-dropdown" style="display: none;">
+                            <div class="notif-dropdown__header">
+                                <span class="notif-dropdown__title"><i class="fa-solid fa-bell" style="margin-right: 0.35rem;"></i>Notifications</span>
+                                <button id="btn-clear-notifications" class="notif-dropdown__clear" title="Clear all">Clear</button>
+                            </div>
+                            <div id="notification-history-list" class="notif-dropdown__list">
+                                <div class="notif-dropdown__empty">No notifications yet.</div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </header>
 
@@ -366,14 +383,20 @@
                         <h2>GCP environment</h2>
                         <div class="form-grid">
                             <div class="form-group">
-                                <label for="cfg-org-project">Execution Project ID <span class="tooltip" data-tooltip="This project is used to execute the analysis queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <input type="text" id="cfg-org-project" placeholder="e.g. central-billing-project">
-                                <small>Used for running the queries</small>
+                                <label for="cfg-org-project">Execution Project ID (Job Execution Scope) <span class="tooltip" data-tooltip="This project is used to execute the analysis queries against INFORMATION_SCHEMA views."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-org-project" placeholder="e.g. my-company-bq-jobs">
+                                <small>
+                                    <strong>Required roles:</strong> <code>roles/bigquery.jobUser</code>, <code>roles/bigquery.dataViewer</code>.<br>
+                                    This project is used to execute analysis queries against <code>INFORMATION_SCHEMA</code> views. Query costs are billed here.
+                                </small>
                             </div>
                             <div class="form-group">
-                                <label for="cfg-admin-project">Admin Project ID <span class="tooltip" data-tooltip="This project is used to query reservation and commitment metadata."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
-                                <input type="text" id="cfg-admin-project" placeholder="e.g. reservation-admin-project">
-                                <small>Used for fetching metadata</small>
+                                <label for="cfg-admin-project">Admin Project ID (Slots &amp; Reservations Scope) <span class="tooltip" data-tooltip="This project owns your BigQuery slot reservations and capacity commitments."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-admin-project" placeholder="e.g. my-company-admin-project">
+                                <small>
+                                    <strong>Required roles:</strong> <code>roles/bigquery.resourceAdmin</code> or <code>roles/bigquery.resourceViewer</code>.<br>
+                                    This project owns BigQuery slot reservations and capacity commitments. Leave blank if you run fully on-demand.
+                                </small>
                             </div>
                             <div class="form-group">
                                 <label for="cfg-region">Region <span class="tooltip" data-tooltip="The BigQuery region where your datasets and jobs are located."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
@@ -1486,29 +1509,32 @@
                         <h2>Attribution rules & parameters</h2>
                         <div class="form-grid">
                             <div class="form-group">
-                                <label for="cb-waste-rule">Waste Rule</label>
+                                <label for="cb-waste-rule">Waste Rule <span class="tooltip" data-tooltip="How to attribute the gap between what the reservation cost and what queries actually used. Proportional (Rule A): every project pays a share of the idle/cooldown waste in proportion to the slot hours it consumed — fair, and it gives teams an incentive to smooth their workloads. Central Dump (Rule B): all waste lands on the Central IT Project, leaving teams billed only for direct usage — simpler to explain, but nobody is accountable for the waste."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <select id="cb-waste-rule">
                                     <option value="A">Proportional (Rule A)</option>
                                     <option value="B">Central Dump (Rule B)</option>
                                 </select>
+                                <small>Rule A spreads idle-slot waste across consumers; Rule B pools it centrally.</small>
                             </div>
                             <div class="form-group">
-                                <label for="cb-central-project">Central IT Project</label>
+                                <label for="cb-central-project">Central IT Project <span class="tooltip" data-tooltip="The cost-center project that absorbs unattributed spend. Required when Waste Rule = Central Dump (Rule B); ignored under Rule A."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="text" id="cb-central-project" placeholder="e.g. central-it-cost-center">
+                                <small>Only used when Waste Rule is set to Central Dump (Rule B).</small>
                             </div>
                             <div class="form-group">
-                                <label for="cb-borrowing-rule">Borrowing Rule</label>
+                                <label for="cb-borrowing-rule">Borrowing Rule <span class="tooltip" data-tooltip="Who pays when one reservation's idle slots are borrowed by another. Lender Pays: the reservation that owns the slots keeps the cost — matches the GCP invoice line items exactly, so your chargeback reconciles to the bill. Borrower Pays: the cost follows the query that consumed the slots — better signal for the team causing the load, but your totals will no longer line up per-reservation with the invoice."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <select id="cb-borrowing-rule">
                                     <option value="lender_pays">Lender Pays</option>
                                     <option value="borrower_pays">Borrower Pays</option>
                                 </select>
+                                <small>Lender Pays reconciles to the invoice; Borrower Pays follows actual consumption.</small>
                             </div>
                             <div class="form-group">
-                                <label for="cb-month-start">Billing Month Start</label>
+                                <label for="cb-month-start">Billing Month Start <span class="tooltip" data-tooltip="Match this to your GCP invoice period so the Total Bill figures below reconcile against the same window."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="date" id="cb-month-start">
                             </div>
                             <div class="form-group">
-                                <label for="cb-month-end">Billing Month End</label>
+                                <label for="cb-month-end">Billing Month End <span class="tooltip" data-tooltip="Inclusive end of the billing window. Use the last day of the invoice period."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="date" id="cb-month-end">
                             </div>
                         </div>
@@ -1516,9 +1542,9 @@
                         <div style="margin-top: 1.5rem;">
                             <h3>Reservations configuration</h3>
                             <div style="display: flex; gap: 0.5rem; margin-bottom: 0.25rem; font-weight: 600; font-size: 0.8rem; color: var(--text-secondary); align-items: center;">
-                                <div style="flex: 2;">Reservation ID</div>
-                                <div style="flex: 1;">SKU Rate ($)</div>
-                                <div style="flex: 1;">Total Bill ($)</div>
+                                <div style="flex: 2;">Reservation ID <span class="tooltip" data-tooltip="Auto-filled from your last Slots Optimizer run when this list is empty."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></div>
+                                <div style="flex: 1;">SKU Rate ($) <span class="tooltip" data-tooltip="Your negotiated per-slot-hour price for this reservation's edition, from the GCP price list or your contract (e.g. 0.06 for Enterprise on-demand slot hours)."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></div>
+                                <div style="flex: 1;">Total Bill ($) <span class="tooltip" data-tooltip="The actual invoiced amount for this reservation over the billing window above. This is the number the attribution must add up to — waste is the difference between it and metered usage."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></div>
                                 <div style="width: 32px;"></div>
                             </div>
                             <div id="cb-reservations-container" style="margin-bottom: 1rem;">
@@ -1999,6 +2025,7 @@
                                         <th>Table Name</th>
                                         <th>Live Size (Physical GiB)</th>
                                         <th>Time Travel Size (GiB)</th>
+                                        <th>Time Travel TTL <span class="tooltip" data-tooltip="The dataset's default_time_travel_days setting. BigQuery defaults to 7 days; lowering it to 2 is the fastest way to cut time-travel storage on a high-churn table."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></th>
                                         <th>Churn Ratio</th>
                                         <th>Health Status</th>
                                     </tr>
@@ -2063,26 +2090,95 @@
                             <button id="analyze-linter-btn" class="btn-primary btn-sm">Run scan</button>
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
-                            This table identifies expensive queries (>100 GB scanned) using inefficient patterns. Each row shows the impact, root cause, and suggested fix.
+                            This table identifies expensive queries (&gt;100 GB scanned) using inefficient patterns. Each row shows the impact, root cause, and suggested fix.
                         </p>
-                        <div class="table-responsive">
-                            <table id="linter-results-table" class="showcase-table" style="width: 100%;">
-                                <thead>
-                                    <tr>
-                                        <th>User Email</th>
-                                        <th>Project ID</th>
-                                        <th>Job ID</th>
-                                        <th>Data Billed</th>
-                                        <th>Abuse Type</th>
-                                        <th>Estimated Waste ($)</th>
-                                        <th>Query Snippet</th>
-                                        <th>Suggested Fix</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <!-- Rows injected here -->
-                                </tbody>
-                            </table>
+
+                        <!-- Filtering & aggregation toolbar -->
+                        <div class="ap-toolbar">
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="ap-filter-user-type">Identity type</label>
+                                <select id="ap-filter-user-type">
+                                    <option value="all">All identities</option>
+                                    <option value="humans">Humans only</option>
+                                    <option value="service_accounts">Service accounts only</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="ap-filter-user">User</label>
+                                <select id="ap-filter-user">
+                                    <option value="">All users</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="ap-filter-project">Project</label>
+                                <select id="ap-filter-project">
+                                    <option value="">All projects</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="ap-filter-abuse">Anti-pattern</label>
+                                <select id="ap-filter-abuse">
+                                    <option value="">All types</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field" style="min-width: auto;">
+                                <span class="ap-toolbar__label">View</span>
+                                <div class="ap-view-toggle" id="ap-view-toggle">
+                                    <button type="button" data-view="detail" class="active">Detail</button>
+                                    <button type="button" data-view="summary">Summary</button>
+                                </div>
+                            </div>
+                            <div class="ap-toolbar__field" style="min-width: auto;">
+                                <span class="ap-toolbar__label">&nbsp;</span>
+                                <button type="button" id="ap-filter-reset" class="btn-action" style="font-size: 0.8rem;">
+                                    <i class="fa-solid fa-rotate-left"></i> Reset
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="ap-filter-stats" class="ap-filter-stats"></div>
+
+                        <div id="linter-detail-view">
+                            <div class="table-responsive">
+                                <table id="linter-results-table" class="showcase-table" style="width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>User Email</th>
+                                            <th>Project ID</th>
+                                            <th>Job ID</th>
+                                            <th>Data Billed</th>
+                                            <th>Abuse Type</th>
+                                            <th>Estimated Waste ($)</th>
+                                            <th>Query Snippet</th>
+                                            <th>Suggested Fix</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Rows injected here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="linter-summary-view" style="display: none;">
+                            <div class="table-responsive">
+                                <table id="linter-summary-table" class="showcase-table" style="width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>User Email</th>
+                                            <th>Identity</th>
+                                            <th>Project ID</th>
+                                            <th>Abuse Type</th>
+                                            <th>Queries</th>
+                                            <th>Data Billed</th>
+                                            <th>Estimated Waste ($)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- Rows injected here -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
@@ -2096,13 +2192,34 @@
                                 </div>
                                 <button id="analyze-dml-btn" class="btn-primary btn-sm" style="margin-top: 0.25rem;">Run scan</button>
                             </div>
+
+                        <div class="glass-card info-panel" style="margin-bottom: 1.5rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.25rem;">
+                            <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                                <i class="fa-solid fa-graduation-cap" style="color: #38bdf8; font-size: 1.35rem; margin-top: 0.2rem;"></i>
+                                <div>
+                                    <h3 style="margin: 0 0 0.5rem 0; color: #38bdf8;">Why per-table matters more than per-user</h3>
+                                    <p style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.5; margin-bottom: 0.75rem;">
+                                        Rows are grouped by <strong>destination table</strong>, because that is the unit you actually migrate. One service account may write to twenty tables; only the few with a high <em>inserts per active day</em> rate justify the engineering cost of switching pipelines.
+                                    </p>
+                                    <ul style="color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; margin: 0 0 0 1.25rem; padding: 0;">
+                                        <li><strong>Storage Write API</strong> consumes zero query slots — the wasted slot hours below go to $0.</li>
+                                        <li><strong>Batch your writes</strong>: one <code>INSERT</code> with 10,000 rows costs a fraction of 10,000 single-row <code>INSERT</code>s, each of which pays full job-startup overhead.</li>
+                                        <li><strong>Watch the table quota</strong>: BigQuery caps a table at 1,500 table-modifying operations per day; high insert counts here are also a reliability risk, not just a cost one.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="table-responsive">
                             <table id="antipatterns-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
                                     <tr>
+                                        <th>Destination Table</th>
                                         <th>User Email</th>
                                         <th>Project ID</th>
-                                        <th>Insert Count (Last 1D)</th>
+                                        <th>Insert Count</th>
+                                        <th>Active Days</th>
+                                        <th>Avg Inserts / Day</th>
                                         <th>Wasted Slot Hours</th>
                                         <th>Estimated Waste ($)</th>
                                         <th>Recommendation</th>
@@ -2172,21 +2289,54 @@
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                             <h2 style="margin: 0;">Interactive vs. Batch Candidates</h2>
-                            <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
+                            <div id="batch-actions" style="display: flex; align-items: center; gap: 0.5rem;">
+                                <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
+                            </div>
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
-                            This table lists heavy queries running with <code>INTERACTIVE</code> priority that are candidates for <code>BATCH</code> priority.
+                            Analyzes workload concurrency profiles across automated pipelines, BI dashboards, and ad-hoc query streams to recommend optimal execution priority (<code>BATCH</code> vs <code>INTERACTIVE</code>).
                         </p>
+                        <details style="margin-bottom: 1.5rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 0.5rem; padding: 1rem;">
+                            <summary style="cursor: pointer; color: #60a5fa; font-size: 0.875rem; font-weight: 600;">
+                                <i class="fa-solid fa-graduation-cap" style="margin-right: 0.4rem;"></i>Interactive vs. Batch Execution Mechanics &amp; Guidance
+                            </summary>
+                            <div style="color: var(--text-secondary); font-size: 0.83rem; margin-top: 0.75rem; line-height: 1.6;">
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>⚡ Core Execution Differences:</strong> In BigQuery, <code>INTERACTIVE</code> queries are executed immediately against available slot capacity, subject to a strict hard limit of 100 concurrent interactive queries per project. When this limit is hit, additional queries fail with rate-limit errors. <code>BATCH</code> queries are queued and auto-started within minutes as slot capacity becomes available, auto-retrying gracefully without triggering immediate rate-limit failures.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>💰 Hardware &amp; Pricing Parity:</strong> Compute hardware, slot performance, and per-byte/slot-hour pricing are <strong>100% identical</strong> between BATCH and INTERACTIVE queries. Running a pipeline in BATCH mode costs the exact same as INTERACTIVE, but protects your BI dashboards and human users from slot starvation during peak business hours.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>💳 On-Demand Capacity Protection:</strong> For projects without edition reservations (pure On-Demand / Pay-Per-TB), BigQuery enforces a strict ceiling of 2,000 concurrent slots per project. Running heavy ETL pipelines concurrently in INTERACTIVE mode exhausts this 2,000-slot pool, causing BI dashboards and ad-hoc analysts to experience severe query queuing and degradation.
+                                </p>
+
+                                <div style="background: rgba(30, 41, 59, 0.7); padding: 0.75rem; border-radius: 0.375rem; border-left: 3px solid #3b82f6; margin-top: 0.75rem;">
+                                    <strong>📋 Recommended Priority Matrix:</strong>
+                                    <ul style="margin: 0.4rem 0 0 1.2rem; padding: 0;">
+                                        <li><strong>dbt / Airflow / Dataform / Scheduled Pipelines:</strong> Use <code>BATCH</code> priority (guarantees auto-retry and prevents dashboard slot starvation).</li>
+                                        <li><strong>Looker / Tableau / Power BI Dashboards:</strong> Use <code>INTERACTIVE</code> priority (essential for sub-second UI responsiveness).</li>
+                                        <li><strong>Heavy Service Account DML (MERGE / UPDATE):</strong> Use <code>BATCH</code> priority (isolated execution during idle capacity).</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </details>
+
                         <div class="table-responsive">
                             <table id="batch-candidates-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
                                     <tr>
+                                        <th>Workload / Target</th>
+                                        <th>Workload Type</th>
                                         <th>Project ID</th>
-                                        <th>Job ID</th>
-                                        <th>User Email</th>
-                                        <th>Reason</th>
-                                        <th>Duration (Min)</th>
-                                        <th>Total Slot MS</th>
+                                        <th>Runs</th>
+                                        <th>Slot Hours</th>
+                                        <th>% Interactive</th>
+                                        <th>Human Wait (s)</th>
+                                        <th>Finding</th>
+                                        <th>Remediation</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2767,10 +2917,10 @@
                                         <th>Total Slot MS</th>
                                         <th>Severity</th>
                                         <th>Original Cost</th>
-                                        <th>Query SQL</th>
+                                        <th>Original SQL</th>
                                         <th>Schema Coverage</th>
                                         <th>AI Optimization Advice</th>
-                                        <th>Optimized Query</th>
+                                        <th>Optimized SQL</th>
                                     </tr>
                                 </thead>
                                 <tbody>

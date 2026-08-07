@@ -15,6 +15,15 @@ BQ FinOps Optimizer is an enterprise-grade diagnostic and simulation suite for G
 - **HBO (Heuristic & Behavior Optimizer)**: Identifies optimization types BigQuery applied to each job — Semi-Join Reduction, Join Commutation, Parallelism Adjustment, and more.
 - **Cost Attribution Engine**: Attributes Editions costs to individual projects with Lender Pays vs. Borrower Pays idle-slot models.
 - **Migration Guardrails**: Static schema auditor that flags high-risk tables and generates clustering DDL stubs.
+- **Query Anti-Pattern Linter**: Flags expensive queries using inefficient SQL patterns, filters findings by identity type (human vs. service account), user, project, and pattern, and rolls per-job offences up into a ranked per-owner waste summary.
+- **Storage Hygiene Auditor**: Finds tables where time-travel storage exceeds live storage and shows each dataset's configured default_time_travel_days so the window can be reduced where it actually pays.
+- **DML Abuse Tracker**: Aggregates high-frequency INSERT activity by destination table with active days and average inserts per day, identifying pipelines that should migrate to the Storage Write API.
+
+### Working With Results
+
+- Every results table exports to CSV — the full filtered result set, not just the visible page.
+- Job IDs, datasets, and tables deep-link into the BigQuery Console.
+- A notification center archives warnings raised during long-running scans.
 
 ### Anti-Patterns Detected
 

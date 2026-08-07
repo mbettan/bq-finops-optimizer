@@ -79,6 +79,17 @@
     window.sanitizeData = sanitizeData;
 })();
 
+/** Escape a value for safe interpolation into an HTML attribute or text node. */
+function escapeHtmlAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+window.escapeHtmlAttr = escapeHtmlAttr;
+
 // Guards against a corrupted/malicious localStorage value (e.g. from a bad
 // Snapshot import) breaking script execution for the rest of this file.
 function safeParseJSON(raw, fallback) {
@@ -290,13 +301,24 @@ const Snapshot = (() => {
     return out;
   }
 
+  // Matching on key names alone is not enough: an address can sit under any
+  // key. The batch priority scan reports a workload under `workload_name`,
+  // which is the operator's email whenever the workload carries no lineage
+  // label — a key-name rule would export those verbatim from a *redacted*
+  // snapshot. This pass only ever removes more, never less.
+  const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const scrubString = (s) => s.replace(EMAIL_RE, 'redacted@example.com');
+
   function redactValue(raw) {
     try {
       const obj = JSON.parse(raw);
       const scrub = (o) => {
         if (!o) return;
         if (Array.isArray(o)) {
-          o.forEach(scrub);
+          o.forEach((item, i) => {
+            if (typeof item === 'string') o[i] = scrubString(item);
+            else scrub(item);
+          });
         } else if (typeof o === 'object') {
           for (const k of Object.keys(o)) {
             const val = o[k];
@@ -305,6 +327,8 @@ const Snapshot = (() => {
               o[k] = 'redacted@example.com';
             } else if (/^query$|^query_text$|^query_snippet$/i.test(k) && typeof val === 'string') {
               o[k] = '-- [redacted query]';
+            } else if (typeof val === 'string') {
+              o[k] = scrubString(val);
             } else if (typeof val === 'object') {
               scrub(val);
             }
@@ -3584,28 +3608,263 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
     }
 
+    // Minimal comment/keyword highlighter for the remediation snippets.
+    // Escapes first, then decorates — never inject un-escaped snippet text.
+    const highlightSnippet = (snippet) => escapeHtmlAttr(snippet)
+        .replace(/^(\s*#.*)$/gm, '<span style="color: #64748b;">$1</span>')
+        .replace(/\b(BATCH|INTERACTIVE|batch|interactive)\b/g, '<span style="color: #fbbf24;">$1</span>');
+
+    // Global Remediation Modal Renderer
+    window.showRemediationModal = function (name, type, recPriority) {
+        let snippet = '';
+        const isBatch = recPriority === 'BATCH';
+        if (type.includes('Dataform') || type.includes('Scheduled Query')) {
+            snippet = `# Architecture Migration Required
+# Tooling Constraint:
+# ${type} does not currently support native BATCH priority execution flags.
+
+# Recommended Workaround:
+# Migrate orchestration to Google Cloud Composer (Airflow) or Cloud Workflows,
+# which provide native job configuration overrides for BigQuery execution priority.`;
+        } else if (type.includes('dbt')) {
+            snippet = `# profiles.yml
+target: prod
+outputs:
+  prod:
+    type: bigquery
+    project: your-project-id
+    dataset: analytics
+    priority: ${isBatch ? 'batch' : 'interactive'} # Sets all dbt query executions to ${recPriority}`;
+        } else if (type.includes('Airflow')) {
+            snippet = `# Airflow DAG Operator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+
+run_task = BigQueryInsertJobOperator(
+    task_id="transform_task",
+    configuration={
+        "query": {
+            "query": "MERGE INTO ...",
+            "priority": "${recPriority}", # Configures execution priority
+        }
+    },
+)`;
+        } else {
+            snippet = `# Python SDK & bq CLI
+# Python:
+job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.${recPriority})
+query_job = client.query("...", job_config=job_config)
+
+# bq CLI:
+${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq query --use_legacy_sql=false 'SELECT ...'"}`;
+        }
+
+        const existing = document.getElementById('remediation-modal-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'remediation-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 600px; max-width: 92%; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-code" style="margin-right: 0.5rem;"></i>Remediation Snippet</h3>
+                    <button id="close-remediation-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem;">
+                    Workload: <strong style="color: #e2e8f0;">${escapeHtmlAttr(name)}</strong> <span style="color: #64748b;">(${escapeHtmlAttr(type)})</span><br/>
+                    Recommended Priority: <span class="badge ${isBatch ? 'warning' : 'primary'}" style="font-size: 0.75rem;">${escapeHtmlAttr(recPriority)}</span>
+                </p>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.82rem; line-height: 1.65; overflow-x: auto; white-space: pre-wrap; margin: 0;">${highlightSnippet(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                    <button id="copy-remediation-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('close-remediation-btn').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('copy-remediation-btn').addEventListener('click', function () {
+            // copyToClipboard, not navigator.clipboard directly: the latter is
+            // undefined on non-secure origins (local dev on 0.0.0.0), where a bare
+            // call throws and the button silently does nothing.
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    };
+
+    // Body-level singleton for the detection-reason popover. Lives outside the
+    // results card so no `overflow` or transformed ancestor can clip it, and is
+    // built with textContent so nothing in the payload can be interpreted as markup.
+    const batchTooltip = (() => {
+        let node = null;
+        let anchoredTo = null;
+
+        const ensure = () => {
+            if (!node) {
+                node = document.createElement('div');
+                node.className = 'batch-tooltip-popup';
+                document.body.appendChild(node);
+            }
+            return node;
+        };
+
+        const hide = () => {
+            anchoredTo = null;
+            if (node) node.classList.remove('is-visible');
+        };
+
+        const show = (wrap) => {
+            // mouseover re-fires for every descendant the pointer crosses; without
+            // this the popup would rebuild and restart its fade on each one.
+            if (anchoredTo === wrap) return;
+            anchoredTo = wrap;
+
+            const tip = ensure();
+            tip.textContent = '';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight: 600; margin-bottom: 0.4rem; color: #f8fafc;';
+            title.textContent = wrap.dataset.tipTitle || '';
+            tip.appendChild(title);
+
+            const summary = document.createElement('div');
+            summary.style.cssText = 'margin-bottom: 0.5rem; line-height: 1.5;';
+            summary.textContent = wrap.dataset.tipSummary || '';
+            tip.appendChild(summary);
+
+            const reasons = (wrap.dataset.tipReasons || '').split('\n').filter(Boolean);
+            if (reasons.length) {
+                const block = document.createElement('div');
+                block.style.cssText = 'border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.4rem; font-size: 0.75rem; color: #94a3b8;';
+                const heading = document.createElement('strong');
+                heading.style.color = '#cbd5e1';
+                heading.textContent = 'Detection Reasons:';
+                block.appendChild(heading);
+                reasons.forEach(text => {
+                    const line = document.createElement('div');
+                    line.textContent = `• ${text}`;
+                    block.appendChild(line);
+                });
+                tip.appendChild(block);
+            }
+
+            // Measure before placing: the popup flips below the badge when there
+            // is not enough room above, and is clamped to the viewport sideways.
+            tip.classList.add('is-visible');
+            const anchor = wrap.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+            const GAP = 8;
+            const MARGIN = 8;
+
+            let top = anchor.top - tipRect.height - GAP;
+            if (top < MARGIN) top = anchor.bottom + GAP;
+
+            let left = anchor.left + (anchor.width / 2) - (tipRect.width / 2);
+            left = Math.max(MARGIN, Math.min(left, window.innerWidth - tipRect.width - MARGIN));
+
+            tip.style.top = `${Math.round(top)}px`;
+            tip.style.left = `${Math.round(left)}px`;
+        };
+
+        return { show, hide };
+    })();
+    // Fixed coordinates go stale the moment anything moves underneath them.
+    window.addEventListener('scroll', batchTooltip.hide, true);
+    window.addEventListener('resize', batchTooltip.hide);
+
     const renderBatchCandidatesResults = (data) => {
         const tbody = document.querySelector('#batch-candidates-results-table tbody');
         if (!tbody) return;
+        batchTooltip.hide();
         tbody.innerHTML = '';
 
-        data.forEach(row => {
+        // Cached payloads from before the workload engine used a per-job shape.
+        // Drop them rather than emit rows with the wrong column count, which
+        // would break DataTables initialisation.
+        const rows = (data || []).filter(r => r && r.workload_name && r.finding_category);
+
+        rows.forEach(row => {
             const tr = document.createElement('tr');
+            const reasons = (row.detection_reasons || []).join('\n');
+
+            const isUnder = row.finding_category === 'UNDER_BATCHED';
+            const badgeClass = isUnder ? 'danger' : 'warning';
+            const badgeIcon = isUnder ? 'fa-triangle-exclamation' : 'fa-hourglass-half';
+            const badgeLabel = isUnder ? 'UNDER_BATCHED' : 'OVER_BATCHED';
+            const summary = isUnder
+                ? 'Automated pipeline running in INTERACTIVE mode. Risks starving live dashboards of the 100-query concurrent limit. Switch to BATCH for auto-retry protection at identical pricing.'
+                : 'Human/BI workload facing >30s BATCH queue lag. Switch to INTERACTIVE for instant slot allocation.';
+
+            // The popup body travels as data-* rather than as a hidden child of the
+            // cell: it is rendered into a single body-level node on hover (see
+            // batchTooltip), and a hidden child would also be swept into the CSV
+            // export, which reads cell text via textContent.
+            const categoryBadge = `
+                <span class="batch-tooltip-wrap" data-tip-title="${escapeHtmlAttr(badgeLabel)}" data-tip-summary="${escapeHtmlAttr(summary)}" data-tip-reasons="${escapeHtmlAttr(reasons)}">
+                    <span class="badge ${badgeClass}" style="cursor: help;">
+                        <i class="fa-solid ${badgeIcon}" style="margin-right: 0.25rem;"></i>${badgeLabel}
+                    </span>
+                </span>`;
+
+            const confBadge = row.confidence === 'HIGH'
+                ? `<span class="badge success" style="font-size: 0.7rem; margin-left: 0.3rem;">HIGH CONF</span>`
+                : `<span class="badge secondary" style="font-size: 0.7rem; margin-left: 0.3rem;">LOW CONF</span>`;
+
+            const actionBtn = row.has_remediation
+                ? `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code" style="margin-right: 0.25rem;"></i>Snippet</button>`
+                : `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb" style="margin-right: 0.25rem;"></i>Guidance</button>`;
+
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
-                <td>${row.user_email}</td>
-                <td><span class="badge logical">${row.batch_candidate_reason}</span></td>
-                <td>${row.duration_minutes.toFixed(1)}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td><strong>${escapeHtmlAttr(row.workload_name)}</strong> ${confBadge}</td>
+                <td><span class="badge logical">${escapeHtmlAttr(row.workload_type)}</span></td>
+                <td>${escapeHtmlAttr(row.project_id)}</td>
+                <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
+                <td data-order="${row.total_slot_hours}">${row.total_slot_hours.toFixed(2)} hrs</td>
+                <td data-order="${row.pct_interactive}">${row.pct_interactive.toFixed(1)}%</td>
+                <td data-order="${row.total_human_wait_seconds}">${row.total_human_wait_seconds > 0 ? row.total_human_wait_seconds.toFixed(0) + 's' : '-'}</td>
+                <td>${categoryBadge}</td>
+                <td>${actionBtn}</td>
             `;
             tbody.appendChild(tr);
         });
 
+        // Delegated on the table so the handlers survive DataTables destroy/re-init;
+        // the flag keeps re-renders from stacking duplicates.
+        const batchTable = document.getElementById('batch-candidates-results-table');
+        if (batchTable && !batchTable._batchDelegateAttached) {
+            batchTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-remediation');
+                if (btn) {
+                    batchTooltip.hide();
+                    window.showRemediationModal(btn.dataset.wname, btn.dataset.wtype, btn.dataset.wpriority);
+                }
+            });
+            // mouseover/mouseout rather than mouseenter/mouseleave: the latter do
+            // not bubble, so they cannot be delegated from the table.
+            batchTable.addEventListener('mouseover', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap) batchTooltip.show(wrap);
+            });
+            batchTable.addEventListener('mouseout', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap && !wrap.contains(e.relatedTarget)) batchTooltip.hide();
+            });
+            batchTable._batchDelegateAttached = true;
+        }
+
         if ($.fn.DataTable.isDataTable('#batch-candidates-results-table')) {
             $('#batch-candidates-results-table').DataTable().destroy();
         }
-        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [[5, 'desc']], responsive: true });
+        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [], responsive: true });
     };
 
     const renderSkewResults = (data) => {

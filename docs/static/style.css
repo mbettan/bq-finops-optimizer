@@ -2467,3 +2467,78 @@ table.dataTable tbody tr.severity-low:hover {
 }
 .btn-spinner[hidden] { display: none; }
 @keyframes btn-spin { to { transform: rotate(360deg); } }
+/* ─── Batch Priority Badge Variants ─── */
+/* The batch-candidates table uses space-separated modifiers (`badge danger`)
+   rather than the hyphenated `.badge-danger` family used elsewhere. */
+.badge.danger    { background: var(--danger-bg);  color: var(--danger);  border: 1px solid var(--danger-border); }
+.badge.warning   { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-border); }
+.badge.success   { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
+.badge.primary   { background: hsla(217, 91%, 60%, 0.12); color: var(--accent-color); border: 1px solid hsla(217, 91%, 60%, 0.28); }
+.badge.secondary { background: hsla(215, 20%, 65%, 0.12); color: var(--text-secondary); border: 1px solid hsla(215, 20%, 65%, 0.25); }
+
+.btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: hsla(217, 33%, 22%, 0.9);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.4rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-secondary:hover {
+    background: hsla(217, 33%, 28%, 0.95);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Batch Tooltip Popover ─── */
+/* The popup is a single node appended to <body> and positioned with JS, not an
+   absolutely-positioned child of the badge. Two ancestors would otherwise clip
+   it: `.glass-card` sets `overflow: hidden`, and `.table-responsive` sets
+   `overflow-x: auto`, which per spec forces `overflow-y` to compute to `auto`.
+   Dropping either is not an option — the DataTables Responsive extension is not
+   loaded, so `.table-responsive` is the only horizontal scroll this 9-column
+   table has. `position: fixed` alone would not escape it either, because
+   `.glass-card:hover` applies a `transform`, which makes the card a containing
+   block for fixed descendants exactly when the row is being hovered. */
+.batch-tooltip-wrap {
+    display: inline-block;
+}
+
+.batch-tooltip-popup {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 340px;
+    max-width: calc(100vw - 16px);
+    padding: 0.85rem 1rem;
+    background: #1e293b;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0.6rem;
+    color: #cbd5e1;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+    /* Below the 10000 modal/overlay tier — a hover hint must never paint over
+       a dialog if the pointer never leaves the row that opened it. */
+    z-index: 9999;
+    pointer-events: none;
+    animation: tooltipFadeIn 0.15s ease-out;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: normal;
+    text-align: left;
+}
+
+.batch-tooltip-popup.is-visible {
+    display: block;
+}
+
+@keyframes tooltipFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}

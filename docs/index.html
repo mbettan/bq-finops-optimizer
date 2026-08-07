@@ -51,7 +51,7 @@
         "operatingSystem": "Cross-platform",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "isAccessibleForFree": true,
-        "softwareVersion": "1.3.0",
+        "softwareVersion": "1.4.0",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
         "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
@@ -487,7 +487,7 @@
             <div class="hero-copy">
                 <div class="hero-badges">
                     <span class="chip chip-live"><span class="chip-dot"></span>Open Source · Apache 2.0</span>
-                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.3.0</span>
+                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.4.0</span>
                 </div>
 
                 <h1 class="hero-title">
@@ -610,10 +610,10 @@
                 </div>
                 
                 <!-- ░░ RELEASE BANNER ░░ -->
-    <a href="#features" class="release-banner" aria-label="View new features in v1.3.0">
+    <a href="#features" class="release-banner" aria-label="View new features in v1.4.0">
         <div class="banner-content">
-            <span class="release-tag">New in v1.3.0</span>
-            <span class="release-text"><strong>HBO Optimization Type Badges</strong> · <strong>Per-Job Enrichment from JOBS_BY_PROJECT</strong> · AI Doctor Multi-Strategy Engine · Editions Hybrid Cost Fallback</span>
+            <span class="release-tag">New in v1.4.0</span>
+            <span class="release-text"><strong>CSV Export on Every Table</strong> · <strong>BigQuery Console Deep-Links</strong> · Owner-Level Anti-Pattern Roll-Up · Time Travel TTL Auditing</span>
             <i class="fas fa-arrow-right release-arrow"></i>
         </div>
     </a>
@@ -1268,6 +1268,45 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 
             <div class="bento reveal-group">
 
+                <!-- ★ From Findings to Action (v1.4.0) -->
+                <article class="card card-full card-premium spotlight reveal">
+                    <span class="pill pill-new">✦ v1.4.0 Feature</span>
+                    <div class="premium-grid">
+                        <div>
+                            <div class="card-icon icon-green"><i class="fas fa-list-check"></i></div>
+                            <h3>From Findings to Action</h3>
+                            <p>A cost report nobody acts on saves nothing. Every results table now exports to <strong>CSV</strong> — the full filtered result set, not just the visible page. Every job ID <strong>deep-links into the BigQuery Console</strong>. And the Anti-Pattern Linter rolls thousands of individual offences up into a ranked list of <strong>the people who own them</strong>.</p>
+                            <div class="mini-tags">
+                                <span><i class="fas fa-check"></i>One-Click CSV on Every Table</span>
+                                <span><i class="fas fa-check"></i>Console Deep-Links (Job · Dataset · Table)</span>
+                                <span><i class="fas fa-check"></i>Human vs. Service Account Filtering</span>
+                                <span><i class="fas fa-check"></i>Owner-Level Waste Roll-Up</span>
+                            </div>
+                        </div>
+                        <div>
+                            <p class="premium-label">Triage the Wall of Shame</p>
+                            <div class="pattern-pills">
+                                <span>👤 Identity Type</span>
+                                <span>📧 User</span>
+                                <span>🏷️ Project</span>
+                                <span>🔎 Anti-Pattern</span>
+                                <span>📊 Detail ⇄ Summary</span>
+                            </div>
+                            <p class="premium-label" style="margin-top: 0.75rem;">Also in 1.4.0</p>
+                            <div class="pattern-pills">
+                                <span>Time Travel TTL per Dataset</span>
+                                <span>DML Abuse by Destination Table</span>
+                                <span>Notification History Center</span>
+                                <span>IAM Roles Documented In-Line</span>
+                            </div>
+                            <div class="code-strip">
+                                <span class="code-strip-lang">SQL</span>
+                                <code>ALTER SCHEMA `ds` SET OPTIONS(max_time_travel_hours = 48);</code>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
                 <!-- ★ AI Doctor Multi-Strategy ROI Engine -->
                 <article class="card card-full card-premium spotlight reveal">
                     <span class="pill pill-new">✦ v1.3.0 Feature</span>
@@ -1737,7 +1776,11 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
             'HBO: Per-project JOBS_BY_PROJECT enrichment — fault-isolated fan-out, one 403 never blocks others',
             'AI Doctor: Memory RAM Spill strategy surfaced intermediate shuffle-to-disk query offenders',
             'HBO: Edition-aware pricing ($0.04–$0.10/hr) projected 63% slot savings on batch workloads',
-            'AI Doctor: Editions Hybrid Fallback computed On-Demand equivalent cost for $0 billed byte reservations'
+            'AI Doctor: Editions Hybrid Fallback computed On-Demand equivalent cost for $0 billed byte reservations',
+            'Linter: 1,284 anti-pattern hits rolled up to 17 owners — service accounts filtered out in one click',
+            'Storage Hygiene: default_time_travel_days resolved for 340 datasets in a single batched UNION ALL',
+            'DML Abuse: 12 destination tables averaging 900+ inserts/day flagged for the Storage Write API',
+            'Export: full filtered result set — not just the visible page — downloaded as CSV from any table'
         ];
         const ticker = document.getElementById('ticker-text');
         let tIdx = 0;

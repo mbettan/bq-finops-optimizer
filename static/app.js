@@ -163,6 +163,375 @@ function safeSetLocalStorage(key, value) {
     }
 }
 
+/* ============================================================
+   CORE UI UTILITIES
+   Shared table/formatting helpers used by every module. Defined at
+   top level (the script tag sits at the end of <body>, so the DOM is
+   already parsed) and exported on `window` so the DOMContentLoaded
+   block below and inline handlers can both reach them.
+   ============================================================ */
+
+/**
+ * Format numbers into compact k/m/b strings for table columns.
+ * E.g. 1900090541 -> "1.90b", 42500 -> "42.5k"
+ */
+function formatCompact(num) {
+    if (num == null || isNaN(num)) return '0';
+    const abs = Math.abs(num);
+    if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+    if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+    if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+    if (abs >= 1e3) return (num / 1e3).toFixed(2) + 'k';
+    return num.toLocaleString();
+}
+window.formatCompact = formatCompact;
+
+/**
+ * DataTables column renderer that sorts on an embedded `data-order` value.
+ *
+ * DataTables only reads a `data-order` attribute off the <td> itself, and
+ * only for DOM-sourced tables. Tables built with `row.add([...])` hand
+ * DataTables an HTML string, so the attribute is invisible to the sorter and
+ * "$1,000.00" ends up ordered lexically. This renderer digs the raw number
+ * back out for the sort/type passes and leaves the display pass untouched.
+ */
+function orderByDataAttr(data, type) {
+    if (type !== 'sort' && type !== 'type') return data;
+    const match = /data-order="([^"]*)"/.exec(String(data));
+    const raw = match ? match[1] : String(data).replace(/[^0-9.eE+-]/g, '');
+    const n = parseFloat(raw);
+    return isNaN(n) ? 0 : n;
+}
+window.orderByDataAttr = orderByDataAttr;
+
+/** Escape a value for safe interpolation into an HTML attribute or text node. */
+function escapeHtmlAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+window.escapeHtmlAttr = escapeHtmlAttr;
+
+/**
+ * Build a Google Cloud Console deep-link URL.
+ * `location` accepts either a metadata region ("region-us") or a plain
+ * location ("us") — the "region-" prefix is stripped for the Console.
+ */
+function buildConsoleUrl(type, opts = {}) {
+    const proj = encodeURIComponent(opts.project || '');
+    const loc = encodeURIComponent((opts.location || '').replace(/^region-/, ''));
+    switch (type) {
+        case 'job':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
+        case 'dataset':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&d=${encodeURIComponent(opts.dataset || '')}&page=dataset`;
+        case 'table':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&d=${encodeURIComponent(opts.dataset || '')}&t=${encodeURIComponent(opts.table || '')}&page=table`;
+        default:
+            return '#';
+    }
+}
+window.buildConsoleUrl = buildConsoleUrl;
+
+/**
+ * Render a Job ID cell with monospace ellipsis, copy button and Console
+ * deep-link. Returns a complete <td> so callers can drop it straight into
+ * a row template.
+ */
+function renderJobId(jobId, project, region) {
+    if (!jobId) return '<td class="job-id-cell">—</td>';
+    const proj = project || (typeof state !== 'undefined' ? state.orgProject : '');
+    const loc = region || (typeof state !== 'undefined' ? state.region : 'region-us');
+    const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId });
+    const safeJobId = escapeHtmlAttr(jobId);
+    return `<td class="job-id-cell" data-order="${safeJobId}" title="${safeJobId}">` +
+        `<span class="job-id-text">${safeJobId}</span>` +
+        `<span class="job-id-actions">` +
+        `<a href="${consoleUrl}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` +
+        `<button class="btn-action copy-job-id-btn" data-job-id="${safeJobId}" title="Copy Job ID"><i class="fa-solid fa-copy"></i></button>` +
+        `</span>` +
+        `</td>`;
+}
+window.renderJobId = renderJobId;
+
+/** Render a dataset name with a Console deep-link. */
+function renderDatasetLink(dataset, project, label) {
+    if (!dataset) return '—';
+    const url = buildConsoleUrl('dataset', { project, dataset });
+    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
+}
+window.renderDatasetLink = renderDatasetLink;
+
+/** Render a table name with a Console deep-link. */
+function renderTableLink(table, dataset, project, label) {
+    if (!table) return '—';
+    if (!dataset) return escapeHtmlAttr(label || table);
+    const url = buildConsoleUrl('table', { project, dataset, table });
+    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
+}
+window.renderTableLink = renderTableLink;
+
+/* ------------------------------------------------------------------
+   Universal CSV export engine
+   ------------------------------------------------------------------ */
+
+/**
+ * Download the visible/filtered rows of an HTML <table> as a CSV file.
+ * Exports ALL DataTables rows matching the current search/filter — not
+ * just the active page. Strips HTML, escapes per RFC 4180 and prefixes a
+ * UTF-8 BOM so Excel opens it with the right encoding.
+ */
+function downloadTableAsCSV(tableId, filename) {
+    const tableEl = document.getElementById(tableId);
+    if (!tableEl) {
+        if (typeof showNotification === 'function') {
+            showNotification('No table data to export.', 'warning');
+        }
+        return;
+    }
+
+    const _decodeEntities = (() => {
+        const ta = document.createElement('textarea');
+        return (html) => { ta.innerHTML = html; return ta.value; };
+    })();
+
+    function cellText(cell) {
+        let raw = cell.textContent || '';
+        if (!raw.trim() && cell.innerHTML) {
+            raw = _decodeEntities(cell.innerHTML.replace(/<[^>]*>/g, ' '));
+        }
+        return raw.replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeCSV(val) {
+        if (val == null) return '';
+        const s = String(val);
+        if (/[",\n\r]/.test(s)) {
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+    }
+
+    const thead = tableEl.querySelector('thead');
+    if (!thead) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table has no header row — cannot export.', 'warning');
+        }
+        return;
+    }
+
+    const headerRows = thead.querySelectorAll('tr');
+    const lastHeaderRow = headerRows[headerRows.length - 1];
+    const headerCells = lastHeaderRow ? lastHeaderRow.querySelectorAll('th') : [];
+    const headers = Array.from(headerCells).map(th => escapeCSV(cellText(th)));
+
+    const rows = [];
+    if (typeof $ !== 'undefined' && $.fn && $.fn.DataTable && $.fn.DataTable.isDataTable('#' + tableId)) {
+        const dt = $('#' + tableId).DataTable();
+        dt.rows({ search: 'applied' }).every(function () {
+            const node = this.node();
+            if (node) {
+                const cells = node.querySelectorAll('td');
+                rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+            }
+        });
+    } else {
+        const tbody = tableEl.querySelector('tbody');
+        if (tbody) {
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length) {
+                    rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+                }
+            });
+        }
+    }
+
+    if (rows.length === 0) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table is empty — nothing to export.', 'warning');
+        }
+        return;
+    }
+
+    const csvLines = [headers.join(',')];
+    rows.forEach(r => csvLines.push(r.join(',')));
+    // Leading BOM so Excel detects UTF-8 instead of mangling non-ASCII.
+    const blob = new Blob(['﻿' + csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `${tableId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (typeof showNotification === 'function') {
+        showNotification(`Exported ${rows.length} rows to ${a.download}`, 'success');
+    }
+}
+window.downloadTableAsCSV = downloadTableAsCSV;
+
+// Global delegated handler for CSV export buttons
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-csv-export');
+    if (!btn) return;
+    const tableId = btn.getAttribute('data-table-id');
+    const filename = btn.getAttribute('data-filename') || `${tableId}.csv`;
+    downloadTableAsCSV(tableId, filename);
+});
+
+/**
+ * Attach an "Export CSV" button above every result table that doesn't
+ * already have one. Auto-injection keeps the button contract in one place
+ * instead of hand-editing 30+ markup blocks (and keeps new tables covered).
+ */
+function injectCsvExportButtons(root = document) {
+    root.querySelectorAll('table[id]').forEach(tableEl => {
+        const tableId = tableEl.id;
+        if (!tableEl.querySelector('thead')) return;
+        // Skip layout/helper tables and anything already wired up.
+        if (tableEl.closest('.no-csv-export')) return;
+        if (document.querySelector(`.btn-csv-export[data-table-id="${tableId}"]`)) return;
+
+        const anchor = tableEl.closest('.table-responsive') || tableEl;
+        const parent = anchor.parentElement;
+        if (!parent) return;
+
+        const bar = document.createElement('div');
+        bar.className = 'csv-export-bar';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-action btn-csv-export';
+        btn.setAttribute('data-table-id', tableId);
+        btn.setAttribute('data-filename', `${tableId.replace(/-table$/, '')}.csv`);
+        btn.title = 'Download the filtered rows of this table as CSV';
+        btn.innerHTML = '<i class="fa-solid fa-file-csv"></i> Export CSV';
+        bar.appendChild(btn);
+        parent.insertBefore(bar, anchor);
+    });
+}
+window.injectCsvExportButtons = injectCsvExportButtons;
+
+/* ------------------------------------------------------------------
+   Persistent Notification Center (bell icon)
+   Toasts are ephemeral; this keeps the last N of them in a dropdown.
+   ------------------------------------------------------------------ */
+
+const MAX_NOTIFICATION_HISTORY = 50;
+const notificationHistory = [];
+let notifUnreadCount = 0;
+
+const NotificationCenter = (() => {
+    let notifBadge, notifDropdown, notifHistoryList, notifBellBtn, notifClearBtn;
+
+    function cacheEls() {
+        notifBadge = document.getElementById('notification-badge');
+        notifDropdown = document.getElementById('notification-dropdown');
+        notifHistoryList = document.getElementById('notification-history-list');
+        notifBellBtn = document.getElementById('btn-notification-bell');
+        notifClearBtn = document.getElementById('btn-clear-notifications');
+    }
+
+    function updateNotifBadge() {
+        if (!notifBadge) return;
+        if (notifUnreadCount > 0) {
+            notifBadge.textContent = notifUnreadCount > 99 ? '99+' : notifUnreadCount;
+            notifBadge.style.display = '';
+        } else {
+            notifBadge.style.display = 'none';
+        }
+    }
+
+    function formatNotifTime(date) {
+        const diffSec = Math.floor((new Date() - date) / 1000);
+        if (diffSec < 60) return 'just now';
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin}m ago`;
+        const diffHr = Math.floor(diffMin / 60);
+        if (diffHr < 24) return `${diffHr}h ago`;
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function renderNotifHistory() {
+        if (!notifHistoryList) return;
+        if (notificationHistory.length === 0) {
+            notifHistoryList.innerHTML = '<div class="notif-dropdown__empty">No notifications yet.</div>';
+            return;
+        }
+        const iconMap = {
+            success: 'fa-circle-check',
+            error: 'fa-circle-exclamation',
+            warning: 'fa-triangle-exclamation',
+            info: 'fa-circle-info'
+        };
+        // Newest first. Messages can carry user-supplied text (project IDs,
+        // API error bodies) so they are escaped, never interpolated raw.
+        notifHistoryList.innerHTML = notificationHistory.slice().reverse().map(n => {
+            const icon = iconMap[n.type] || iconMap.info;
+            const safeType = iconMap[n.type] ? n.type : 'info';
+            return `<div class="notif-item">
+            <div class="notif-item__icon ${safeType}"><i class="fa-solid ${icon}"></i></div>
+            <div class="notif-item__body">
+                <div class="notif-item__message">${escapeHtmlAttr(n.message)}</div>
+                <div class="notif-item__time">${formatNotifTime(n.time)}</div>
+            </div>
+        </div>`;
+        }).join('');
+    }
+
+    /** Record a toast into the persistent history. */
+    function record(message, type = 'info') {
+        notificationHistory.push({ message, type, time: new Date() });
+        if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
+        notifUnreadCount++;
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    function init() {
+        cacheEls();
+        if (notifBellBtn) {
+            notifBellBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOpen = notifDropdown && notifDropdown.style.display !== 'none';
+                if (!notifDropdown) return;
+                if (isOpen) {
+                    notifDropdown.style.display = 'none';
+                } else {
+                    renderNotifHistory();
+                    notifDropdown.style.display = '';
+                    notifUnreadCount = 0;
+                    updateNotifBadge();
+                }
+            });
+        }
+        if (notifClearBtn) {
+            notifClearBtn.addEventListener('click', () => {
+                notificationHistory.length = 0;
+                notifUnreadCount = 0;
+                updateNotifBadge();
+                renderNotifHistory();
+            });
+        }
+        // Click-outside closes the panel.
+        document.addEventListener('click', (e) => {
+            if (!notifDropdown || notifDropdown.style.display === 'none') return;
+            if (e.target.closest('#notification-center')) return;
+            notifDropdown.style.display = 'none';
+        });
+        updateNotifBadge();
+    }
+
+    return { init, record, render: renderNotifHistory };
+})();
+window.NotificationCenter = NotificationCenter;
+
 // ---------------------------------------------------------------------------
 // Scope classification — derived from backend, not hand-maintained
 // ---------------------------------------------------------------------------
@@ -290,13 +659,24 @@ const Snapshot = (() => {
     return out;
   }
 
+  // Matching on key names alone is not enough: an address can sit under any
+  // key. The batch priority scan reports a workload under `workload_name`,
+  // which is the operator's email whenever the workload carries no lineage
+  // label — a key-name rule would export those verbatim from a *redacted*
+  // snapshot. This pass only ever removes more, never less.
+  const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const scrubString = (s) => s.replace(EMAIL_RE, 'redacted@example.com');
+
   function redactValue(raw) {
     try {
       const obj = JSON.parse(raw);
       const scrub = (o) => {
         if (!o) return;
         if (Array.isArray(o)) {
-          o.forEach(scrub);
+          o.forEach((item, i) => {
+            if (typeof item === 'string') o[i] = scrubString(item);
+            else scrub(item);
+          });
         } else if (typeof o === 'object') {
           for (const k of Object.keys(o)) {
             const val = o[k];
@@ -305,6 +685,8 @@ const Snapshot = (() => {
               o[k] = 'redacted@example.com';
             } else if (/^query$|^query_text$|^query_snippet$/i.test(k) && typeof val === 'string') {
               o[k] = '-- [redacted query]';
+            } else if (typeof val === 'string') {
+              o[k] = scrubString(val);
             } else if (typeof val === 'object') {
               scrub(val);
             }
@@ -494,6 +876,10 @@ const Snapshot = (() => {
 })();
 
 document.addEventListener('DOMContentLoaded', () => {
+
+    // Shared chrome: bell-icon notification history + per-table CSV buttons.
+    NotificationCenter.init();
+    injectCsvExportButtons();
 
     const debug_log = (...args) => {
         if (state.debugMode) {
@@ -1105,7 +1491,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 tr.innerHTML = `
                     <td>${row.project_id}</td>
-                    <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
                     <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
@@ -1890,8 +2276,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td>${row.admin_project_id || ''}</td>
                         <td>${row.region || ''}</td>
                         <td>${row.edition}</td>
-                        <td>${formatNumber(row.current_baseline)}</td>
-                        <td>${formatNumber(row.current_max_slots)}</td>
+                        <td data-order="${row.current_baseline || 0}">${formatNumber(row.current_baseline)}</td>
+                        <td data-order="${row.current_max_slots || 0}">${formatNumber(row.current_max_slots)}</td>
                         <td>${row.ignore_idle_slots ? 'No' : 'Yes'}</td>
                         <td>${row.scaling_mode || 'N/A'}</td>
                         <td>${row.target_job_concurrency || 'Auto'}</td>
@@ -1902,6 +2288,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             container.appendChild(table);
+            // This table is built at render time, so the page-load sweep
+            // never saw it — give it an export button of its own.
+            injectCsvExportButtons(container);
         }
 
 
@@ -1919,10 +2308,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 tr.innerHTML = `
                     <td>${displayResId}</td>
-                    <td><strong>${formatNumber(row.recommended_baseline)}</strong></td>
-                    <td>${formatNumber(row.recommended_max_p90)}</td>
-                    <td>${formatNumber(row.recommended_max_p99)}</td>
-                    <td>${formatNumber(row.recommended_max_peak)}</td>
+                    <td data-order="${row.recommended_baseline || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td data-order="${row.recommended_max_p90 || 0}">${formatNumber(row.recommended_max_p90)}</td>
+                    <td data-order="${row.recommended_max_p99 || 0}">${formatNumber(row.recommended_max_p99)}</td>
+                    <td data-order="${row.recommended_max_peak || 0}">${formatNumber(row.recommended_max_peak)}</td>
                 `;
                 
                 if (displayResId === 'MERGED (Simulated)') {
@@ -2290,6 +2679,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
+                    ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
                     ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
                 </div>`,
                 formatNumber(row.frequency),
@@ -2533,6 +2923,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const showNotification = (message, type = 'info') => {
+        // Every toast is also archived in the bell-icon panel — the toast
+        // itself disappears after 3s and users kept missing scan results.
+        NotificationCenter.record(message, type);
+
         // If an identical notification is already showing, flash it to acknowledge the click without stacking duplicate popups
         if (elements.notificationContainer) {
             const activeNotifs = elements.notificationContainer.querySelectorAll('.notification');
@@ -2660,6 +3054,35 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
     }
 
+    /**
+     * Seed the reservations form from the last Slots Optimizer run so users
+     * don't have to retype reservation IDs they already discovered. Only
+     * fills the ID — SKU rate and total bill come off the GCP invoice and
+     * cannot be inferred, so they stay blank on purpose.
+     */
+    const autoPopulateReservationsFromSlots = () => {
+        const existingRows = document.querySelectorAll('.reservation-row');
+        if (existingRows.length > 0) return;
+
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (!cachedSlots) return;
+
+        try {
+            const slotsData = JSON.parse(cachedSlots);
+            if (!slotsData.current_reservations || slotsData.current_reservations.length === 0) return;
+
+            slotsData.current_reservations.forEach(res => {
+                addReservationRow(res.reservation_id, '', '');
+            });
+            showNotification(
+                `Pre-filled ${slotsData.current_reservations.length} reservation(s) from Slots Optimizer. Please enter SKU Rate and Total Bill.`,
+                'info'
+            );
+        } catch (e) {
+            console.warn('Failed to auto-populate reservations from cached slots data:', e);
+        }
+    };
+
     const loadCostAttributionConfig = async () => {
         try {
             const response = await fetch('/api/cost-attribution/config');
@@ -2673,6 +3096,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (error) {
             console.error("Failed to load cost attribution config:", error);
         }
+        // Runs after the saved config renders — no-ops if any row exists.
+        autoPopulateReservationsFromSlots();
     };
 
     if (elements.btnCalculateCostAttribution) {
@@ -2761,7 +3186,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#cost-attribution-results-table').DataTable({
                 pageLength: 10,
                 order: [[4, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [2, 3, 4], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2779,12 +3205,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 displayResId = displayResId.split(':').pop();
             }
 
+            // data-order carries the raw number so DataTables sorts these
+            // numerically instead of lexically on the "$1,234.00" string.
             table.row.add([
                 row.project_id,
                 displayResId,
-                formatCurrency(row.direct_usage_cost_usd),
-                formatCurrency(row.allocated_waste_cost_usd),
-                `<strong>${formatCurrency(row.total_cost_attribution_usd)}</strong>`
+                `<span data-order="${row.direct_usage_cost_usd || 0}">${formatCurrency(row.direct_usage_cost_usd)}</span>`,
+                `<span data-order="${row.allocated_waste_cost_usd || 0}">${formatCurrency(row.allocated_waste_cost_usd)}</span>`,
+                `<span data-order="${row.total_cost_attribution_usd || 0}"><strong>${formatCurrency(row.total_cost_attribution_usd)}</strong></span>`
             ]);
 
             // Aggregate slots
@@ -2806,7 +3234,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             slotTable = $('#slot-usage-by-project-table').DataTable({
                 pageLength: 5,
                 order: [[1, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [1], type: 'num', render: orderByDataAttr }]
             });
         }
         slotTable.clear();
@@ -2814,7 +3243,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         for (const [projId, slots] of Object.entries(projectSlots)) {
             slotTable.row.add([
                 projId,
-                `${slots.toFixed(2)} hrs`
+                `<span data-order="${slots}">${slots.toFixed(2)} hrs</span>`
             ]);
         }
         slotTable.draw();
@@ -2945,11 +3374,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td>${formatNumber(row.query_count)}</td>
-                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
-                <td>${formatNumber(row.total_slot_hours)}</td>
-                <td>${formatCurrency(row.est_on_demand_cost)}</td>
-                <td>${formatCurrency(row.est_editions_cost)}</td>
+                <td data-order="${row.query_count || 0}">${formatNumber(row.query_count)}</td>
+                <td data-order="${row.total_bytes_billed || 0}">${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
+                <td data-order="${row.total_slot_hours || 0}">${formatNumber(row.total_slot_hours)}</td>
+                <td data-order="${row.est_on_demand_cost || 0}">${formatCurrency(row.est_on_demand_cost)}</td>
+                <td data-order="${row.est_editions_cost || 0}">${formatCurrency(row.est_editions_cost)}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -3384,7 +3813,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.slot_contention_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${row.user_email}</td>
                     <td>${row.project_id}</td>
                     <td>${row.stage_id}</td>
@@ -3404,7 +3833,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.shuffle_quota_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${row.user_email}</td>
                     <td>${row.project_id}</td>
                     <td>${row.stage_id}</td>
@@ -3424,7 +3853,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.data_volume_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${row.user_email}</td>
                     <td>${row.project_id}</td>
                     <td class="text-danger" style="font-weight: 600;">${formatDiffPct(row.diff_pct)}</td>
@@ -3495,13 +3924,26 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const badgeColor = row.health_status === 'Healthy' ? '#22c55e' : '#ef4444';
             const churnPct = row.churn_ratio != null ? (row.churn_ratio * 100).toFixed(1) + '%' : 'N/A';
 
+            // Time travel TTL: under the 7-day default is a win, over it is a
+            // cost risk on a churny table. Older snapshots have no field → 7.
+            const ttlDays = row.time_travel_days ?? 7;
+            let ttlBadgeBg, ttlBadgeColor, ttlLabel;
+            if (ttlDays < 7) {
+                ttlBadgeBg = 'rgba(34, 197, 94, 0.15)'; ttlBadgeColor = '#22c55e'; ttlLabel = `${ttlDays}d ✓`;
+            } else if (ttlDays > 7) {
+                ttlBadgeBg = 'rgba(251, 191, 36, 0.15)'; ttlBadgeColor = '#fbbf24'; ttlLabel = `${ttlDays}d ⚠`;
+            } else {
+                ttlBadgeBg = 'rgba(148, 163, 184, 0.1)'; ttlBadgeColor = '#94a3b8'; ttlLabel = `${ttlDays}d`;
+            }
+
             tr.innerHTML = `
                 <td>${row.project_id || ''}</td>
-                <td>${row.dataset}</td>
-                <td>${row.table_name}</td>
-                <td>${(row.live_active_physical_gb || 0).toFixed(2)}</td>
-                <td>${(row.time_travel_gb || 0).toFixed(2)}</td>
-                <td>${churnPct}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
+                <td data-order="${row.live_active_physical_gb || 0}">${(row.live_active_physical_gb || 0).toFixed(2)}</td>
+                <td data-order="${row.time_travel_gb || 0}">${(row.time_travel_gb || 0).toFixed(2)}</td>
+                <td data-order="${ttlDays}"><span class="badge" style="background: ${ttlBadgeBg}; color: ${ttlBadgeColor}; font-weight: 600;">${ttlLabel}</span></td>
+                <td data-order="${row.churn_ratio || 0}">${churnPct}</td>
                 <td><span class="badge" style="background: ${badgeBg}; color: ${badgeColor}; font-weight: 600;">${row.health_status}</span></td>
             `;
             tbody.appendChild(tr);
@@ -3527,10 +3969,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (tableCountEl) tableCountEl.textContent = data.length;
         if (highChurnCountEl) highChurnCountEl.textContent = highChurnCount;
 
-        if ($.fn.DataTable.isDataTable('#hygiene-results-table')) {
-            $('#hygiene-results-table').DataTable().destroy();
-        }
-        $('#hygiene-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
+        // Column 7 = Health Status (index shifted by the new TTL column).
+        safeInitDataTable('#hygiene-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
     };
 
     if (elements.btnAnalyzeHygiene) {
@@ -3584,28 +4024,263 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
     }
 
+    // Minimal comment/keyword highlighter for the remediation snippets.
+    // Escapes first, then decorates — never inject un-escaped snippet text.
+    const highlightSnippet = (snippet) => escapeHtmlAttr(snippet)
+        .replace(/^(\s*#.*)$/gm, '<span style="color: #64748b;">$1</span>')
+        .replace(/\b(BATCH|INTERACTIVE|batch|interactive)\b/g, '<span style="color: #fbbf24;">$1</span>');
+
+    // Global Remediation Modal Renderer
+    window.showRemediationModal = function (name, type, recPriority) {
+        let snippet = '';
+        const isBatch = recPriority === 'BATCH';
+        if (type.includes('Dataform') || type.includes('Scheduled Query')) {
+            snippet = `# Architecture Migration Required
+# Tooling Constraint:
+# ${type} does not currently support native BATCH priority execution flags.
+
+# Recommended Workaround:
+# Migrate orchestration to Google Cloud Composer (Airflow) or Cloud Workflows,
+# which provide native job configuration overrides for BigQuery execution priority.`;
+        } else if (type.includes('dbt')) {
+            snippet = `# profiles.yml
+target: prod
+outputs:
+  prod:
+    type: bigquery
+    project: your-project-id
+    dataset: analytics
+    priority: ${isBatch ? 'batch' : 'interactive'} # Sets all dbt query executions to ${recPriority}`;
+        } else if (type.includes('Airflow')) {
+            snippet = `# Airflow DAG Operator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+
+run_task = BigQueryInsertJobOperator(
+    task_id="transform_task",
+    configuration={
+        "query": {
+            "query": "MERGE INTO ...",
+            "priority": "${recPriority}", # Configures execution priority
+        }
+    },
+)`;
+        } else {
+            snippet = `# Python SDK & bq CLI
+# Python:
+job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.${recPriority})
+query_job = client.query("...", job_config=job_config)
+
+# bq CLI:
+${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq query --use_legacy_sql=false 'SELECT ...'"}`;
+        }
+
+        const existing = document.getElementById('remediation-modal-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'remediation-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 600px; max-width: 92%; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-code" style="margin-right: 0.5rem;"></i>Remediation Snippet</h3>
+                    <button id="close-remediation-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem;">
+                    Workload: <strong style="color: #e2e8f0;">${escapeHtmlAttr(name)}</strong> <span style="color: #64748b;">(${escapeHtmlAttr(type)})</span><br/>
+                    Recommended Priority: <span class="badge ${isBatch ? 'warning' : 'primary'}" style="font-size: 0.75rem;">${escapeHtmlAttr(recPriority)}</span>
+                </p>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.82rem; line-height: 1.65; overflow-x: auto; white-space: pre-wrap; margin: 0;">${highlightSnippet(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                    <button id="copy-remediation-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('close-remediation-btn').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('copy-remediation-btn').addEventListener('click', function () {
+            // copyToClipboard, not navigator.clipboard directly: the latter is
+            // undefined on non-secure origins (local dev on 0.0.0.0), where a bare
+            // call throws and the button silently does nothing.
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    };
+
+    // Body-level singleton for the detection-reason popover. Lives outside the
+    // results card so no `overflow` or transformed ancestor can clip it, and is
+    // built with textContent so nothing in the payload can be interpreted as markup.
+    const batchTooltip = (() => {
+        let node = null;
+        let anchoredTo = null;
+
+        const ensure = () => {
+            if (!node) {
+                node = document.createElement('div');
+                node.className = 'batch-tooltip-popup';
+                document.body.appendChild(node);
+            }
+            return node;
+        };
+
+        const hide = () => {
+            anchoredTo = null;
+            if (node) node.classList.remove('is-visible');
+        };
+
+        const show = (wrap) => {
+            // mouseover re-fires for every descendant the pointer crosses; without
+            // this the popup would rebuild and restart its fade on each one.
+            if (anchoredTo === wrap) return;
+            anchoredTo = wrap;
+
+            const tip = ensure();
+            tip.textContent = '';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight: 600; margin-bottom: 0.4rem; color: #f8fafc;';
+            title.textContent = wrap.dataset.tipTitle || '';
+            tip.appendChild(title);
+
+            const summary = document.createElement('div');
+            summary.style.cssText = 'margin-bottom: 0.5rem; line-height: 1.5;';
+            summary.textContent = wrap.dataset.tipSummary || '';
+            tip.appendChild(summary);
+
+            const reasons = (wrap.dataset.tipReasons || '').split('\n').filter(Boolean);
+            if (reasons.length) {
+                const block = document.createElement('div');
+                block.style.cssText = 'border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.4rem; font-size: 0.75rem; color: #94a3b8;';
+                const heading = document.createElement('strong');
+                heading.style.color = '#cbd5e1';
+                heading.textContent = 'Detection Reasons:';
+                block.appendChild(heading);
+                reasons.forEach(text => {
+                    const line = document.createElement('div');
+                    line.textContent = `• ${text}`;
+                    block.appendChild(line);
+                });
+                tip.appendChild(block);
+            }
+
+            // Measure before placing: the popup flips below the badge when there
+            // is not enough room above, and is clamped to the viewport sideways.
+            tip.classList.add('is-visible');
+            const anchor = wrap.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+            const GAP = 8;
+            const MARGIN = 8;
+
+            let top = anchor.top - tipRect.height - GAP;
+            if (top < MARGIN) top = anchor.bottom + GAP;
+
+            let left = anchor.left + (anchor.width / 2) - (tipRect.width / 2);
+            left = Math.max(MARGIN, Math.min(left, window.innerWidth - tipRect.width - MARGIN));
+
+            tip.style.top = `${Math.round(top)}px`;
+            tip.style.left = `${Math.round(left)}px`;
+        };
+
+        return { show, hide };
+    })();
+    // Fixed coordinates go stale the moment anything moves underneath them.
+    window.addEventListener('scroll', batchTooltip.hide, true);
+    window.addEventListener('resize', batchTooltip.hide);
+
     const renderBatchCandidatesResults = (data) => {
         const tbody = document.querySelector('#batch-candidates-results-table tbody');
         if (!tbody) return;
+        batchTooltip.hide();
         tbody.innerHTML = '';
 
-        data.forEach(row => {
+        // Cached payloads from before the workload engine used a per-job shape.
+        // Drop them rather than emit rows with the wrong column count, which
+        // would break DataTables initialisation.
+        const rows = (data || []).filter(r => r && r.workload_name && r.finding_category);
+
+        rows.forEach(row => {
             const tr = document.createElement('tr');
+            const reasons = (row.detection_reasons || []).join('\n');
+
+            const isUnder = row.finding_category === 'UNDER_BATCHED';
+            const badgeClass = isUnder ? 'danger' : 'warning';
+            const badgeIcon = isUnder ? 'fa-triangle-exclamation' : 'fa-hourglass-half';
+            const badgeLabel = isUnder ? 'UNDER_BATCHED' : 'OVER_BATCHED';
+            const summary = isUnder
+                ? 'Automated pipeline running in INTERACTIVE mode. Risks starving live dashboards of the 100-query concurrent limit. Switch to BATCH for auto-retry protection at identical pricing.'
+                : 'Human/BI workload facing >30s BATCH queue lag. Switch to INTERACTIVE for instant slot allocation.';
+
+            // The popup body travels as data-* rather than as a hidden child of the
+            // cell: it is rendered into a single body-level node on hover (see
+            // batchTooltip), and a hidden child would also be swept into the CSV
+            // export, which reads cell text via textContent.
+            const categoryBadge = `
+                <span class="batch-tooltip-wrap" data-tip-title="${escapeHtmlAttr(badgeLabel)}" data-tip-summary="${escapeHtmlAttr(summary)}" data-tip-reasons="${escapeHtmlAttr(reasons)}">
+                    <span class="badge ${badgeClass}" style="cursor: help;">
+                        <i class="fa-solid ${badgeIcon}" style="margin-right: 0.25rem;"></i>${badgeLabel}
+                    </span>
+                </span>`;
+
+            const confBadge = row.confidence === 'HIGH'
+                ? `<span class="badge success" style="font-size: 0.7rem; margin-left: 0.3rem;">HIGH CONF</span>`
+                : `<span class="badge secondary" style="font-size: 0.7rem; margin-left: 0.3rem;">LOW CONF</span>`;
+
+            const actionBtn = row.has_remediation
+                ? `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code" style="margin-right: 0.25rem;"></i>Snippet</button>`
+                : `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb" style="margin-right: 0.25rem;"></i>Guidance</button>`;
+
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
-                <td>${row.user_email}</td>
-                <td><span class="badge logical">${row.batch_candidate_reason}</span></td>
-                <td>${row.duration_minutes.toFixed(1)}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td><strong>${escapeHtmlAttr(row.workload_name)}</strong> ${confBadge}</td>
+                <td><span class="badge logical">${escapeHtmlAttr(row.workload_type)}</span></td>
+                <td>${escapeHtmlAttr(row.project_id)}</td>
+                <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
+                <td data-order="${row.total_slot_hours}">${row.total_slot_hours.toFixed(2)} hrs</td>
+                <td data-order="${row.pct_interactive}">${row.pct_interactive.toFixed(1)}%</td>
+                <td data-order="${row.total_human_wait_seconds}">${row.total_human_wait_seconds > 0 ? row.total_human_wait_seconds.toFixed(0) + 's' : '-'}</td>
+                <td>${categoryBadge}</td>
+                <td>${actionBtn}</td>
             `;
             tbody.appendChild(tr);
         });
 
+        // Delegated on the table so the handlers survive DataTables destroy/re-init;
+        // the flag keeps re-renders from stacking duplicates.
+        const batchTable = document.getElementById('batch-candidates-results-table');
+        if (batchTable && !batchTable._batchDelegateAttached) {
+            batchTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-remediation');
+                if (btn) {
+                    batchTooltip.hide();
+                    window.showRemediationModal(btn.dataset.wname, btn.dataset.wtype, btn.dataset.wpriority);
+                }
+            });
+            // mouseover/mouseout rather than mouseenter/mouseleave: the latter do
+            // not bubble, so they cannot be delegated from the table.
+            batchTable.addEventListener('mouseover', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap) batchTooltip.show(wrap);
+            });
+            batchTable.addEventListener('mouseout', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap && !wrap.contains(e.relatedTarget)) batchTooltip.hide();
+            });
+            batchTable._batchDelegateAttached = true;
+        }
+
         if ($.fn.DataTable.isDataTable('#batch-candidates-results-table')) {
             $('#batch-candidates-results-table').DataTable().destroy();
         }
-        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [[5, 'desc']], responsive: true });
+        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [], responsive: true });
     };
 
     const renderSkewResults = (data) => {
@@ -3617,7 +4292,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.project_id}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.user_email}</td>
                 <td>${row.stage_name}</td>
                 <td>${row.avg_compute_ms.toLocaleString()}</td>
@@ -3633,55 +4308,236 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         $('#skew-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
+    /* --------------------------------------------------------------
+       Anti-pattern filtering & aggregation
+       The scan returns one row per offending job. Raw rows are cached in
+       `_linterRawData` so the toolbar can re-slice them client-side
+       without re-running the (expensive) INFORMATION_SCHEMA scan.
+       -------------------------------------------------------------- */
+    let _linterRawData = [];
+    const _linterFilterState = { userType: 'all', user: '', project: '', abuseType: '', view: 'detail' };
+
+    const isServiceAccount = (email) => {
+        if (!email) return false;
+        return email.endsWith('.gserviceaccount.com') || email.endsWith('.iam.gserviceaccount.com');
+    };
+
+    const formatDataSize = (gb) => {
+        // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+        if (gb >= 1024) {
+            return `${formatNumber(gb / 1024)} TiB`;
+        }
+        return `${formatNumber(gb)} GiB`;
+    };
+
+    /** Rebuild the User / Project / Anti-pattern dropdowns from the raw rows. */
+    const populateLinterFilterOptions = () => {
+        // `stateKey` matters: dropping a value from the <select> without also
+        // clearing it from _linterFilterState leaves the filter silently
+        // active — the table empties while the dropdown reads "All users".
+        const fill = (id, stateKey, values, allLabel) => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            const previous = sel.value;
+            sel.innerHTML = `<option value="">${allLabel}</option>` +
+                values.map(v => `<option value="${escapeHtmlAttr(v)}">${escapeHtmlAttr(v)}</option>`).join('');
+            // Keep the current selection if it still exists in the new data.
+            const retained = values.includes(previous) ? previous : '';
+            sel.value = retained;
+            _linterFilterState[stateKey] = retained;
+        };
+
+        const uniq = (key) => Array.from(new Set(
+            _linterRawData.map(r => r[key]).filter(Boolean)
+        )).sort();
+
+        fill('ap-filter-user', 'user', uniq('user_email'), 'All users');
+        fill('ap-filter-project', 'project', uniq('project_id'), 'All projects');
+        fill('ap-filter-abuse', 'abuseType', uniq('abuse_type'), 'All types');
+    };
+
+    /**
+     * Apply the toolbar filters to `_linterRawData`, refresh the stats
+     * strip, then render whichever view (detail / summary) is active.
+     */
+    const applyLinterFilters = () => {
+        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
+        let filtered = _linterRawData;
+
+        if (_linterFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_linterFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+
+        if (_linterFilterState.user) filtered = filtered.filter(r => r.user_email === _linterFilterState.user);
+        if (_linterFilterState.project) filtered = filtered.filter(r => r.project_id === _linterFilterState.project);
+        if (_linterFilterState.abuseType) filtered = filtered.filter(r => r.abuse_type === _linterFilterState.abuseType);
+
+        const totalGb = filtered.reduce((s, r) => s + (r.billed_gb || 0), 0);
+        const totalWaste = totalGb * odRate / 1024;
+
+        const statsEl = document.getElementById('ap-filter-stats');
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${filtered.length}</span> of ${_linterRawData.length} queries</span>
+                <span class="ap-stat">Total Data Billed: <span class="ap-stat-value">${formatNumber(totalGb)} GiB</span></span>
+                <span class="ap-stat">Total Est. Waste: <span class="ap-stat-value" style="color: #f87171;">${formatCurrency(totalWaste)}</span></span>
+            `;
+        }
+
+        const detailView = document.getElementById('linter-detail-view');
+        const summaryView = document.getElementById('linter-summary-view');
+        if (_linterFilterState.view === 'summary') {
+            if (detailView) detailView.style.display = 'none';
+            if (summaryView) summaryView.style.display = '';
+            renderLinterSummary(filtered, odRate);
+        } else {
+            if (detailView) detailView.style.display = '';
+            if (summaryView) summaryView.style.display = 'none';
+            renderLinterDetail(filtered, odRate);
+        }
+    };
+
+    /** Wire the toolbar once; the handlers just mutate state and re-apply. */
+    const initLinterToolbar = () => {
+        const bind = (id, key) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', () => {
+                _linterFilterState[key] = el.value;
+                applyLinterFilters();
+            });
+        };
+        bind('ap-filter-user-type', 'userType');
+        bind('ap-filter-user', 'user');
+        bind('ap-filter-project', 'project');
+        bind('ap-filter-abuse', 'abuseType');
+
+        const toggle = document.getElementById('ap-view-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-view]');
+                if (!btn) return;
+                _linterFilterState.view = btn.getAttribute('data-view');
+                toggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+                applyLinterFilters();
+            });
+        }
+
+        const resetBtn = document.getElementById('ap-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                Object.assign(_linterFilterState, { userType: 'all', user: '', project: '', abuseType: '' });
+                ['ap-filter-user', 'ap-filter-project', 'ap-filter-abuse'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = '';
+                });
+                const typeEl = document.getElementById('ap-filter-user-type');
+                if (typeEl) typeEl.value = 'all';
+                applyLinterFilters();
+            });
+        }
+    };
+    initLinterToolbar();
+
     const renderLinterResults = (data) => {
+        _linterRawData = Array.isArray(data) ? data : [];
+        populateLinterFilterOptions();
+        applyLinterFilters();
+    };
+
+    /** Roll the filtered jobs up to (user × project × anti-pattern). */
+    const renderLinterSummary = (rows, odRate) => {
+        const tbody = document.querySelector('#linter-summary-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const groups = new Map();
+        rows.forEach(r => {
+            const key = JSON.stringify([r.user_email, r.project_id, r.abuse_type]);
+            let g = groups.get(key);
+            if (!g) {
+                g = {
+                    user_email: r.user_email,
+                    project_id: r.project_id,
+                    abuse_type: r.abuse_type,
+                    count: 0,
+                    billed_gb: 0
+                };
+                groups.set(key, g);
+            }
+            g.count += 1;
+            g.billed_gb += r.billed_gb || 0;
+        });
+
+        Array.from(groups.values())
+            .sort((a, b) => b.billed_gb - a.billed_gb)
+            .forEach(g => {
+                const waste = g.billed_gb * odRate / 1024;
+                const sa = isServiceAccount(g.user_email);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><span style="color: #e2e8f0; font-weight: 500;">${escapeHtmlAttr(g.user_email)}</span></td>
+                    <td><span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600;">${sa ? 'Service Account' : 'Human'}</span></td>
+                    <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${escapeHtmlAttr(g.project_id)}</span></td>
+                    <td>${getAbuseBadge(g.abuse_type)}</td>
+                    <td data-order="${g.count}">${formatCompact(g.count)}</td>
+                    <td data-order="${g.billed_gb}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatDataSize(g.billed_gb)}</strong></td>
+                    <td data-order="${waste}">${getWasteCell(waste)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+        safeInitDataTable('#linter-summary-table', {
+            pageLength: 10,
+            order: [[6, 'desc']],
+            autoWidth: false
+        });
+    };
+
+    function getAbuseBadge(type) {
+        type = type || 'UNKNOWN';
+        let bg, color, border;
+        if (type.includes('LIMIT TRAP')) {
+            bg = 'rgba(139, 92, 246, 0.15)'; // Purple
+            color = '#c084fc';
+            border = 'rgba(139, 92, 246, 0.3)';
+        } else if (type.includes('DML SCAN')) {
+            bg = 'rgba(239, 68, 68, 0.15)'; // Red
+            color = '#f87171';
+            border = 'rgba(239, 68, 68, 0.3)';
+        } else {
+            bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
+            color = '#fbbf24';
+            border = 'rgba(245, 158, 11, 0.3)';
+        }
+        return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${escapeHtmlAttr(type)}</span>`;
+    }
+
+    function getWasteCell(waste) {
+        if (waste > 0) {
+            return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
+        }
+        return `<span style="color: #64748b;">$0.00</span>`;
+    }
+
+    /** One row per offending job — the default (unaggregated) view. */
+    function renderLinterDetail(rows, odRate) {
         const tbody = document.querySelector('#linter-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        const formatDataSize = (gb) => {
-            // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
-            if (gb >= 1024) {
-                return `${formatNumber(gb / 1024)} TiB`;
-            }
-            return `${formatNumber(gb)} GiB`;
-        };
-
-        const getAbuseBadge = (type) => {
-            let bg, color, border;
-            if (type.includes('LIMIT TRAP')) {
-                bg = 'rgba(139, 92, 246, 0.15)'; // Purple
-                color = '#c084fc';
-                border = 'rgba(139, 92, 246, 0.3)';
-            } else if (type.includes('DML SCAN')) {
-                bg = 'rgba(239, 68, 68, 0.15)'; // Red
-                color = '#f87171';
-                border = 'rgba(239, 68, 68, 0.3)';
-            } else {
-                bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
-                color = '#fbbf24';
-                border = 'rgba(245, 158, 11, 0.3)';
-            }
-            return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${type}</span>`;
-        };
-
-        const getWasteCell = (waste) => {
-            if (waste > 0) {
-                return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
-            }
-            return `<span style="color: #64748b;">$0.00</span>`;
-        };
-
-        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
-        data.forEach(row => {
-            const estimated_waste_usd = row.billed_gb * odRate / 1024;
+        rows.forEach(row => {
+            const estimated_waste_usd = (row.billed_gb || 0) * odRate / 1024;
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><span style="color: #e2e8f0; font-weight: 500;">${row.user_email}</span></td>
                 <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.project_id}</span></td>
-                <td><span style="color: #64748b; font-family: monospace; font-size: 0.85rem;">${row.job_id}</span></td>
-                <td><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td data-order="${row.billed_gb || 0}"><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
                 <td>${getAbuseBadge(row.abuse_type)}</td>
-                <td>${getWasteCell(estimated_waste_usd)}</td>
+                <td data-order="${estimated_waste_usd}">${getWasteCell(estimated_waste_usd)}</td>
                 <td><div style="font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.8rem; background: rgba(0,0,0,0.4); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-width: 350px; overflow-x: auto; white-space: nowrap; color: #cbd5e1;">${row.query_snippet}</div></td>
                 <td>
                     <div style="display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.85rem; color: #94a3b8; line-height: 1.3; min-width: 250px;">
@@ -3698,7 +4554,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             order: [[3, 'desc']],
             autoWidth: false
         });
-    };
+    }
 
     const renderAntiPatternsResults = (data) => {
         const tbody = document.querySelector('#antipatterns-results-table tbody');
@@ -3707,23 +4563,40 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         const edRate = parseFloat(document.getElementById('jb-ed-rate')?.value) || 0.06;
         data.forEach(row => {
-            const wasteUsd = row.wasted_slot_hours * edRate;
+            const slotHours = row.wasted_slot_hours || 0;
+            const wasteUsd = slotHours * edRate;
+            const insertCount = row.insert_job_count || 0;
+            const activeDays = row.active_days || 1;
+            const perDay = row.avg_inserts_per_day != null
+                ? row.avg_inserts_per_day
+                : insertCount / Math.max(activeDays, 1);
+
+            // Destination table is the migration unit. Pre-table-centric
+            // snapshots have no dest_* fields — fall back to a dash.
+            const destProject = row.dest_project_id || row.project_id;
+            const destLabel = row.dest_table_id
+                ? `${row.dest_dataset_id || '?'}.${row.dest_table_id}`
+                : '—';
+            const destCell = row.dest_table_id
+                ? `<span style="font-family: monospace; font-size: 0.82rem;" title="${escapeHtmlAttr(`${destProject}.${destLabel}`)}">${renderTableLink(row.dest_table_id, row.dest_dataset_id, destProject, destLabel)}</span>`
+                : '<span style="color: #64748b;">—</span>';
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
+                <td data-order="${escapeHtmlAttr(destLabel)}">${destCell}</td>
                 <td>${row.user_email}</td>
                 <td>${row.project_id}</td>
-                <td>${row.insert_job_count.toLocaleString()}</td>
-                <td>${row.wasted_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
-                <td><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
+                <td data-order="${insertCount}">${formatCompact(insertCount)}</td>
+                <td data-order="${activeDays}">${activeDays}</td>
+                <td data-order="${perDay}">${formatCompact(Math.round(perDay))}</td>
+                <td data-order="${slotHours}">${slotHours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td data-order="${wasteUsd}"><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
                 <td><span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">Migrate to Storage Write API</span></td>
             `;
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#antipatterns-results-table')) {
-            $('#antipatterns-results-table').DataTable().destroy();
-        }
-        $('#antipatterns-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
+        safeInitDataTable('#antipatterns-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
     };
 
     const renderExpirationResults = (data) => {
@@ -3778,10 +4651,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.project_id}</td>
-                <td>${row.dataset}</td>
-                <td>${row.table_name}</td>
-                <td>${row.refresh_count.toLocaleString()}</td>
-                <td>${row.total_slot_hours.toFixed(2)}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
+                <td data-order="${row.refresh_count || 0}">${formatCompact(row.refresh_count)}</td>
+                <td data-order="${row.total_slot_hours || 0}">${(row.total_slot_hours || 0).toFixed(2)} hrs</td>
             `;
             tbody.appendChild(tr);
         });
@@ -3801,7 +4674,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.mv_name}</td>
                 <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.rejected_reason}</td>
             `;
@@ -3823,12 +4696,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td>
-                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                        <span style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</span>
-                        <button class="btn-action copy-job-id-btn" data-job-id="${row.job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>
-                    </div>
-                </td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td style="font-size: 0.85rem; color: #f59e0b;">${row.resource_warning}</td>
             `;
             tbody.appendChild(tr);
@@ -3897,7 +4765,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 region: state.region,
                 focus_projects: state.focusProjects,
                 lookback_days: 1,
-                threshold: 1000
+                // Per destination table, not per user — see DMLAbuseParams.
+                threshold: 100
             };
             try {
                 const response = await fetch('/api/antipatterns/dml', {
@@ -4276,7 +5145,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const modeClass = row.bi_engine_mode === 'FULL' ? 'physical' : (row.bi_engine_mode === 'PARTIAL' ? 'logical' : 'error');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.processed_gb.toFixed(2)}</td>
                 <td>${row.billed_gb.toFixed(2)}</td>
                 <td><span class="badge ${modeClass}">${row.bi_engine_mode}</span></td>
@@ -4387,7 +5256,12 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 else if (r.severity === 'LOW') nLow++;
                 totalReferenced += (r.tables_referenced_count || 0);
                 totalFound += (r.tables_found_count || 0);
-                if (r.migration_applied_yaml) nMigration++;
+                // Same echo test the row loop applies — counting rows the
+                // "Migration" pill then filters out would show a KPI of N
+                // that expands to fewer than N rows.
+                const rHasRewrite = !!r.optimized_query
+                    && (r.optimized_query || '').trim() !== (r.query || '').trim();
+                if (r.migration_applied_yaml && rHasRewrite) nMigration++;
                 if ((r.tables_referenced_count || 0) > (r.tables_found_count || 0)) nSchemaGap++;
                 if (r.execution_count && r.execution_count > 1) nRepeat++;
             });
@@ -4433,13 +5307,23 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         };
 
         data.forEach(row => {
+            // The backend suppresses SQL it merely echoed back; repeat the test
+            // here so snapshots taken before that fix behave the same. An echo
+            // means the Migration API config changed nothing, so the YAML badge
+            // and the "Migration" filter pill must be suppressed with it —
+            // otherwise the pill surfaces rows whose Optimized SQL cell is "—".
+            const isEcho = !!row.optimized_query
+                && (row.optimized_query || '').trim() === (row.query || '').trim();
+            const hasRewrite = !!row.optimized_query && !isEcho;
+            const migrationYaml = hasRewrite ? row.migration_applied_yaml : null;
+
             const tr = document.createElement('tr');
             // Severity-based row stripe + filter data attributes
             if (row.severity) {
                 tr.className = `severity-${row.severity.toLowerCase()}`;
             }
             tr.dataset.severity = (row.severity || '').toUpperCase();
-            tr.dataset.migration = row.migration_applied_yaml ? '1' : '0';
+            tr.dataset.migration = migrationYaml ? '1' : '0';
             tr.dataset.schemagap = (row.tables_referenced_count || 0) > (row.tables_found_count || 0) ? '1' : '0';
             tr.dataset.repeat = (row.execution_count && row.execution_count > 1) ? '1' : '0';
             
@@ -4562,7 +5446,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             // --- Optimized Query Cell [R3] ---
             let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
-            if (row.optimized_query) {
+            if (hasRewrite) {
                 const escapedSqlPreview = escHtml(
                     row.optimized_query.length > 200
                         ? row.optimized_query.substring(0, 200) + '...'
@@ -4593,8 +5477,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             let yamlBadge = '';
-            if (row.migration_applied_yaml) {
-                const escapedYaml = escHtml(row.migration_applied_yaml.trim());
+            if (migrationYaml) {
+                const escapedYaml = escHtml(migrationYaml.trim());
                 yamlBadge = `
                     <div style="margin-top: 0.5rem; border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8; overflow: hidden;">
                         <div class="yaml-toggle-btn" style="padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none;">
@@ -4609,9 +5493,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
             tr.innerHTML = `
-                <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.user_email}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td data-order="${row.total_slot_ms || 0}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms">${formatCompact(row.total_slot_ms)}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
                 <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
                 <td>${originalQueryCell}</td>
@@ -6302,7 +7186,7 @@ const FluidScaling = (() => {
       return `
         <tr>
           <td title="${UIState.escapeHtml(row.pattern_id)}">${UIState.escapeHtml(patternLabel)}</td>
-          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}</td>
+          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}${sampleJobId ? ` <a href="${buildConsoleUrl('job', { project: row.project_id || state.orgProject, location: state.region, jobId: sampleJobId })}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}</td>
           <td>${UIState.escapeHtml(row.workload_type)}</td>
           <td title="${UIState.escapeHtml(row.reservation_id || '')}">${UIState.escapeHtml(row.reservation_short_name || '—')}</td>
           <td>${UIState.escapeHtml(String(row.job_count))}</td>
