@@ -194,8 +194,11 @@ window.formatCompact = formatCompact;
  * DataTables an HTML string, so the attribute is invisible to the sorter and
  * "$1,000.00" ends up ordered lexically. This renderer digs the raw number
  * back out for the sort/type passes and leaves the display pass untouched.
+ * The filter pass gets the tag-stripped text so a search for "span" or
+ * "order" doesn't match the wrapper markup instead of the value.
  */
 function orderByDataAttr(data, type) {
+    if (type === 'filter') return String(data).replace(/<[^>]*>/g, '');
     if (type !== 'sort' && type !== 'type') return data;
     const match = /data-order="([^"]*)"/.exec(String(data));
     const raw = match ? match[1] : String(data).replace(/[^0-9.eE+-]/g, '');
@@ -203,6 +206,28 @@ function orderByDataAttr(data, type) {
     return isNaN(n) ? 0 : n;
 }
 window.orderByDataAttr = orderByDataAttr;
+
+/**
+ * Format a dollar amount to whole dollars.
+ *
+ * Intl puts the sign ahead of the symbol ("-$1,234"), which hand-rolled
+ * `'$' + Math.round(n).toLocaleString()` gets wrong ("$-1,234"). Amounts
+ * under a dollar keep two decimals so a real-but-small saving doesn't
+ * collapse to "$0" and read as "nothing to do here".
+ */
+function formatWholeDollars(amount) {
+    const n = Number(amount);
+    if (!isFinite(n)) return '$0';
+    const abs = Math.abs(n);
+    const digits = abs > 0 && abs < 1 ? 2 : 0;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    }).format(n);
+}
+window.formatWholeDollars = formatWholeDollars;
 
 /** Escape a value for safe interpolation into an HTML attribute or text node. */
 function escapeHtmlAttr(value) {
@@ -242,7 +267,7 @@ window.buildConsoleUrl = buildConsoleUrl;
 function renderProjectLink(project, label) {
     if (!project) return '—';
     const url = buildConsoleUrl('project', { project });
-    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
 }
 window.renderProjectLink = renderProjectLink;
 
@@ -260,7 +285,7 @@ function renderJobId(jobId, project, region) {
     return `<td class="job-id-cell" data-order="${safeJobId}" title="${safeJobId}">` +
         `<span class="job-id-text">${safeJobId}</span>` +
         `<span class="job-id-actions">` +
-        `<a href="${consoleUrl}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` +
+        `<a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` +
         `<button class="btn-action copy-job-id-btn" data-job-id="${safeJobId}" title="Copy Job ID"><i class="fa-solid fa-copy"></i></button>` +
         `</span>` +
         `</td>`;
@@ -271,7 +296,7 @@ window.renderJobId = renderJobId;
 function renderDatasetLink(dataset, project, label) {
     if (!dataset) return '—';
     const url = buildConsoleUrl('dataset', { project, dataset });
-    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
 }
 window.renderDatasetLink = renderDatasetLink;
 
@@ -280,9 +305,44 @@ function renderTableLink(table, dataset, project, label) {
     if (!table) return '—';
     if (!dataset) return escapeHtmlAttr(label || table);
     const url = buildConsoleUrl('table', { project, dataset, table });
-    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
 }
 window.renderTableLink = renderTableLink;
+
+/* ------------------------------------------------------------------
+   Empty-table marking
+   ------------------------------------------------------------------ */
+
+/**
+ * Tag a DataTable's container with .dt-empty when it holds no data at all.
+ *
+ * This distinguishes "the analysis has not run yet" (recordsTotal === 0) from
+ * "the current search or filter pill matched nothing" (recordsTotal > 0 but
+ * recordsDisplay === 0). Only the former is collapsed by the stylesheet:
+ * hiding a filtered-to-zero table would take its own search box — and, for
+ * the AI Doctor panel, the #aidoc-filters pills — with it, leaving the user
+ * no way to undo the filter short of a page reload.
+ *
+ * Registered as a delegated document handler so it covers tables initialised
+ * directly via $().DataTable() as well as those going through
+ * safeInitDataTable().
+ */
+function markEmptyTables(settings) {
+    try {
+        const api = new $.fn.dataTable.Api(settings);
+        const container = api.table().container();
+        if (container) {
+            $(container).toggleClass('dt-empty', api.page.info().recordsTotal === 0);
+        }
+    } catch (err) {
+        console.warn('[dt-empty] Could not inspect DataTable state:', err);
+    }
+}
+window.markEmptyTables = markEmptyTables;
+
+if (window.jQuery && $.fn && $.fn.dataTable) {
+    $(document).on('init.dt draw.dt', (e, settings) => markEmptyTables(settings));
+}
 
 /* ------------------------------------------------------------------
    Universal CSV export engine
@@ -614,6 +674,10 @@ const NotificationCenter = (() => {
             // entries' relative times ("2m ago") freeze while panel is open.
             clearInterval(elapsedInterval);
             elapsedInterval = setInterval(function() {
+                // cacheEls() can leave this null if the bell markup is absent
+                // (embedded/simulator layouts), and the ticker outlives the
+                // element on re-render.
+                if (!notifHistoryList) return;
                 var spans = notifHistoryList.querySelectorAll('[data-task-start]');
                 spans.forEach(function(span) {
                     var elapsed = Math.floor((Date.now() - parseInt(span.dataset.taskStart, 10)) / 1000);
@@ -631,6 +695,11 @@ const NotificationCenter = (() => {
 
     function init() {
         cacheEls();
+        // sweepStaleTasks() only ran as a side effect of updateNotifBadge(),
+        // so a task that stalled with no further notifications kept its badge
+        // count and its button stuck on "Processing…" indefinitely. Poll at a
+        // fraction of maxTaskAgeMs so expiry happens on its own.
+        setInterval(updateNotifBadge, 30 * 1000);
         if (notifBellBtn) {
             notifBellBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -1281,7 +1350,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. Cache cleared.', 'success');
+        showNotification('Settings saved. Cached results were cleared for the new scope — re-run any analysis you need.', 'success');
         Router.navigate('storage');
     });
 
@@ -1705,19 +1774,23 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!model) return '—';
             const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
             return isPhysical
-                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;"></i>PHYSICAL</span>`
-                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;"></i>LOGICAL</span>`;
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;" aria-hidden="true"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;" aria-hidden="true"></i>LOGICAL</span>`;
         };
 
         datasets.forEach((row, index) => {
             const tr = document.createElement('tr');
+            const savings = Number(row.monthly_savings) || 0;
+            // Displayed rounded, sorted on the float — so give tied-looking rows
+            // a tooltip that explains why one sorts above the other.
+            const savingsPct = (Number(row.monthly_savings_pct) || 0) * 100;
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_name)}</td>
                 <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
                 <td>${renderModelBadge(row.currently_on)}</td>
                 <td>${renderModelBadge(row.better_on)}</td>
-                <td data-order="${row.monthly_savings || 0}">$${Math.round(row.monthly_savings || 0).toLocaleString()}</td>
-                <td data-order="${(row.monthly_savings_pct || 0) * 100}">${Math.round((row.monthly_savings_pct || 0) * 100)}%</td>
+                <td data-order="${savings}" title="${savings.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/month">${formatWholeDollars(savings)}</td>
+                <td data-order="${savingsPct}" title="${savingsPct.toFixed(2)}%">${Math.round(savingsPct)}%</td>
                 <td>
                     <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
                 </td>
@@ -1961,8 +2034,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${renderProjectLink(row.project_id)}</td>
                 <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
                 <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
-                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
-                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
+                <td data-order="${Number(row.row_count) || 0}" title="${(Number(row.row_count) || 0).toLocaleString()} rows"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
+                <td data-order="${Number(row.size_bytes) || 0}"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
                 <td>${getPartitionStatus(row.is_partitioned)}</td>
                 <td>${getClusterStatus(row.is_clustered)}</td>
                 <td><span style="color: #38bdf8; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${columnsToSuggest.join(', ')}</span></td>
@@ -2713,8 +2786,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             
             tr.innerHTML = `
                 <td>${displayResId}</td>
-                <td>${formatNumber(row.total_flagged_hours)}</td>
-                <td>${formatNumber(row.peak_hourly_queries)}</td>
+                <td data-order="${Number(row.total_flagged_hours) || 0}">${formatNumber(row.total_flagged_hours)}</td>
+                <td data-order="${Number(row.peak_hourly_queries) || 0}">${formatNumber(row.peak_hourly_queries)}</td>
                 <td>${row.top_projects}</td>
                 <td><span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b;">Consider Baseline</span></td>
             `;
@@ -2797,7 +2870,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#profiler-queries-table').DataTable({
                 pageLength: 10,
                 order: [[3, 'desc']],
-                responsive: true
+                responsive: true,
+                // Rows are added as HTML strings, so DataTables cannot see the
+                // <td data-order>. formatNumber() abbreviates to "12.3k"/"4.5m",
+                // which would otherwise sort lexically.
+                columnDefs: [{ targets: [3, 4, 5, 6], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2826,13 +2903,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
-                    ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
+                    ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
                     ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
                 </div>`,
-                formatNumber(row.frequency),
-                formatSlotHours(row.avg_slot_hours),
-                formatNumber(row.avg_duration_seconds),
-                `${formatNumber(avgBytes / (1024 * 1024))} MB`,
+                `<span data-order="${Number(row.frequency) || 0}">${formatNumber(row.frequency)}</span>`,
+                `<span data-order="${Number(row.avg_slot_hours) || 0}">${formatSlotHours(row.avg_slot_hours)}</span>`,
+                `<span data-order="${Number(row.avg_duration_seconds) || 0}">${formatNumber(row.avg_duration_seconds)}</span>`,
+                `<span data-order="${avgBytes}">${formatNumber(avgBytes / (1024 * 1024))} MB</span>`,
                 `<span class="badge" style="background: ${badgeBg}; color: ${badgeColor};" title="${recommendation}">${badgeText}</span>`
             ]);
         });
@@ -3623,6 +3700,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 order: [[1, 'desc']],
                 responsive: true,
                 columnDefs: [
+                    { targets: [1, 2, 3], type: 'num', render: orderByDataAttr },
                     { targets: 4, orderable: false }
                 ]
             });
@@ -3646,11 +3724,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
             const badgeNode = _buildBadgeCell(optValue);
+            // data-order carries the raw number: DataTables cannot sort
+            // "12.34%" numerically, and "1,234" only by lucky auto-detection.
             table.row.add([
                 row.job_id,
-                `${row.percent_execution_time_saved.toFixed(2)}%`,
-                row.new_elapsed_ms.toLocaleString(),
-                row.original_elapsed_ms.toLocaleString(),
+                `<span data-order="${Number(row.percent_execution_time_saved) || 0}">${row.percent_execution_time_saved.toFixed(2)}%</span>`,
+                `<span data-order="${Number(row.new_elapsed_ms) || 0}">${row.new_elapsed_ms.toLocaleString()}</span>`,
+                `<span data-order="${Number(row.original_elapsed_ms) || 0}">${row.original_elapsed_ms.toLocaleString()}</span>`,
                 badgeNode.outerHTML
             ]);
         });
@@ -4407,7 +4487,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                         ${confBadge}
                     </div>
                 </td>
-                <td><span class="badge logical">${escapeHtmlAttr(row.workload_type)}</span></td>
+                <td><span class="badge secondary">${escapeHtmlAttr(row.workload_type)}</span></td>
                 <td>${escapeHtmlAttr(row.project_id)}</td>
                 <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
                 <td data-order="${row.total_slot_hours}">${row.total_slot_hours.toFixed(2)} hrs</td>
@@ -4793,7 +4873,13 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
      */
     function showStorageWriteApiModal() {
         const existing = document.getElementById('storage-write-api-modal-overlay');
-        if (existing) existing.remove();
+        if (existing) {
+            // Run the previous instance's teardown rather than a bare remove():
+            // its keydown handler is bound to document, so dropping the node
+            // alone would leave a listener pointing at a detached overlay.
+            if (typeof existing.__close === 'function') existing.__close();
+            else existing.remove();
+        }
 
         const snippet = `from google.cloud import bigquery_storage_v1
 from google.cloud.bigquery_storage_v1 import types, writer
@@ -4835,10 +4921,10 @@ write_client.append_rows(iter([request]))`;
         overlay.id = 'storage-write-api-modal-overlay';
         overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
         overlay.innerHTML = `
-            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 700px; max-width: 92%; max-height: 85vh; overflow-y: auto; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+            <div role="dialog" aria-modal="true" aria-labelledby="swa-modal-title" style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 700px; max-width: 92%; max-height: 85vh; overflow-y: auto; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-bolt" style="margin-right: 0.5rem;"></i>Migrate to Storage Write API</h3>
-                    <button id="close-swa-modal-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                    <h3 id="swa-modal-title" style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-bolt" style="margin-right: 0.5rem;" aria-hidden="true"></i>Migrate to Storage Write API</h3>
+                    <button id="close-swa-modal-btn" aria-label="Close dialog" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
                 </div>
 
                 <div style="background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
@@ -4865,15 +4951,55 @@ write_client.append_rows(iter([request]))`;
                     <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.78rem; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; margin: 0; max-height: 280px; overflow-y: auto;">${escapeHtmlAttr(snippet)}</pre>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
-                    <a href="https://cloud.google.com/bigquery/docs/write-api" target="_blank" rel="noopener" style="font-size: 0.82rem; color: #60a5fa; text-decoration: none;"><i class="fa-solid fa-arrow-up-right-from-square" style="margin-right: 0.3rem;"></i>BigQuery Storage Write API Docs</a>
+                    <a href="https://cloud.google.com/bigquery/docs/write-api" target="_blank" rel="noopener noreferrer" style="font-size: 0.82rem; color: #60a5fa; text-decoration: none;"><i class="fa-solid fa-arrow-up-right-from-square" style="margin-right: 0.3rem;"></i>BigQuery Storage Write API Docs</a>
                     <button id="copy-swa-snippet-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
                 </div>
             </div>
         `;
         document.body.appendChild(overlay);
 
-        document.getElementById('close-swa-modal-btn').addEventListener('click', () => overlay.remove());
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        // Keyboard contract for the dialog: Escape closes, Tab cycles inside it,
+        // and focus returns to whatever opened it. Without this, tabbing walks
+        // straight out of the modal into the page behind the scrim.
+        const previouslyFocused = document.activeElement;
+        const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
+        function closeModal() {
+            document.removeEventListener('keydown', onKeydown, true);
+            overlay.remove();
+            if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+                previouslyFocused.focus();
+            }
+        }
+
+        function onKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeModal();
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            const items = Array.from(overlay.querySelectorAll(FOCUSABLE))
+                .filter(el => el.offsetParent !== null);
+            if (!items.length) return;
+            const first = items[0];
+            const last = items[items.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+
+        document.addEventListener('keydown', onKeydown, true);
+        overlay.__close = closeModal;
+
+        const closeBtn = document.getElementById('close-swa-modal-btn');
+        closeBtn.addEventListener('click', closeModal);
+        closeBtn.focus();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
         document.getElementById('copy-swa-snippet-btn').addEventListener('click', function () {
             copyToClipboard(snippet).then(() => {
                 this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
@@ -4897,7 +5023,7 @@ write_client.append_rows(iter([request]))`;
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_id)}</td>
                 <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
-                <td><span class="badge logical">Missing Expiration</span></td>
+                <td><span class="badge secondary">Missing Expiration</span></td>
             `;
             tbody.appendChild(tr);
         });
@@ -5704,11 +5830,27 @@ write_client.append_rows(iter([request]))`;
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
-                // Auto-linkify fully qualified BigQuery table references (project.dataset.table)
-                html = html.replace(/\b([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g, (match, proj, ds, tbl) => {
-                    const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
-                    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open ${tbl} in Console">${match}</a>`;
-                });
+                // Auto-linkify fully qualified BigQuery table references
+                // (project.dataset.table).
+                //
+                // The leading group pins the match to a real text boundary —
+                // start-of-string, whitespace, an opening bracket, or the ">"
+                // that closes a tag we just emitted. Crucially it does NOT
+                // allow "/" or ".", which is what keeps the pattern out of
+                // URLs: in "https://console.cloud.google.com/…" the candidate
+                // "console.cloud.google" is preceded by "/" and so is skipped.
+                //
+                // The trailing lookahead rejects a 4th dotted segment for the
+                // same reason, so "a.b.c.d" is left alone rather than being
+                // linkified as "a.b.c" plus a dangling ".d".
+                html = html.replace(
+                    /(^|[\s(>\[])([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?![\w.\-\/])/g,
+                    (match, pre, proj, ds, tbl) => {
+                        const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
+                        const ref = `${proj}.${ds}.${tbl}`;
+                        return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open ${tbl} in Console">${ref}</a>`;
+                    }
+                );
 
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
@@ -7497,7 +7639,7 @@ const FluidScaling = (() => {
       return `
         <tr>
           <td title="${UIState.escapeHtml(row.pattern_id)}">${UIState.escapeHtml(patternLabel)}</td>
-          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}${sampleJobId ? ` <a href="${buildConsoleUrl('job', { project: row.project_id || state.orgProject, location: state.region, jobId: sampleJobId })}" target="_blank" rel="noopener" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}</td>
+          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}${sampleJobId ? ` <a href="${buildConsoleUrl('job', { project: row.project_id || state.orgProject, location: state.region, jobId: sampleJobId })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}</td>
           <td>${UIState.escapeHtml(row.workload_type)}</td>
           <td title="${UIState.escapeHtml(row.reservation_id || '')}">${UIState.escapeHtml(row.reservation_short_name || '—')}</td>
           <td>${UIState.escapeHtml(String(row.job_count))}</td>

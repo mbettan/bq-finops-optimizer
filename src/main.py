@@ -2413,6 +2413,21 @@ def analyze_ai_query(params: AIParams):
             for idx, audit in enumerate(chunk):
                 param_suffix = f"c{chunk_idx}_a{idx}"
                 
+                # thinking_level is deliberately MINIMAL, not MEDIUM.
+                #
+                # The AI Doctor fans out one AI.GENERATE call per candidate
+                # query and the whole batch runs inside a single BigQuery job,
+                # so reasoning tokens multiply by the chunk size and count
+                # against both max_output_tokens and the job's wall-clock
+                # budget. MEDIUM measurably increased timeouts on large
+                # chunks for a marginal gain in advice quality, since the
+                # prompt already supplies the DDL and the anti-pattern
+                # taxonomy rather than asking the model to derive them.
+                #
+                # If advice quality regresses, raise this back to MEDIUM and
+                # lower chunk_size above to compensate — do not raise it alone.
+                # Note that valid values are model-dependent; an unsupported
+                # level fails at query time, not at startup.
                 subqueries.append(f"""
                 SELECT
                   @job_id_{param_suffix} AS job_id,
