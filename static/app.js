@@ -90,7 +90,7 @@ function safeParseJSON(raw, fallback) {
     }
 }
 
-// F-M4: Extracts a human-readable message from FastAPI error details.
+// Extracts a human-readable message from FastAPI error details.
 // FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
 // renders as [object Object] if used directly. This handles string,
 // array-of-{loc,msg}, and absent cases.
@@ -227,14 +227,24 @@ function buildConsoleUrl(type, opts = {}) {
         case 'job':
             return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
         case 'dataset':
-            return `https://console.cloud.google.com/bigquery?project=${proj}&d=${encodeURIComponent(opts.dataset || '')}&page=dataset`;
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m4!1m3!3m2!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}`;
         case 'table':
-            return `https://console.cloud.google.com/bigquery?project=${proj}&d=${encodeURIComponent(opts.dataset || '')}&t=${encodeURIComponent(opts.table || '')}&page=table`;
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m5!1m4!4m3!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}!3s${encodeURIComponent(opts.table || '')}`;
+        case 'project':
+            return `https://console.cloud.google.com/bigquery?project=${proj}`;
         default:
             return '#';
     }
 }
 window.buildConsoleUrl = buildConsoleUrl;
+
+/** Render a project ID with a Console deep-link. */
+function renderProjectLink(project, label) {
+    if (!project) return '—';
+    const url = buildConsoleUrl('project', { project });
+    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
+}
+window.renderProjectLink = renderProjectLink;
 
 /**
  * Render a Job ID cell with monospace ellipsis, copy button and Console
@@ -421,14 +431,50 @@ window.injectCsvExportButtons = injectCsvExportButtons;
 /* ------------------------------------------------------------------
    Persistent Notification Center (bell icon)
    Toasts are ephemeral; this keeps the last N of them in a dropdown.
+   Ongoing tasks (from setLoading) appear with a spinner + elapsed time.
    ------------------------------------------------------------------ */
 
 const MAX_NOTIFICATION_HISTORY = 50;
 const notificationHistory = [];
 let notifUnreadCount = 0;
 
+/** Human-readable labels keyed by button id. Nine buttons display generic
+ *  "Run scan" text — this map ensures ongoing entries are distinguishable. */
+const TASK_LABELS = {
+    'analyze-linter-btn':             'Query Optimization',
+    'analyze-dml-btn':                'DML Abuse Scan',
+    'analyze-batch-btn':              'Batch Candidates',
+    'analyze-expiration-btn':         'Expiration Policy',
+    'analyze-filter-btn':             'Partition Guardrail',
+    'analyze-mv-btn':                 'MV Candidates',
+    'analyze-mv-rejections-btn':      'MV Rejections',
+    'analyze-skew-btn':               'Data Skew',
+    'analyze-warnings-btn':           'Query Warnings',
+    'analyze-hygiene-btn':            'Storage Hygiene',
+    'analyze-storage-btn':            'Storage Analysis',
+    'analyze-bi-btn':                 'BI Engine Analysis',
+    'analyze-hbo-btn':                'HBO Insights',
+    'analyze-performance-btn':        'Performance Scan',
+    'analyze-profiler-btn':           'Workload Profiler',
+    'analyze-users-btn':              'Top Spenders',
+    'analyze-slots-btn':              'Slots Optimizer',
+    'analyze-jobs-btn':               'Job Analysis',
+    'calculate-cost-attribution-btn': 'Cost Attribution',
+    'run-ai-analysis-btn':            'AI Doctor',
+    'run-simulation-btn':             'Edition Simulation',
+    'run-active-assist-btn':          'Active Assist Sync',
+    'run-static-audit-btn':           'Schema Audit',
+    'analyze-fluid-btn':              'Fluid Scaling',
+};
+
 const NotificationCenter = (() => {
     let notifBadge, notifDropdown, notifHistoryList, notifBellBtn, notifClearBtn;
+    let elapsedInterval = null;
+
+    /** Active in-flight tasks. button.id → { label, startTime } */
+    const activeTasks = new Map();
+    /** Auto-expire stuck tasks (e.g. throw between setLoading and try). */
+    let maxTaskAgeMs = 10 * 60 * 1000; // 10 minutes
 
     function cacheEls() {
         notifBadge = document.getElementById('notification-badge');
@@ -438,10 +484,26 @@ const NotificationCenter = (() => {
         notifClearBtn = document.getElementById('btn-clear-notifications');
     }
 
+    /** Expire stale tasks AND recover their buttons (disabled + Processing). */
+    function sweepStaleTasks() {
+        const now = Date.now();
+        for (const [id, t] of activeTasks) {
+            if (now - t.startTime <= maxTaskAgeMs) continue;
+            activeTasks.delete(id);
+            const btn = document.getElementById(id);
+            if (btn && btn.disabled && btn.dataset.originalText) {
+                btn.disabled = false;
+                btn.innerHTML = btn.dataset.originalText;
+            }
+        }
+    }
+
     function updateNotifBadge() {
+        sweepStaleTasks();
         if (!notifBadge) return;
-        if (notifUnreadCount > 0) {
-            notifBadge.textContent = notifUnreadCount > 99 ? '99+' : notifUnreadCount;
+        const totalBadge = notifUnreadCount + activeTasks.size;
+        if (totalBadge > 0) {
+            notifBadge.textContent = totalBadge > 99 ? '99+' : totalBadge;
             notifBadge.style.display = '';
         } else {
             notifBadge.style.display = 'none';
@@ -458,77 +520,150 @@ const NotificationCenter = (() => {
         return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
+    function formatElapsed(startTime) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (elapsed < 60) return elapsed + 's';
+        return Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+    }
+
     function renderNotifHistory() {
         if (!notifHistoryList) return;
-        if (notificationHistory.length === 0) {
+        // Guard: show empty state only when there are no active tasks AND no history
+        if (!activeTasks.size && notificationHistory.length === 0) {
             notifHistoryList.innerHTML = '<div class="notif-dropdown__empty">No notifications yet.</div>';
             return;
         }
+
+        // --- Ongoing tasks (newest-first, consistent with history) ---
+        const ongoingHtml = activeTasks.size ? Array.from(activeTasks.entries()).reverse().map(([, t]) => {
+            return '<div class="notif-item ongoing">' +
+                '<div class="notif-item__icon ongoing"><i class="fa-solid fa-spinner fa-spin"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(t.label) + '\u2026</div>' +
+                    '<div class="notif-item__time"><span data-task-start="' + t.startTime + '">' + formatElapsed(t.startTime) + '</span></div>' +
+                '</div>' +
+            '</div>';
+        }).join('') : '';
+
+        // Divider between ongoing and completed
+        const divider = (activeTasks.size && notificationHistory.length)
+            ? '<div class="notif-divider">RECENT</div>'
+            : '';
+
+        // --- Completed history (newest first) ---
         const iconMap = {
             success: 'fa-circle-check',
             error: 'fa-circle-exclamation',
             warning: 'fa-triangle-exclamation',
             info: 'fa-circle-info'
         };
-        // Newest first. Messages can carry user-supplied text (project IDs,
+        // Messages can carry user-supplied text (project IDs,
         // API error bodies) so they are escaped, never interpolated raw.
-        notifHistoryList.innerHTML = notificationHistory.slice().reverse().map(n => {
+        const historyHtml = notificationHistory.slice().reverse().map(n => {
             const icon = iconMap[n.type] || iconMap.info;
             const safeType = iconMap[n.type] ? n.type : 'info';
-            return `<div class="notif-item">
-            <div class="notif-item__icon ${safeType}"><i class="fa-solid ${icon}"></i></div>
-            <div class="notif-item__body">
-                <div class="notif-item__message">${escapeHtmlAttr(n.message)}</div>
-                <div class="notif-item__time">${formatNotifTime(n.time)}</div>
-            </div>
-        </div>`;
+            return '<div class="notif-item">' +
+                '<div class="notif-item__icon ' + safeType + '"><i class="fa-solid ' + icon + '"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(n.message) + '</div>' +
+                    '<div class="notif-item__time">' + formatNotifTime(n.time) + '</div>' +
+                '</div>' +
+            '</div>';
         }).join('');
+
+        notifHistoryList.innerHTML = ongoingHtml + divider + historyHtml;
     }
 
     /** Record a toast into the persistent history. */
-    function record(message, type = 'info') {
-        notificationHistory.push({ message, type, time: new Date() });
+    function record(message, type) {
+        if (type === undefined) type = 'info';
+        notificationHistory.push({ message: message, type: type, time: new Date() });
         if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
         notifUnreadCount++;
         updateNotifBadge();
         if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
     }
 
+    /** Register an in-flight task. Resets startTime if already tracked. */
+    function startTask(buttonId, label) {
+        activeTasks.set(buttonId, { label: label, startTime: Date.now() });
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Remove a completed task. Does NOT call record() — showNotification
+     *  already archives the result via record(). Tolerates unknown ids. */
+    function completeTask(buttonId) {
+        activeTasks.delete(buttonId);
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Open or close the dropdown. Consolidates both close paths
+     *  (bell toggle + click-outside) to manage the elapsed-time interval. */
+    function setDropdownOpen(open) {
+        if (!notifDropdown) return;
+        if (open) {
+            renderNotifHistory();
+            notifDropdown.style.display = '';
+            notifUnreadCount = 0;
+            updateNotifBadge();
+            // Start elapsed-time ticker — only updates [data-task-start]
+            // spans' textContent. Does NOT rebuild innerHTML (that would
+            // restart fa-spin animations). Accepted trade-off: completed
+            // entries' relative times ("2m ago") freeze while panel is open.
+            clearInterval(elapsedInterval);
+            elapsedInterval = setInterval(function() {
+                var spans = notifHistoryList.querySelectorAll('[data-task-start]');
+                spans.forEach(function(span) {
+                    var elapsed = Math.floor((Date.now() - parseInt(span.dataset.taskStart, 10)) / 1000);
+                    span.textContent = elapsed < 60
+                        ? elapsed + 's'
+                        : Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+                });
+            }, 1000);
+        } else {
+            notifDropdown.style.display = 'none';
+            clearInterval(elapsedInterval);
+            elapsedInterval = null;
+        }
+    }
+
     function init() {
         cacheEls();
         if (notifBellBtn) {
-            notifBellBtn.addEventListener('click', (e) => {
+            notifBellBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                const isOpen = notifDropdown && notifDropdown.style.display !== 'none';
-                if (!notifDropdown) return;
-                if (isOpen) {
-                    notifDropdown.style.display = 'none';
-                } else {
-                    renderNotifHistory();
-                    notifDropdown.style.display = '';
-                    notifUnreadCount = 0;
-                    updateNotifBadge();
-                }
+                var isOpen = notifDropdown && notifDropdown.style.display !== 'none';
+                setDropdownOpen(!isOpen);
             });
         }
         if (notifClearBtn) {
-            notifClearBtn.addEventListener('click', () => {
+            notifClearBtn.addEventListener('click', function() {
+                // Clear history only — ongoing tasks remain visible
                 notificationHistory.length = 0;
                 notifUnreadCount = 0;
                 updateNotifBadge();
                 renderNotifHistory();
             });
         }
-        // Click-outside closes the panel.
-        document.addEventListener('click', (e) => {
+        // Click-outside closes the panel — uses setDropdownOpen to clear interval.
+        document.addEventListener('click', function(e) {
             if (!notifDropdown || notifDropdown.style.display === 'none') return;
             if (e.target.closest('#notification-center')) return;
-            notifDropdown.style.display = 'none';
+            setDropdownOpen(false);
         });
         updateNotifBadge();
     }
 
-    return { init, record, render: renderNotifHistory };
+    return {
+        init: init,
+        record: record,
+        render: renderNotifHistory,
+        startTask: startTask,
+        completeTask: completeTask,
+        __setMaxAge: function(ms) { maxTaskAgeMs = ms; }
+    };
 })();
 window.NotificationCenter = NotificationCenter;
 
@@ -562,7 +697,7 @@ async function loadScopeMap() {
 function buildPayload(endpoint, basePayload) {
     const scope = FOCUS_SCOPE_MAP[endpoint];
     if (!scope) {
-        // F-M6: Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // Default to 'org' (strip focus_projects) for unmapped endpoints.
         // When the scope map fails to load (502, timeout), every endpoint is
         // unmapped. Passing focus_projects to endpoints with extra='forbid'
         // causes a hard 422. Defaulting to 'org' is the safer fallback.
@@ -778,7 +913,7 @@ const Snapshot = (() => {
       const sanitize = window.sanitizeData || (v => v);
       return JSON.stringify(sanitize(parsed));
     } catch {
-      // F-L4: Bare strings (e.g. project IDs from scalar settings keys)
+      // Bare strings (e.g. project IDs from scalar settings keys)
       // must also be escaped — they bypass the JSON parse above and were
       // returned raw, which is the XSS delivery path for H1.
       const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
@@ -1063,7 +1198,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
         const validationErrors = [];
 
-        // --- F-M1: Validate into local variables FIRST, return before
+        // --- Validate into local variables FIRST, return before
         // touching state or localStorage to prevent half-mutated scope. ---
         const newOrg = elements.cfgOrgProject.value.trim();
         elements.cfgOrgProject.value = newOrg;
@@ -1130,7 +1265,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
-        // F-M2: Flush ALL scope-dependent caches. Use an allow-list of
+        // Flush ALL scope-dependent caches. Use an allow-list of
         // scope-independent keys rather than a fragile deny-list.
         const SCOPE_INDEPENDENT = new Set([
             'bq_org_project', 'bq_admin_project', 'bq_region',
@@ -1146,7 +1281,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
+        showNotification('Settings saved. Cache cleared.', 'success');
         Router.navigate('storage');
     });
 
@@ -1427,7 +1562,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${formatCurrency(row.total_on_demand_cost)}</td>
                     <td>${formatCurrency(row.total_editions_cost)}</td>
                     <td>${formatCurrency(row.editions_error_tax)}</td>
@@ -1490,7 +1625,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const currentColor = currentModel === 'On-Demand' ? '#38bdf8' : '#a855f7';
                 
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
@@ -1566,15 +1701,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.querySelector('#storage-results-table tbody');
         tbody.innerHTML = '';
 
+        const renderModelBadge = (model) => {
+            if (!model) return '—';
+            const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
+            return isPhysical
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;"></i>LOGICAL</span>`;
+        };
+
         datasets.forEach((row, index) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_name}</td>
-                <td>${row.dataset_name}</td>
-                <td><span class="badge ${row.currently_on}">${row.currently_on}</span></td>
-                <td><span class="badge ${row.better_on}">${row.better_on}</span></td>
-                <td>${formatNumber(row.monthly_savings)}</td>
-                <td>${(row.monthly_savings_pct * 100).toFixed(2)}%</td>
+                <td>${renderProjectLink(row.project_name)}</td>
+                <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
+                <td>${renderModelBadge(row.currently_on)}</td>
+                <td>${renderModelBadge(row.better_on)}</td>
+                <td data-order="${row.monthly_savings || 0}">$${Math.round(row.monthly_savings || 0).toLocaleString()}</td>
+                <td data-order="${(row.monthly_savings_pct || 0) * 100}">${Math.round((row.monthly_savings_pct || 0) * 100)}%</td>
                 <td>
                     <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
                 </td>
@@ -1749,9 +1892,13 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const formatNumber = (num) => {
-            // F-L1: Guard null/undefined/NaN from snapshot import
+            // Guard null/undefined/NaN from snapshot import
             if (num == null || isNaN(num)) return '0';
-            return num.toLocaleString();
+            const abs = Math.abs(num);
+            if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+            if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+            if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+            return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
         };
 
         data.forEach(row => {
@@ -1811,9 +1958,9 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             tr.innerHTML = `
-                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
-                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
                 <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
                 <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
                 <td>${getPartitionStatus(row.is_partitioned)}</td>
@@ -2153,7 +2300,7 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#simulation-table').DataTable().destroy();
         }
         
-        // F-M9: Guard against empty simulation response (brand-new reservation, no jobs).
+        // Guard against empty simulation response (brand-new reservation, no jobs).
         if (!data || data.length === 0) {
             showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
             return;
@@ -2902,8 +3049,12 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const formatNumber = (num) => {
-        // F-L1: Guard null/undefined/NaN from snapshot import
+        // Guard null/undefined/NaN from snapshot import
         if (num == null || isNaN(num)) return '0';
+        const abs = Math.abs(num);
+        if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+        if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
 
@@ -2971,13 +3122,23 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     window.showNotification = showNotification;
 
     const setLoading = (button, isLoading) => {
+        if (!button) return;
         if (isLoading) {
             button.disabled = true;
             button.dataset.originalText = button.innerHTML;
             button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
+            // --- Ongoing task tracking ---
+            if (button.id) {
+                const label = TASK_LABELS[button.id]
+                    || button.dataset.originalText.replace(/<[^>]*>/g, '').trim()
+                    || 'Processing';
+                NotificationCenter.startTask(button.id, label);
+            }
         } else {
             button.disabled = false;
             button.innerHTML = button.dataset.originalText;
+            // --- Complete task tracking ---
+            if (button.id) NotificationCenter.completeTask(button.id);
         }
     };
 
@@ -3496,7 +3657,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         table.draw();
 
-        // F-M3: Tile writing moved out of renderHboResults. The live handler
+        // Tile writing moved out of renderHboResults. The live handler
         // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
         // Keeping tile writes here caused a ~300× discrepancy on reload.
     };
@@ -3707,7 +3868,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
-                // F-M3: Cache the summary so tiles survive reload.
+                // Cache the summary so tiles survive reload.
                 safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
 
                 // Non-blocking: enrich jobs with optimization type badges.
@@ -3887,7 +4048,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             renderHboStatus(JSON.parse(cachedHboStatus));
         } catch (e) { console.warn("Failed to parse cached HBO status", e); }
     }
-    // F-M3: Restore tiles from cached summary instead of recomputing from top-10.
+    // Restore tiles from cached summary instead of recomputing from top-10.
     const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
     if (cachedHboSummary) {
         try {
@@ -4240,7 +4401,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 : `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb" style="margin-right: 0.25rem;"></i>Guidance</button>`;
 
             tr.innerHTML = `
-                <td><strong>${escapeHtmlAttr(row.workload_name)}</strong> ${confBadge}</td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.4rem;">
+                        <strong style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; display: inline-block;" title="${escapeHtmlAttr(row.workload_name)}">${escapeHtmlAttr(row.workload_name)}</strong>
+                        ${confBadge}
+                    </div>
+                </td>
                 <td><span class="badge logical">${escapeHtmlAttr(row.workload_type)}</span></td>
                 <td>${escapeHtmlAttr(row.project_id)}</td>
                 <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
@@ -4323,7 +4489,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
     };
 
     const formatDataSize = (gb) => {
-        // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+        // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
         if (gb >= 1024) {
             return `${formatNumber(gb / 1024)} TiB`;
         }
@@ -4449,6 +4615,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
 
     /** Roll the filtered jobs up to (user × project × anti-pattern). */
     const renderLinterSummary = (rows, odRate) => {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-summary-table')) {
+            $('#linter-summary-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#linter-summary-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -4524,6 +4696,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
 
     /** One row per offending job — the default (unaggregated) view. */
     function renderLinterDetail(rows, odRate) {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-results-table')) {
+            $('#linter-results-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#linter-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -4591,13 +4769,123 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 <td data-order="${perDay}">${formatCompact(Math.round(perDay))}</td>
                 <td data-order="${slotHours}">${slotHours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                 <td data-order="${wasteUsd}"><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
-                <td><span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">Migrate to Storage Write API</span></td>
+                <td><button class="btn-secondary btn-sm btn-storage-write-api" style="white-space: nowrap; min-width: 180px;"><i class="fa-solid fa-bolt" style="margin-right: 0.35rem;"></i>Migrate to Storage Write API</button></td>
             `;
             tbody.appendChild(tr);
         });
 
+        // Delegated click handler for the Storage Write API guidance button.
+        const dmlTable = document.getElementById('antipatterns-results-table');
+        if (dmlTable && !dmlTable._dmlDelegateAttached) {
+            dmlTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-storage-write-api');
+                if (btn) showStorageWriteApiModal();
+            });
+            dmlTable._dmlDelegateAttached = true;
+        }
+
         safeInitDataTable('#antipatterns-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
     };
+
+    /**
+     * Educational modal explaining the Storage Write API and why it replaces
+     * high-frequency legacy DML. Same overlay pattern as showRemediationModal.
+     */
+    function showStorageWriteApiModal() {
+        const existing = document.getElementById('storage-write-api-modal-overlay');
+        if (existing) existing.remove();
+
+        const snippet = `from google.cloud import bigquery_storage_v1
+from google.cloud.bigquery_storage_v1 import types, writer
+from google.protobuf import descriptor_pb2
+import sample_data_pb2  # Your protobuf-compiled schema
+
+# 1. Create a write client
+write_client = bigquery_storage_v1.BigQueryWriteClient()
+
+# 2. Target table reference
+parent = write_client.table_path(
+    "your-project", "your_dataset", "your_table"
+)
+
+# 3. Open a default (committed) write stream
+write_stream = types.WriteStream(type_=types.WriteStream.Type.COMMITTED)
+write_stream = write_client.create_write_stream(
+    parent=parent, write_stream=write_stream
+)
+
+# 4. Build a batch of rows and append
+request = types.AppendRowsRequest(
+    write_stream=write_stream.name,
+)
+proto_rows = types.ProtoRows()
+row = sample_data_pb2.SampleRow()
+row.column_a = "value"
+row.column_b = 42
+proto_rows.serialized_rows.append(row.SerializeToString())
+request.proto_rows = types.AppendRowsRequest.ProtoData(
+    rows=proto_rows,
+    writer_schema=types.ProtoSchema(
+        proto_descriptor=descriptor_pb2.DescriptorProto()
+    ),
+)
+write_client.append_rows(iter([request]))`;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'storage-write-api-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 700px; max-width: 92%; max-height: 85vh; overflow-y: auto; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-bolt" style="margin-right: 0.5rem;"></i>Migrate to Storage Write API</h3>
+                    <button id="close-swa-modal-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+
+                <div style="background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #60a5fa; font-size: 0.95rem;"><i class="fa-solid fa-circle-info" style="margin-right: 0.4rem;"></i>What is the Storage Write API?</h4>
+                    <p style="margin: 0; font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;">
+                        The <strong style="color: #f8fafc;">BigQuery Storage Write API</strong> is a high-throughput ingestion API that streams data directly into BigQuery managed storage, bypassing the query engine entirely.
+                        Unlike legacy <code style="background: rgba(255,255,255,0.08); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.8rem;">INSERT</code> DML statements — which compile a full SQL query, reserve slots, and count against the <strong style="color: #f8fafc;">1,500 table-modification operations/day</strong> quota — the Storage Write API writes directly to the storage layer with no slot consumption and no daily operation cap.
+                    </p>
+                </div>
+
+                <div style="background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #34d399; font-size: 0.95rem;"><i class="fa-solid fa-arrow-trend-up" style="margin-right: 0.4rem;"></i>Why migrate?</h4>
+                    <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: #cbd5e1; line-height: 1.7;">
+                        <li><strong style="color: #f8fafc;">No slot consumption</strong> — writes go to managed storage, freeing slot capacity for queries</li>
+                        <li><strong style="color: #f8fafc;">No 1,500 ops/day cap</strong> — legacy DML is throttled per table per day; the Write API has no such limit</li>
+                        <li><strong style="color: #f8fafc;">Higher throughput</strong> — batched binary protocol vs. parsing SQL text for every row</li>
+                        <li><strong style="color: #f8fafc;">Exactly-once semantics</strong> — committed streams guarantee no duplicates, unlike retry-prone DML</li>
+                        <li><strong style="color: #f8fafc;">Lower cost</strong> — eliminates wasted slot-hours from thousands of tiny INSERT jobs</li>
+                    </ul>
+                </div>
+
+                <h4 style="margin: 0 0 0.5rem 0; color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">Python SDK Example</h4>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.78rem; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; margin: 0; max-height: 280px; overflow-y: auto;">${escapeHtmlAttr(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                    <a href="https://cloud.google.com/bigquery/docs/write-api" target="_blank" rel="noopener" style="font-size: 0.82rem; color: #60a5fa; text-decoration: none;"><i class="fa-solid fa-arrow-up-right-from-square" style="margin-right: 0.3rem;"></i>BigQuery Storage Write API Docs</a>
+                    <button id="copy-swa-snippet-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('close-swa-modal-btn').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('copy-swa-snippet-btn').addEventListener('click', function () {
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    }
+    window.showStorageWriteApiModal = showStorageWriteApiModal;
 
     const renderExpirationResults = (data) => {
         const tbody = document.querySelector('#expiration-results-table tbody');
@@ -4607,8 +4895,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td>${row.dataset_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
                 <td><span class="badge logical">Missing Expiration</span></td>
             `;
             tbody.appendChild(tr);
@@ -4628,9 +4916,9 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td>${row.dataset_id}</td>
-                <td>${row.table_name}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset_id, row.project_id, row.table_name)}</td>
                 <td>${row.partition_type}</td>
             `;
             tbody.appendChild(tr);
@@ -4650,7 +4938,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
                 <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
                 <td data-order="${row.refresh_count || 0}">${formatCompact(row.refresh_count)}</td>
@@ -4902,7 +5190,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             // Clearing the key wipes the sibling scan's cached data.
             clearModuleCache([], ['#expiration-results-table']);
             const params = {
@@ -4946,7 +5234,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             clearModuleCache([], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
@@ -5231,6 +5519,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
     let currentAiResults = [];
 
     const renderAiResults = (data) => {
+        const panel = document.getElementById('ai-results-panel');
+        if (panel) panel.style.display = 'block';
         const oldTbody = document.querySelector('#ai-results-table tbody');
         if (!oldTbody) return;
         const tbody = oldTbody.cloneNode(false);
@@ -5414,6 +5704,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
+                // Auto-linkify fully qualified BigQuery table references (project.dataset.table)
+                html = html.replace(/\b([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g, (match, proj, ds, tbl) => {
+                    const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
+                    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open ${tbl} in Console">${match}</a>`;
+                });
+
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
                 });
@@ -5492,10 +5788,15 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             }
             optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
+            const slotHours = (row.total_slot_ms || 0) / 3600000;
+            const formattedSlotHours = slotHours >= 1000
+                ? `${Math.round(slotHours).toLocaleString()} hrs`
+                : (slotHours >= 1 ? `${slotHours.toFixed(1)} hrs` : `${slotHours.toFixed(2)} hrs`);
+
             tr.innerHTML = `
                 ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.user_email}</td>
-                <td data-order="${row.total_slot_ms || 0}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms">${formatCompact(row.total_slot_ms)}</td>
+                <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
                 <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
                 <td>${originalQueryCell}</td>
@@ -5700,6 +6001,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         const runActualAiAnalysis = async () => {
             const tableEl = document.getElementById('ai-results-table');
             const container = tableEl ? tableEl.closest('.results-panel') : null;
+            if (container) container.style.display = 'block';
 
             if (tableEl && $.fn.DataTable.isDataTable('#ai-results-table')) {
                 $('#ai-results-table').DataTable().destroy();
@@ -6750,6 +7052,15 @@ const FluidScaling = (() => {
     btn.disabled  = isLoading;
     if (label)   label.textContent = isLoading ? 'Running…' : 'Run Estimation';
     if (spinner) spinner.hidden    = !isLoading;
+    // --- Ongoing task tracking (mirrors global setLoading hook) ---
+    if (btn.id) {
+        if (isLoading) {
+            var taskLabel = TASK_LABELS[btn.id] || 'Fluid Scaling';
+            NotificationCenter.startTask(btn.id, taskLabel);
+        } else {
+            NotificationCenter.completeTask(btn.id);
+        }
+    }
   }
 
   // --- Status banner helper for the jobs panel ---

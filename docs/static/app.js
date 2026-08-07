@@ -101,7 +101,7 @@ function safeParseJSON(raw, fallback) {
     }
 }
 
-// F-M4: Extracts a human-readable message from FastAPI error details.
+// Extracts a human-readable message from FastAPI error details.
 // FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
 // renders as [object Object] if used directly. This handles string,
 // array-of-{loc,msg}, and absent cases.
@@ -204,7 +204,7 @@ async function loadScopeMap() {
 function buildPayload(endpoint, basePayload) {
     const scope = FOCUS_SCOPE_MAP[endpoint];
     if (!scope) {
-        // F-M6: Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // Default to 'org' (strip focus_projects) for unmapped endpoints.
         // When the scope map fails to load (502, timeout), every endpoint is
         // unmapped. Passing focus_projects to endpoints with extra='forbid'
         // causes a hard 422. Defaulting to 'org' is the safer fallback.
@@ -420,7 +420,7 @@ const Snapshot = (() => {
       const sanitize = window.sanitizeData || (v => v);
       return JSON.stringify(sanitize(parsed));
     } catch {
-      // F-L4: Bare strings (e.g. project IDs from scalar settings keys)
+      // Bare strings (e.g. project IDs from scalar settings keys)
       // must also be escaped — they bypass the JSON parse above and were
       // returned raw, which is the XSS delivery path for H1.
       const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
@@ -701,7 +701,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
         const validationErrors = [];
 
-        // --- F-M1: Validate into local variables FIRST, return before
+        // --- Validate into local variables FIRST, return before
         // touching state or localStorage to prevent half-mutated scope. ---
         const newOrg = elements.cfgOrgProject.value.trim();
         elements.cfgOrgProject.value = newOrg;
@@ -768,7 +768,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
-        // F-M2: Flush ALL scope-dependent caches. Use an allow-list of
+        // Flush ALL scope-dependent caches. Use an allow-list of
         // scope-independent keys rather than a fragile deny-list.
         const SCOPE_INDEPENDENT = new Set([
             'bq_org_project', 'bq_admin_project', 'bq_region',
@@ -784,7 +784,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
+        showNotification('Settings saved. Cache cleared.', 'success');
         Router.navigate('storage');
     });
 
@@ -1065,7 +1065,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${formatCurrency(row.total_on_demand_cost)}</td>
                     <td>${formatCurrency(row.total_editions_cost)}</td>
                     <td>${formatCurrency(row.editions_error_tax)}</td>
@@ -1128,7 +1128,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const currentColor = currentModel === 'On-Demand' ? '#38bdf8' : '#a855f7';
                 
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
@@ -1204,15 +1204,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.querySelector('#storage-results-table tbody');
         tbody.innerHTML = '';
 
+        const renderModelBadge = (model) => {
+            if (!model) return '—';
+            const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
+            return isPhysical
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;"></i>LOGICAL</span>`;
+        };
+
         datasets.forEach((row, index) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_name}</td>
-                <td>${row.dataset_name}</td>
-                <td><span class="badge ${row.currently_on}">${row.currently_on}</span></td>
-                <td><span class="badge ${row.better_on}">${row.better_on}</span></td>
-                <td>${formatNumber(row.monthly_savings)}</td>
-                <td>${(row.monthly_savings_pct * 100).toFixed(2)}%</td>
+                <td>${renderProjectLink(row.project_name)}</td>
+                <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
+                <td>${renderModelBadge(row.currently_on)}</td>
+                <td>${renderModelBadge(row.better_on)}</td>
+                <td data-order="${row.monthly_savings || 0}">$${Math.round(row.monthly_savings || 0).toLocaleString()}</td>
+                <td data-order="${(row.monthly_savings_pct || 0) * 100}">${Math.round((row.monthly_savings_pct || 0) * 100)}%</td>
                 <td>
                     <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
                 </td>
@@ -1387,7 +1395,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const formatNumber = (num) => {
-            // F-L1: Guard null/undefined/NaN from snapshot import
+            // Guard null/undefined/NaN from snapshot import
             if (num == null || isNaN(num)) return '0';
             return num.toLocaleString();
         };
@@ -1791,7 +1799,7 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#simulation-table').DataTable().destroy();
         }
         
-        // F-M9: Guard against empty simulation response (brand-new reservation, no jobs).
+        // Guard against empty simulation response (brand-new reservation, no jobs).
         if (!data || data.length === 0) {
             showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
             return;
@@ -2536,7 +2544,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const formatNumber = (num) => {
-        // F-L1: Guard null/undefined/NaN from snapshot import
+        // Guard null/undefined/NaN from snapshot import
         if (num == null || isNaN(num)) return '0';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
@@ -3091,7 +3099,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         table.draw();
 
-        // F-M3: Tile writing moved out of renderHboResults. The live handler
+        // Tile writing moved out of renderHboResults. The live handler
         // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
         // Keeping tile writes here caused a ~300× discrepancy on reload.
     };
@@ -3302,7 +3310,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
                 safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
-                // F-M3: Cache the summary so tiles survive reload.
+                // Cache the summary so tiles survive reload.
                 safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
 
                 // Non-blocking: enrich jobs with optimization type badges.
@@ -3482,7 +3490,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             renderHboStatus(JSON.parse(cachedHboStatus));
         } catch (e) { console.warn("Failed to parse cached HBO status", e); }
     }
-    // F-M3: Restore tiles from cached summary instead of recomputing from top-10.
+    // Restore tiles from cached summary instead of recomputing from top-10.
     const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
     if (cachedHboSummary) {
         try {
@@ -3898,7 +3906,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         tbody.innerHTML = '';
 
         const formatDataSize = (gb) => {
-            // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+            // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
             if (gb >= 1024) {
                 return `${formatNumber(gb / 1024)} TiB`;
             }
@@ -4292,7 +4300,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             // Clearing the key wipes the sibling scan's cached data.
             clearModuleCache([], ['#expiration-results-table']);
             const params = {
@@ -4336,7 +4344,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             clearModuleCache([], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
@@ -4621,6 +4629,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
     let currentAiResults = [];
 
     const renderAiResults = (data) => {
+        const panel = document.getElementById('ai-results-panel');
+        if (panel) panel.style.display = 'block';
         const oldTbody = document.querySelector('#ai-results-table tbody');
         if (!oldTbody) return;
         const tbody = oldTbody.cloneNode(false);
@@ -4789,6 +4799,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
+                // Auto-linkify fully qualified BigQuery table references (project.dataset.table)
+                html = html.replace(/\b([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g, (match, proj, ds, tbl) => {
+                    const url = `https://console.cloud.google.com/bigquery?project=${encodeURIComponent(proj)}&ws=!1m5!1m4!4m3!1s${encodeURIComponent(proj)}!2s${encodeURIComponent(ds)}!3s${encodeURIComponent(tbl)}`;
+                    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open ${tbl} in Console">${match}</a>`;
+                });
+
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
                 });
@@ -4867,10 +4883,15 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             }
             optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
+            const slotHours = (row.total_slot_ms || 0) / 3600000;
+            const formattedSlotHours = slotHours >= 1000
+                ? `${Math.round(slotHours).toLocaleString()} hrs`
+                : (slotHours >= 1 ? `${slotHours.toFixed(1)} hrs` : `${slotHours.toFixed(2)} hrs`);
+
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.user_email}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
                 <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
                 <td>${originalQueryCell}</td>
@@ -5075,6 +5096,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         const runActualAiAnalysis = async () => {
             const tableEl = document.getElementById('ai-results-table');
             const container = tableEl ? tableEl.closest('.results-panel') : null;
+            if (container) container.style.display = 'block';
 
             if (tableEl && $.fn.DataTable.isDataTable('#ai-results-table')) {
                 $('#ai-results-table').DataTable().destroy();

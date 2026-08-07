@@ -1974,7 +1974,7 @@ class AIResult(BaseModel):
     gemini_optimization_advice: str
     tables_referenced_count: int
     tables_found_count: int
-    # F-L5: Removed dry_run_validated, bytes_scanned_optimized,
+    # Removed dry_run_validated, bytes_scanned_optimized,
     # estimated_savings_pct, and is_external_table_query — backend never
     # populates them and frontend never reads them. Keeping zero defaults
     # in the public response risks silent "0%" in a future UI column.
@@ -2424,7 +2424,7 @@ def analyze_ai_query(params: AIParams):
                   AI.GENERATE(
                     @prompt_{param_suffix},
                     endpoint => '{endpoint_url}',
-                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 8192, "thinking_config": {{"thinking_level": "MEDIUM"}}}}, "safety_settings": [{{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}}]}}' 
+                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 8192, "thinking_config": {{"thinking_level": "MINIMAL"}}}}, "safety_settings": [{{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}}]}}' 
                   ) AS ai_struct
                 """)
                 
