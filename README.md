@@ -86,11 +86,20 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 *   **3-Tier Error Handling:** The backend extracts the full Vertex AI response struct (`result`, `status`, `full_response`) to distinguish between function-level failures (NULL struct), API errors (status populated), and model-level blocks (`finish_reason: MAX_TOKENS` or `SAFETY`).
 
 
-### 6. Operator Workflow: Export, Deep-Link, Triage
-A diagnostic that can't leave the browser doesn't get acted on. Three cross-cutting capabilities apply to every module:
+### 6. Operator Workflow: Export, Deep-Link, Triage & Snapshot Sharing
+A diagnostic that can't leave the browser doesn't get acted on. Four cross-cutting capabilities apply to every module:
 *   **Universal CSV Export**: Every results table renders a **Download CSV** button. The export covers the entire DataTables result set matching the current search and filter state — not just the visible page — and writes a UTF-8 BOM so Excel opens it without mangling. Cell text is read from the rendered DOM, so byte sizes, currency, and badge labels export exactly as displayed.
+*   **Snapshot Export & Import**: Allows exporting all cached `localStorage` diagnostic results into a standalone, shareable `.json` snapshot file (`finops-snapshot_<project>_<timestamp>.json`). Recipient instances can import the snapshot to hydrate the full UI (tables, charts, recommendations) without BigQuery credentials.
 *   **BigQuery Console Deep-Links**: Job IDs render monospaced with hover- and focus-revealed **Copy** and **Open in Console** actions; dataset and table names link straight to the Console explorer. Every org-wide result model (`MVResult`, `WarningResult`, `BIResult`, `AIResult`) carries `project_id`, because `JOBS_BY_ORGANIZATION` spans the whole organization and a link built from the execution project would resolve to the wrong one.
 *   **Notification Center**: Toasts are archived to a bell-icon dropdown with relative timestamps, an unread badge, and clear-all — so a warning raised during a long scan is still readable afterwards. Bodies render via `textContent`, since notifications routinely carry query text and user emails.
+
+#### Snapshot (Export / Import) Workflow & Security
+*   **Primary Use Cases**:
+    1.  **Colleague Sharing**: Share full analysis results with team members who lack direct GCP/BigQuery permissions.
+    2.  **LLM-Powered Analysis**: Feed structured snapshot JSON directly into LLMs (Gemini, Claude, GPT) for automated executive summaries, JIRA ticket generation, or cost anomaly detection.
+    3.  **Troubleshooting & Bug Reporting**: Capture exact application state to reproduce findings or share with maintainers without exposing raw GCP access.
+*   **Redaction Controls**: Checking **"Redact sensitive info"** before export scrubs PII emails (replaced with `redacted@example.com`) and raw SQL query strings (replaced with `-- [redacted query]`). *Note:* Project IDs, reservation topologies, cost metrics, and table names remain visible for functional analysis.
+*   **Size & Transport Constraints**: Snapshot size is bounded by Chrome's 5 MB per-origin `localStorage` cap (~5–6 MB maximum formatted file size). It compresses to ~500 KB and easily fits within standard email attachment limits (Gmail 25 MB limit).
 
 ### 7. Built-in Security & Access Guardrails
 *   **Defense-in-Depth Validation**: All BigQuery-derived identifiers (e.g., project IDs, reservation names) are actively sanitized via `_safe_ident()` before DDL generation or query interpolation to prevent second-order SQL injection.
