@@ -124,6 +124,16 @@ def calculate_cost_attribution(params: CostAttributionParams):
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
     try:
         config = load_config()
+
+        # Rule B requires central_cost_center_project — fail fast before
+        # running the expensive BigQuery scan.
+        if config.waste_rule == "B" and not config.central_cost_center_project:
+            raise HTTPException(
+                400,
+                "Cost attribution with waste_rule='B' (Central Dump) requires "
+                "central_cost_center_project to be configured."
+            )
+
         scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
         
         # Determine table name based on admin_project_id
@@ -256,18 +266,8 @@ def calculate_cost_attribution(params: CostAttributionParams):
                 "slot_hours": round(slot_hours, 2)
             })
             
-        # Handle Rule B (Central Dump) properly if needed
-        # C1c: Hoisted precondition check before the BigQuery scan would be
-        # ideal, but the rule-B block also needs reservation_totals computed
-        # above. The Literal validator on waste_rule now prevents unknown
-        # values reaching here.
+        # Handle Rule B (Central Dump): distribute unattributed waste.
         if config.waste_rule == "B":
-            if not config.central_cost_center_project:
-                raise HTTPException(
-                    400,
-                    "Cost attribution with waste_rule='B' (Central Dump) requires "
-                    "central_cost_center_project to be configured."
-                )
             for res_id, total_used_slots in reservation_totals.items():
                 short_res_id = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
                 res_config = config.reservations.get(short_res_id) or config.reservations.get(res_id)

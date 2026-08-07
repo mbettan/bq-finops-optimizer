@@ -46,9 +46,9 @@ class HBOResult(BaseModel):
     estimated_savings_usd: float
 
 class HBOSummary(BaseModel):
-    total_optimized_jobs: int
-    total_saved_slot_hours: float
-    total_estimated_savings_usd: float
+    total_optimized_jobs: int  # raw count from lookback window (NOT projected)
+    monthly_saved_slot_hours: float  # projected to a standard 30.4375-day month
+    monthly_estimated_savings_usd: float  # projected to a standard 30.4375-day month
     avg_percent_time_saved: float
     time_base: str = "monthly_projected"  # slot_hours and USD are monthly-projected; job count is raw lookback window
 
@@ -482,13 +482,13 @@ def get_hbo_summary(params: HBOCommonParams):
             log_endpoint_end("HBO Summary", t0, _logger=logger)
             return HBOSummary(
                 total_optimized_jobs=row.total_optimized_jobs or 0,
-                total_saved_slot_hours=round(monthly_saved_slot_hours, 4),
-                total_estimated_savings_usd=round(monthly_estimated_savings_usd, 4),
+                monthly_saved_slot_hours=round(monthly_saved_slot_hours, 4),
+                monthly_estimated_savings_usd=round(monthly_estimated_savings_usd, 4),
                 avg_percent_time_saved=round(row.avg_percent_time_saved or 0.0, 2)
             )
             
         log_endpoint_end("HBO Summary", t0, _logger=logger)
-        return HBOSummary(total_optimized_jobs=0, total_saved_slot_hours=0.0, total_estimated_savings_usd=0.0, avg_percent_time_saved=0.0)
+        return HBOSummary(total_optimized_jobs=0, monthly_saved_slot_hours=0.0, monthly_estimated_savings_usd=0.0, avg_percent_time_saved=0.0)
         
     except Exception as e:
         handle_endpoint_exception(e, "HBO summary")

@@ -20,7 +20,7 @@
         style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.datatables.net;
         font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:;
         img-src 'self' data:;
-        connect-src 'self';
+        connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
         object-src 'none';
         base-uri 'self';
     ">
@@ -1875,18 +1875,91 @@
                         <button id="analyze-users-btn" class="btn-primary">Run Spenders Analysis</button>
                     </div>
 
+                    <div class="kpi-grid" id="top-spenders-kpi-grid" style="margin-bottom: 2rem;">
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-users kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Active Users Analyzed</span>
+                                <span class="kpi-value" id="top-spenders-total-users">0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-receipt kpi-icon" style="color: #38bdf8;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Actual Total Spend</span>
+                                <span class="kpi-value" id="top-spenders-total-actual" style="color: #38bdf8;">$0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-piggy-bank kpi-icon" style="color: #4ade80;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Potential Savings</span>
+                                <span class="kpi-value" id="top-spenders-total-savings" style="color: #4ade80;">$0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-fire-flame-curved kpi-icon" style="color: #fb7185;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Wasted Spend</span>
+                                <span class="kpi-value" id="top-spenders-total-waste" style="color: #fb7185;">$0</span>
+                                <span class="kpi-sub" id="top-spenders-waste-sub" style="font-size: 0.72rem; color: var(--text-secondary); display: block; margin-top: 2px;">—</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-clock-rotate-left kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Total Slot Hours</span>
+                                <span class="kpi-value" id="top-spenders-total-slots">0</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="glass-card results-panel">
-                        <h2>Top spenders results</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Top spenders results</h2>
+                        </div>
+
+                        <!-- Filtering toolbar matching Anti-Patterns -->
+                        <div class="ap-toolbar" style="margin-bottom: 1rem;">
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="spenders-filter-user-type">Identity type</label>
+                                <select id="spenders-filter-user-type">
+                                    <option value="all">All identities</option>
+                                    <option value="humans">Humans only</option>
+                                    <option value="service_accounts">Service accounts only</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="spenders-filter-user">User</label>
+                                <select id="spenders-filter-user">
+                                    <option value="">All users</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field" style="min-width: auto;">
+                                <span class="ap-toolbar__label">&nbsp;</span>
+                                <button type="button" id="spenders-filter-reset" class="btn-action" style="font-size: 0.8rem;">
+                                    <i class="fa-solid fa-rotate-left"></i> Reset
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="spenders-filter-stats" class="ap-filter-stats" style="margin-bottom: 1rem;"></div>
+
                         <div class="table-responsive">
                             <table id="top-spenders-table" class="showcase-table">
                                 <thead>
                                     <tr>
                                         <th>User Email</th>
-                                        <th>Query Count</th>
-                                        <th>Total Data Billed</th>
-                                        <th>Total Slot Hours</th>
-                                        <th>Est. On-Demand Cost</th>
-                                        <th>Est. Editions Cost</th>
+                                        <th>Identity</th>
+                                        <th>Billing Mode</th>
+                                        <th style="text-align: right;">Query Count</th>
+                                        <th style="text-align: right;">Total Data Billed</th>
+                                        <th style="text-align: right;">Total Slot Hours</th>
+                                        <th style="text-align: right;">Actual Cost</th>
+                                        <th style="text-align: right;" title="Spend that produced no result: failed/cancelled queries plus the on-demand 10 MiB minimum-billing floor. This is a subset of Actual Cost, not an addition to it.">Waste</th>
+                                        <th style="text-align: right;">Est. On-Demand</th>
+                                        <th style="text-align: right;">Est. Editions</th>
+                                        <th style="text-align: right;">Potential Savings</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2361,6 +2434,37 @@
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists jobs where a single worker node took 10x longer than average to process data, indicating unbalanced joins or grouping keys.
                         </p>
+
+                        <details style="margin-bottom: 1.5rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 0.5rem; padding: 1rem;">
+                            <summary style="cursor: pointer; color: #60a5fa; font-size: 0.875rem; font-weight: 600;">
+                                <i class="fa-solid fa-graduation-cap" style="margin-right: 0.4rem;"></i>How to Diagnose &amp; Remediate Data Skew in BigQuery Console
+                            </summary>
+                            <div style="color: var(--text-secondary); font-size: 0.83rem; margin-top: 0.75rem; line-height: 1.6;">
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>🔍 What is Data Skew?</strong> Data skew occurs when data partitions unevenly across worker slots during a <code>JOIN</code>, <code>GROUP BY</code>, or window <code>PARTITION BY</code> operation. A single worker node becomes overwhelmed processing a "hot key" while other workers sit idle, causing query latency to spike and holding slots hostage.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>🛠️ Step-by-Step Investigation in BigQuery Console:</strong>
+                                </p>
+                                <ol style="margin: 0.4rem 0 0.75rem 1.2rem; padding: 0;">
+                                    <li>Click the <strong>Inspect Stage</strong> button or <strong>Job ID</strong> link in the table to open the job in Google Cloud Console.</li>
+                                    <li>Navigate to the <strong>Execution details</strong> / <strong>Execution graph</strong> tab.</li>
+                                    <li>Locate the flagged <strong>Stage Name</strong> (e.g. <code>S02: Join+Aggregate</code>).</li>
+                                    <li>Compare <strong>Compute ms (Max vs Avg)</strong> and <strong>Records written (Max vs Avg)</strong> to pinpoint the bottleneck operator.</li>
+                                </ol>
+
+                                <div style="background: rgba(30, 41, 59, 0.7); padding: 0.75rem; border-radius: 0.375rem; border-left: 3px solid #3b82f6;">
+                                    <strong>💡 Top 3 Remediation Techniques:</strong>
+                                    <ul style="margin: 0.4rem 0 0 1.2rem; padding: 0;">
+                                        <li><strong>Filter NULL / Default Keys:</strong> <code>NULL</code>, <code>""</code>, or <code>'N/A'</code> keys all hash to the same single worker. Add <code>WHERE join_key IS NOT NULL</code> before joining.</li>
+                                        <li><strong>Key Salting (Heavy Entities):</strong> If a valid key (e.g., a massive tenant) causes the hotspot, append a random salt integer (e.g. <code>MOD(FARM_FINGERPRINT(id), 10)</code>) to split rows across 10 workers.</li>
+                                        <li><strong>Partition Analytic Windows:</strong> Avoid unpartitioned <code>OVER (ORDER BY ...)</code> which forces all rows onto a single worker node; add appropriate <code>PARTITION BY</code> clauses.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </details>
+
                         <div class="table-responsive">
                             <table id="skew-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -2369,9 +2473,10 @@
                                         <th>Job ID</th>
                                         <th>User Email</th>
                                         <th>Stage Name</th>
-                                        <th>Avg Compute (ms)</th>
-                                        <th>Max Compute (ms)</th>
+                                        <th style="text-align: right;">Avg Compute (ms)</th>
+                                        <th style="text-align: right;">Max Compute (ms)</th>
                                         <th>Skew Ratio</th>
+                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody>

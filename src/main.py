@@ -618,11 +618,16 @@ def fetch_active_assist_recommendations(params: StorageParams):
 
             sql = "\nUNION ALL\n".join(union_blocks)
             logger.info(f"Querying Active Assist Recommendations across {len(target_projects)} focus projects...")
-            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+            try:
+                results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+            except Exception as e_focus:
+                logger.warning(f"Active Assist focus project query failed ({e_focus}); returning empty recommendations.")
+                results = []
         else:
-            # Org mode: single query using the org-scoped RECOMMENDATIONS view
+            # Org mode: try org-scoped RECOMMENDATIONS_BY_ORGANIZATION first;
+            # gracefully fall back to project-scoped RECOMMENDATIONS if org view is unavailable or fails.
             logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
-            sql = f"""
+            sql_org = f"""
             SELECT
               project_id,
               target_resources,
@@ -635,7 +640,28 @@ def fetch_active_assist_recommendations(params: StorageParams):
               recommender = 'google.bigquery.table.PartitionClusterRecommender'
               AND state = 'ACTIVE'
             """
-            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations (Org)", params=params)
+            try:
+                results = run_query_and_log(scoped_client, sql_org, "Active Assist Recommendations (Org)", params=params)
+            except Exception as e_org:
+                logger.warning(f"RECOMMENDATIONS_BY_ORGANIZATION failed ({e_org}); falling back to project-scoped RECOMMENDATIONS view.")
+                sql_proj = f"""
+                SELECT
+                  '{resolved_project}' AS project_id,
+                  target_resources,
+                  description,
+                  primary_impact,
+                  additional_details
+                FROM
+                  `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS
+                WHERE
+                  recommender = 'google.bigquery.table.PartitionClusterRecommender'
+                  AND state = 'ACTIVE'
+                """
+                try:
+                    results = run_query_and_log(scoped_client, sql_proj, "Active Assist Recommendations (Project Fallback)", params=params)
+                except Exception as e_proj:
+                    logger.warning(f"Project-scoped RECOMMENDATIONS query also failed ({e_proj}); returning empty recommendations list.")
+                    results = []
         output = []
         
         # If the view exists but returns nothing, or if it succeeds
@@ -1866,7 +1892,7 @@ def analyze_batch_candidates(params: AntiPatternParams):
             ARRAY(
               SELECT tag FROM UNNEST([
                 IF(flag_pipeline_interactive, CONCAT('Automated pipeline running ', CAST(pct_interactive AS STRING), '% of queries in INTERACTIVE mode'), NULL),
-                IF(flag_heavy_dml_interactive, CONCAT('Heavy DML transformation (p50 at or above 10 slots) running ', CAST(pct_interactive AS STRING), '% in INTERACTIVE mode'), NULL),
+                IF(flag_heavy_dml_interactive, CONCAT('Heavy DML transformation (p50: ', CAST(ROUND(p50_interactive_job_slots, 1) AS STRING), ' slots, ', CAST(ROUND(p50_interactive_slot_ms / 60000.0, 1) AS STRING), ' slot-min) running ', CAST(pct_interactive AS STRING), '% in INTERACTIVE mode'), NULL),
                 IF(flag_sa_interactive AND NOT flag_pipeline_interactive AND NOT flag_heavy_dml_interactive, CONCAT('Service account running ', CAST(pct_interactive AS STRING), '% interactive (', CAST(ROUND(total_slot_hours, 1) AS STRING), ' slot-hrs)'), NULL),
                 -- Plain "over 30s" rather than ">30s": the client HTML-escapes API
                 -- strings globally and again at the render sink, so a literal '>'
@@ -2927,7 +2953,7 @@ def analyze_governance(params: GovernanceParams):
 
                     logger.info("Executing bulk missing partition filters audit via INFORMATION_SCHEMA...")
                     try:
-                        results = run_query_and_log(scoped_client, audit_sql, "Missing Partition Filters Audit", params=params, query_parameters=focus_params)
+                        results = run_query_and_log(scoped_client, audit_sql, "Missing Partition Filters Audit", params=params)
                         for row in results:
                             filter_issues.append(PartitionFilterResult(
                                 project_id=row.p,
@@ -3515,7 +3541,7 @@ def simulate_slots(params: SlotSimulationParams):
                 "utilization_pct": round(utilization_pct * 100, 2),
                 "idle_slot_hours": round(idle_slot_hours_mo, 0),
                 "autoscale_slot_hours": round(autoscale_slot_hours_mo, 0),
-                "autoscale_slot_months": round(autoscale_slot_months, 0),
+                "autoscale_slot_months": round(autoscale_slot_months, 1),
                 "cost_autoscale_payg": round(autoscale_cost_payg, 2),
                 "cost_base_payg": round(baseline_cost_payg, 2),
                 "cost_base_1yr": round(baseline_cost_1yr, 2),
@@ -3786,7 +3812,6 @@ WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_day
   AND end_time > start_time
   AND total_slot_ms > 0
   AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-  {focus_clause}
 ORDER BY total_slot_ms DESC
 LIMIT 500000
 """
@@ -3809,7 +3834,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
     t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
-        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=params.region, focus_clause="")
+        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=params.region)
         all_params = [
             bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
             bigquery.ScalarQueryParameter("cooldown_window", "INT64", params.cooldown_window),
@@ -4001,6 +4026,11 @@ def get_actual_provisioning(params: SlotActualParams):
     reject_dummy_project(target_project)
 
     # Base CTEs for both queries
+    # TODO(v1.5): Refactor to use @parameter bindings instead of f-string
+    # interpolation for edition, start_str, and end_str.  Currently safe
+    # because edition is validated against _ALLOWED_EDITIONS and timestamps
+    # come from datetime.strftime, but every other endpoint uses parameterised
+    # queries and this inconsistency is a maintenance hazard.
     base_ctes = f"""
 WITH
   autoscale_slot_data AS (
@@ -4536,23 +4566,60 @@ def get_top_spenders(params: UserProfilerParams):
     target_project = _safe_ident(admin_project_raw, "admin_project_id")
     reject_dummy_project(target_project)
     
+    od_price = float(params.od_price)
+    ed_price = float(params.ed_price)
+
     sql = f"""
     SELECT
       user_email,
       COUNT(*) AS query_count,
+      COUNTIF(reservation_id IS NOT NULL) AS reservation_query_count,
+      COUNTIF(reservation_id IS NULL) AS od_query_count,
       SUM(total_bytes_billed) AS total_bytes_billed,
-      SUM(total_slot_ms) / (1000 * 60 * 60) AS total_slot_hours
+      SUM(IF(reservation_id IS NULL, total_bytes_billed, 0)) AS od_bytes_billed,
+      -- For hypothetical on-demand cost: use total_bytes_billed for OD queries, and total_bytes_processed for reservation queries
+      SUM(IF(reservation_id IS NULL, total_bytes_billed, total_bytes_processed)) AS hypothetical_od_bytes,
+      SUM(total_slot_ms) / (1000 * 60 * 60) AS total_slot_hours,
+      SUM(IF(reservation_id IS NOT NULL, total_slot_ms, 0)) / (1000 * 60 * 60) AS reservation_slot_hours,
+      SUM(IF(reservation_id IS NULL, total_slot_ms, 0)) / (1000 * 60 * 60) AS od_slot_hours,
+      -- ── Waste: failed / cancelled work that still consumed capacity ──
+      COUNTIF(error_result.reason IS NOT NULL) AS failed_query_count,
+      SUM(IF(error_result.reason IS NOT NULL, total_slot_ms, 0)) / 3600000 AS failed_slot_hours,
+      SUM(IF(error_result.reason IS NOT NULL AND reservation_id IS NOT NULL, total_slot_ms, 0)) / 3600000
+        AS failed_res_slot_hours,
+      SUM(IF(error_result.reason IS NOT NULL AND reservation_id IS NULL, total_bytes_billed, 0))
+        AS failed_od_bytes_billed,
+      -- ── Waste: on-demand 10 MiB minimum-billing floor + per-MB rounding ──
+      COUNTIF(reservation_id IS NULL AND IFNULL(total_bytes_processed, 0) < 10 * 1024 * 1024)
+        AS sub_min_query_count,
+      SUM(IF(reservation_id IS NULL,
+             GREATEST(0, IFNULL(total_bytes_billed, 0) - IFNULL(total_bytes_processed, 0)),
+             0)) AS min_billing_overage_bytes,
+      -- ── Diagnostic (not dollarized) ──
+      COUNTIF(cache_hit) AS cache_hit_count,
+      -- Precomputed sort key in SELECT (avoids aggregation-of-aggregations in ORDER BY)
+      (((SUM(IF(reservation_id IS NULL, total_bytes_billed, 0)) / 1099511627776) * {od_price}) +
+       ((SUM(IF(reservation_id IS NOT NULL, total_slot_ms, 0)) / 3600000) * {ed_price})) AS actual_cost_sort_key,
+      -- Frequency-ranked top reservations
+      APPROX_TOP_COUNT(
+        IF(
+          reservation_id IS NOT NULL,
+          ARRAY_REVERSE(SPLIT(REPLACE(reservation_id, ".", ":"), ":"))[SAFE_OFFSET(0)],
+          NULL
+        ),
+        4
+      ) AS primary_reservations
     FROM
       `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
     WHERE
       creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
-      AND parent_job_id IS NULL
+      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
       {focus_clause}
     GROUP BY
       user_email
     ORDER BY
-      total_slot_hours DESC
+      actual_cost_sort_key DESC
     LIMIT 50
     """
     
@@ -4561,22 +4628,94 @@ def get_top_spenders(params: UserProfilerParams):
         
         user_records = []
         for row in results:
+            query_count = row['query_count'] or 0
+            res_query_count = row['reservation_query_count'] or 0
+            od_query_count = row['od_query_count'] or 0
+            res_pct = round((res_query_count / query_count * 100.0), 1) if query_count > 0 else 0.0
+
             bytes_billed = row['total_bytes_billed'] or 0
-            slot_hours = row['total_slot_hours'] or 0.0
+            od_bytes = row['od_bytes_billed'] or 0
+            hypothetical_od_bytes = row['hypothetical_od_bytes'] or 0
             
-            # Calculate costs
-            est_od_cost = (bytes_billed / (1024**4)) * params.od_price
-            est_ed_cost = slot_hours * params.ed_price
+            total_slot_hours = row['total_slot_hours'] or 0.0
+            res_slot_hours = row['reservation_slot_hours'] or 0.0
+            od_slot_hours = row['od_slot_hours'] or 0.0
+            
+            # Estimated costs (hypothetical 100% on-demand vs 100% editions)
+            est_od_cost = (hypothetical_od_bytes / (1024**4)) * params.od_price
+            est_ed_cost = total_slot_hours * params.ed_price
+
+            # Actual costs (based on real query execution mode)
+            actual_od_cost = (od_bytes / (1024**4)) * params.od_price
+            actual_ed_cost = res_slot_hours * params.ed_price
+            total_actual_cost = actual_od_cost + actual_ed_cost
+
+            # ── Waste components ──
+            failed_query_count = row['failed_query_count'] or 0
+            failed_slot_hours = row['failed_slot_hours'] or 0.0
+            failed_res_slot_hours = row['failed_res_slot_hours'] or 0.0
+            failed_od_bytes = row['failed_od_bytes_billed'] or 0
+            sub_min_query_count = row['sub_min_query_count'] or 0
+            min_billing_overage_bytes = row['min_billing_overage_bytes'] or 0
+            cache_hit_count = row['cache_hit_count'] or 0
+
+            failed_cost = (failed_res_slot_hours * params.ed_price) \
+                        + (failed_od_bytes / (1024**4)) * params.od_price
+            min_billing_cost = (min_billing_overage_bytes / (1024**4)) * params.od_price
+            total_waste_cost = failed_cost + min_billing_cost
+
+            # Waste is a subset of actual spend -> clamp defensively against float drift
+            waste_pct = min(100.0, (total_waste_cost / total_actual_cost * 100.0)) \
+                        if total_actual_cost > 0 else 0.0
+            failure_rate = (failed_query_count / query_count * 100.0) if query_count else 0.0
+            cache_hit_rate = (cache_hit_count / query_count * 100.0) if query_count else 0.0
+
+            # Extract frequency-ranked top reservations
+            raw_reservations = row.get('primary_reservations') or []
+            primary_reservations = []
+            for r in raw_reservations:
+                if not r:
+                    continue
+                val = r.get('value') if isinstance(r, dict) else getattr(r, 'value', None)
+                if val:
+                    primary_reservations.append(str(val))
+                elif isinstance(r, str):
+                    primary_reservations.append(r)
+            primary_reservations = primary_reservations[:3]
             
             user_records.append({
                 "user_email": row['user_email'],
-                "query_count": row['query_count'],
+                "query_count": query_count,
+                "reservation_query_count": res_query_count,
+                "od_query_count": od_query_count,
+                "reservation_pct": res_pct,
                 "total_bytes_billed": bytes_billed,
-                "total_slot_hours": round(slot_hours, 2),
+                "od_bytes_billed": od_bytes,
+                "hypothetical_od_bytes": hypothetical_od_bytes,
+                "total_slot_hours": round(total_slot_hours, 2),
+                "reservation_slot_hours": round(res_slot_hours, 2),
+                "od_slot_hours": round(od_slot_hours, 2),
                 "est_on_demand_cost": round(est_od_cost, 2),
-                "est_editions_cost": round(est_ed_cost, 2)
+                "est_editions_cost": round(est_ed_cost, 2),
+                "actual_od_cost": round(actual_od_cost, 2),
+                "actual_ed_cost": round(actual_ed_cost, 2),
+                "total_actual_cost": round(total_actual_cost, 2),
+                "failed_query_count": failed_query_count,
+                "failed_slot_hours": round(failed_slot_hours, 2),
+                "failure_rate": round(failure_rate, 1),
+                "failed_cost": round(failed_cost, 2),
+                "sub_min_query_count": sub_min_query_count,
+                "min_billing_overage_bytes": min_billing_overage_bytes,
+                "min_billing_cost": round(min_billing_cost, 2),
+                "total_waste_cost": round(total_waste_cost, 2),
+                "waste_pct": round(waste_pct, 1),
+                "cache_hit_rate": round(cache_hit_rate, 1),
+                "primary_reservations": primary_reservations
             })
             
+        # Defensive sort to guarantee actual-cost ordering
+        user_records.sort(key=lambda r: r["total_actual_cost"], reverse=True)
+
         log_endpoint_end("Top Spenders", t0, _logger=logger)
         return user_records
         

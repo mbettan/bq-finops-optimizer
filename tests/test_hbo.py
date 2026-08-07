@@ -293,9 +293,9 @@ class TestSummaryMonthlyProjection:
         result = _run_summary(rows, lookback_days=7)
 
         # daily = 70/7 = 10 hrs/day. Monthly = 10 × 30.4375 = 304.375
-        assert result.total_saved_slot_hours == pytest.approx(304.375, abs=0.1)
+        assert result.monthly_saved_slot_hours == pytest.approx(304.375, abs=0.1)
         # USD: 304.375 × $0.06 = $18.2625
-        assert result.total_estimated_savings_usd == pytest.approx(18.2625, abs=0.01)
+        assert result.monthly_estimated_savings_usd == pytest.approx(18.2625, abs=0.01)
 
     def test_30_day_lookback_projection(self):
         """30-day lookback: monthly = (saved/30) × 30.4375"""
@@ -303,14 +303,14 @@ class TestSummaryMonthlyProjection:
         result = _run_summary(rows, lookback_days=30)
 
         # daily = 300/30 = 10 hrs/day. Monthly = 10 × 30.4375 = 304.375
-        assert result.total_saved_slot_hours == pytest.approx(304.375, abs=0.1)
+        assert result.monthly_saved_slot_hours == pytest.approx(304.375, abs=0.1)
 
     def test_1_day_lookback(self):
         """1-day lookback: monthly = saved × 30.4375"""
         rows = [_make_summary_row(total_saved_slot_hours=10.0)]
         result = _run_summary(rows, lookback_days=1)
 
-        assert result.total_saved_slot_hours == pytest.approx(304.375, abs=0.1)
+        assert result.monthly_saved_slot_hours == pytest.approx(304.375, abs=0.1)
 
     def test_custom_price_affects_summary(self):
         """Enterprise Plus pricing ($0.10) vs Standard ($0.04)."""
@@ -320,10 +320,10 @@ class TestSummaryMonthlyProjection:
         result_ent = _run_summary(rows, lookback_days=7, price_per_slot_hr=0.10)
 
         # Same slot savings, but different USD
-        assert result_std.total_saved_slot_hours == result_ent.total_saved_slot_hours
-        assert result_ent.total_estimated_savings_usd > result_std.total_estimated_savings_usd
+        assert result_std.monthly_saved_slot_hours == result_ent.monthly_saved_slot_hours
+        assert result_ent.monthly_estimated_savings_usd > result_std.monthly_estimated_savings_usd
         # Ratio should be exactly 0.10/0.04 = 2.5
-        ratio = result_ent.total_estimated_savings_usd / result_std.total_estimated_savings_usd
+        ratio = result_ent.monthly_estimated_savings_usd / result_std.monthly_estimated_savings_usd
         assert ratio == pytest.approx(2.5, abs=0.01)
 
 
@@ -338,15 +338,15 @@ class TestSummaryEmptyResults:
         """Empty BQ result → zero summary."""
         result = _run_summary([])
         assert result.total_optimized_jobs == 0
-        assert result.total_saved_slot_hours == 0.0
-        assert result.total_estimated_savings_usd == 0.0
+        assert result.monthly_saved_slot_hours == 0.0
+        assert result.monthly_estimated_savings_usd == 0.0
 
     def test_null_slot_hours_treated_as_zero(self):
         """None total_saved_slot_hours → 0."""
         rows = [_make_summary_row(total_saved_slot_hours=None)]
         result = _run_summary(rows)
-        assert result.total_saved_slot_hours == 0.0
-        assert result.total_estimated_savings_usd == 0.0
+        assert result.monthly_saved_slot_hours == 0.0
+        assert result.monthly_estimated_savings_usd == 0.0
 
 
 # ---------------------------------------------------------------------------

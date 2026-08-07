@@ -6,8 +6,19 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 7, 2026 — v1.4.0
 
-## August 6, 2026 — v1.4.0
+**Feature (Top Spenders: Actual Billing Mode, Waste & Potential Savings Engine)**
+The **Top Spenders** profiler has been upgraded from hypothetical cost projections into an actionable, actual spend attribution and waste detection engine:
+- **Billing Mode Classification:** Queries are partitioned by their true execution mode using `reservation_id IS NOT NULL` (assigned slot reservation) vs. `reservation_id IS NULL` (multi-tenant on-demand). Spenders receive color-coded badges: **Reservation** ($\ge 80\%$), **On-Demand** ($\le 20\%$), or **Mixed** (displaying exact percentage and query count breakdown).
+- **Waste & Non-Productive Spend Detection:** Introduces exact dollarized waste tracking for capacity consumed with zero output — failed/cancelled query slot-hours & on-demand bytes plus the 10 MiB minimum-billing floor overage. Waste is bounded as a strict subset of actual spend ($W \le A$).
+- **Frequency-Ranked Primary Reservations:** Utilizes `APPROX_TOP_COUNT` to extract and rank primary reservation names, surfaced via rich tooltips on the billing mode badge.
+- **Actual Cost Attribution:** Computes true dollar spend by combining actual on-demand billed bytes (`total_bytes_billed` for OD jobs) and active slot duration (`total_slot_ms` for reservation jobs) without cross-contamination.
+- **Actionable Potential Savings:** Evaluates `actual_cost - min(est_on_demand, est_editions)` to highlight high-ROI optimization candidates (such as heavy on-demand pipelines that belong on a reservation). When a user is already operating on the optimal pricing model, savings cleanly display as zero/dash (`—`).
+- **Hypothetical Cost Accuracy (`hypothetical_od_bytes`):** Uses logical bytes scanned (`total_bytes_processed`) for reservation queries (which record `total_bytes_billed = 0`), preventing false-positive recommendations that previously suggested 100% reservation workloads could run for "$0" on-demand.
+- **Multi-Statement Script Attribution:** Filters on `(statement_type != 'SCRIPT' OR statement_type IS NULL)` instead of `parent_job_id IS NULL`. This ensures child statements executed by orchestrators (Airflow/Cloud Composer, dbt, Stored Procedures) inherit their real `reservation_id` rather than being misattributed as on-demand by the parent script wrapper.
+- **Data Transparency Tooltips:** When processed data exceeds billed data (due to reservation queries billing 0 bytes), hovering over the **Total Data Billed** cell explains the exact breakdown used for hypothetical on-demand cost calculations.
+- **Executive KPIs & Sorting:** Refreshed KPI cards now track **Active Users Analyzed**, **Actual Total Spend**, **Wasted Spend**, **Potential Savings**, and **Total Slot Hours**, with default DataTables ordering pinned to **Actual Cost DESC**.
 
 **Feature (Interactive vs. Batch Priority Engine)**
 The Batch Candidates scan is now workload-centric rather than job-centric. Executions are aggregated into logical workloads using lineage labels (`dbt_model`, `airflow_dag_id`/`dag_id`, `dataform`, `looker`/`tableau`/`dashboard_id`, `requestor`), the `scheduled_query_` job-ID prefix, and service-account identity, then classified as **UNDER_BATCHED** (automated pipelines and heavy service-account DML burning the 100-query INTERACTIVE concurrency limit that live dashboards depend on) or **OVER_BATCHED** (human and BI connections stuck behind a >30s BATCH queue). BATCH and INTERACTIVE bill identically — same hardware, same slot-hour and per-byte pricing — so every finding is a pure concurrency win, not a cost trade-off.

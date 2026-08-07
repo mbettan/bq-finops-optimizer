@@ -1201,6 +1201,12 @@ th.num {
     background: rgba(251, 191, 36, 0.08);
 }
 
+.tag-rose {
+    color: #fb7185;
+    border-color: rgba(251, 113, 133, 0.35);
+    background: rgba(251, 113, 133, 0.08);
+}
+
 .share-bar {
     height: 8px;
     border-radius: 99px;

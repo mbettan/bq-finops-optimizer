@@ -247,7 +247,8 @@ window.escapeHtmlAttr = escapeHtmlAttr;
  */
 function buildConsoleUrl(type, opts = {}) {
     const proj = encodeURIComponent(opts.project || '');
-    const loc = encodeURIComponent((opts.location || '').replace(/^region-/, ''));
+    const rawLoc = (opts.location || (typeof state !== 'undefined' ? state.region : '') || 'region-us').replace(/^region-/, '');
+    const loc = encodeURIComponent(rawLoc);
     switch (type) {
         case 'job':
             return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
@@ -257,6 +258,22 @@ function buildConsoleUrl(type, opts = {}) {
             return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m5!1m4!4m3!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}!3s${encodeURIComponent(opts.table || '')}`;
         case 'project':
             return `https://console.cloud.google.com/bigquery?project=${proj}`;
+        case 'reservation':
+            return `https://console.cloud.google.com/bigquery/admin/capacity-management?project=${proj}`;
+        case 'user': {
+            const userEmail = opts.user || opts.email || '';
+            const scope = opts.scope || (typeof state !== 'undefined' && state.scopeMode === 'single' ? 'PROJECT' : 'ORGANIZATION');
+            const lookback = opts.lookback || 'P14D';
+            const filterState = [null, null, scope, rawLoc, null, null, userEmail ? [userEmail] : null, null, null, null, null, null, null, null, lookback];
+            let encodedFilter = '';
+            try {
+                encodedFilter = btoa(unescape(encodeURIComponent(JSON.stringify(filterState))));
+            } catch (e) {
+                console.warn('Failed to encode Jobs Explorer filter', e);
+            }
+            const jhParam = encodedFilter ? `;bqmon.jh=${encodedFilter}` : '';
+            return `https://console.cloud.google.com/bigquery/admin/jobs-explorer;region=${loc}${jhParam}?project=${proj}&region=${loc}`;
+        }
         default:
             return '#';
     }
@@ -270,6 +287,48 @@ function renderProjectLink(project, label) {
     return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
 }
 window.renderProjectLink = renderProjectLink;
+
+/** Render a reservation ID with a Console capacity-management link. */
+function renderReservationLink(reservation, project, label) {
+    if (!reservation) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.adminProject || state.orgProject) : '');
+    const url = buildConsoleUrl('reservation', { project: proj });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open reservation in Capacity Management">${escapeHtmlAttr(label || reservation)}</a>`;
+}
+window.renderReservationLink = renderReservationLink;
+
+/** Render a user email with a Console Jobs Explorer deep-link. */
+function renderUserLink(userEmail, project, label) {
+    if (!userEmail) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.orgProject || state.adminProject) : '');
+    const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+    const url = buildConsoleUrl('user', { user: userEmail, project: proj, location: loc });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open user's jobs in BigQuery Jobs Explorer">${escapeHtmlAttr(label || userEmail)}</a>`;
+}
+window.renderUserLink = renderUserLink;
+
+/** Check whether an email belongs to a GCP Service Account. */
+function isServiceAccount(email) {
+    if (!email) return false;
+    const lower = String(email).toLowerCase();
+    return lower.endsWith('.gserviceaccount.com') ||
+           lower.endsWith('.iam.gserviceaccount.com') ||
+           lower.includes('gserviceaccount.com') ||
+           lower.includes('-compute@developer.gserviceaccount.com') ||
+           lower.startsWith('service-') ||
+           lower.includes('serviceaccount') ||
+           lower.includes('svc-') ||
+           lower.includes('-svc@') ||
+           lower.includes('-sa@');
+}
+window.isServiceAccount = isServiceAccount;
+
+/** Render an identity badge (Service Account vs Human User) matching the Anti-Pattern styling. */
+function renderIdentityBadge(email) {
+    const sa = isServiceAccount(email);
+    return `<span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; white-space: nowrap;">${sa ? 'Service Account' : 'Human'}</span>`;
+}
+window.renderIdentityBadge = renderIdentityBadge;
 
 /**
  * Render a Job ID cell with monospace ellipsis, copy button and Console
@@ -716,12 +775,24 @@ const NotificationCenter = (() => {
                 renderNotifHistory();
             });
         }
-        // Click-outside closes the panel — uses setDropdownOpen to clear interval.
         document.addEventListener('click', function(e) {
             if (!notifDropdown || notifDropdown.style.display === 'none') return;
             if (e.target.closest('#notification-center')) return;
             setDropdownOpen(false);
         });
+
+        // Replay any notification staged before a full-page reload (e.g. Snapshot Import)
+        try {
+            var pending = sessionStorage.getItem('pending_notification');
+            if (pending) {
+                var item = JSON.parse(pending);
+                if (item && item.message) {
+                    record(item.message, item.type || 'info');
+                }
+                sessionStorage.removeItem('pending_notification');
+            }
+        } catch (_) {}
+
         updateNotifBadge();
     }
 
@@ -948,18 +1019,6 @@ const Snapshot = (() => {
       return;
     }
 
-    let warningMsg;
-    if (redactChecked) {
-      warningMsg = `This snapshot contains ${keyCount} cached result set(s) with project IDs and reservation names from your BigQuery org. User emails and query SQL have been REDACTED.\n\nDownload now?`;
-    } else {
-      const emailCount = countEmails(snapshot.data);
-      const emailText = emailCount > 0 ? `${emailCount} real user email(s)` : 'real user emails';
-      warningMsg = `⚠️ WARNING: This snapshot contains ${keyCount} cached result set(s) INCLUDING ${emailText}, query SQL text, and reservation names.\n\nOnly share it with people authorized to see this data.\n\nDownload now?`;
-    }
-
-    const proceed = confirm(warningMsg);
-    if (!proceed) return;
-
     const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const proj = (snapshot._meta.org_project || 'snapshot').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -1012,11 +1071,6 @@ const Snapshot = (() => {
       }
 
       const keys = Object.keys(parsed.data);
-      const isRedacted = parsed._meta.redacted ? ' (Redacted info)' : '';
-      const proceed = confirm(
-        `Import ${keys.length} result set(s) from snapshot${isRedacted} exported on ${parsed._meta.exported_at || 'unknown date'}?\n\n⚠️ This will OVERWRITE your current cached results and settings.`
-      );
-      if (!proceed) return;
 
       // ⚠️ quota safety: clear existing bq_* keys first for a clean replace
       const keysToClear = [];
@@ -1056,10 +1110,17 @@ const Snapshot = (() => {
         }
       });
 
+      try {
+        sessionStorage.setItem('pending_notification', JSON.stringify({
+          message: `Imported ${written} result set(s) from snapshot.`,
+          type: 'success'
+        }));
+      } catch (_) {}
+
       showNotification(
         `Imported ${written} result set(s). Reloading to render…`, 'success'
       );
-      setTimeout(() => window.location.reload(), 800);
+      setTimeout(() => window.location.reload(), 600);
     };
     reader.onerror = () => showNotification('Failed to read file.', 'error');
     reader.readAsText(file);
@@ -1437,10 +1498,6 @@ document.addEventListener('DOMContentLoaded', () => {
             renderOrgStatus(responseData.org_status);
             safeSetLocalStorage('bq_storage_results', JSON.stringify(responseData));
             
-            // Background sync Active Assist recommendations
-            fetchActiveAssistRecommendations(false);
-            fetchStaticAuditResults(false);
-            
             showNotification('Storage analysis completed.', 'success');
         } catch (error) {
             logger_error(error);
@@ -1699,8 +1756,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
                     <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
-                    <td><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">${formatCurrency(row.waste_savings)}</span></td>
-                    <td>${savingsPct.toFixed(2)}%</td>
+                    <td data-order="${row.waste_savings || 0}"><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">$${Math.round(row.waste_savings || 0).toLocaleString()}</span></td>
+                    <td data-order="${savingsPct || 0}">${Math.round(savingsPct)}%</td>
                     <td>
                         <button class="btn-action copy-job-btn" data-id="${row.job_id}">Copy ID</button>
                     </td>
@@ -1876,9 +1933,9 @@ document.addEventListener('DOMContentLoaded', () => {
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
-                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
                 <td>${getRecBadge(row.recommendation)}</td>
                 <td>${formatColumnsList(row.cluster_columns)}</td>
                 <td>${row.partition_column ? `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #38bdf8; font-size: 0.8rem;">${row.partition_column}</code>` : '<span style="color: #64748b;">N/A</span>'}</td>
@@ -2248,7 +2305,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Slot utilization fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         if (actualResult.status === 'fulfilled' && actualResult.value.ok) {
@@ -2267,7 +2324,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Actual provisioning fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         renderSlotsUtilizationAndProvisioning(utilData, actualData);
@@ -2289,7 +2346,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Slots analyze fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         if (tieredResult.status === 'fulfilled' && tieredResult.value.ok) {
@@ -2304,9 +2361,28 @@ document.addEventListener('DOMContentLoaded', () => {
       // --- Wait for everything, then clean up the spinner/progress ---
       try {
         await Promise.allSettled([chartReady, tablesReady]);
-        showNotification('Slots analysis completed.', 'success');
+        if (abortController.signal.aborted) {
+          showNotification('Slots analysis cancelled.', 'warning');
+          if (tableEl) {
+            const tbody = tableEl.querySelector('tbody');
+            if (tbody) tbody.innerHTML = '';
+          }
+          if (tierContainer) {
+            tierContainer.innerHTML = '';
+          }
+          const cached = localStorage.getItem('bq_slots_results');
+          if (cached) {
+            try { renderSlotsResults(JSON.parse(cached), percentile); } catch (_) {}
+          }
+          const cachedTier = localStorage.getItem('bq_slots_tiered');
+          if (cachedTier) {
+            try { renderTieredRecommendations(JSON.parse(cachedTier)); } catch (_) {}
+          }
+        } else {
+          showNotification('Slots analysis completed.', 'success');
+        }
       } catch (error) {
-        if (error.name === 'AbortError') {
+        if (error.name === 'AbortError' || abortController.signal.aborted) {
           showNotification('Slots analysis cancelled.', 'warning');
         } else {
           console.error('Slots Analysis Error:', error);
@@ -2492,8 +2568,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 data.current_reservations.forEach(row => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${row.reservation_id}</td>
-                        <td>${row.admin_project_id || ''}</td>
+                        <td>${renderReservationLink(row.reservation_id, row.admin_project_id, row.reservation_id)}</td>
+                        <td>${renderProjectLink(row.admin_project_id)}</td>
                         <td>${row.region || ''}</td>
                         <td>${row.edition}</td>
                         <td data-order="${row.current_baseline || 0}">${formatNumber(row.current_baseline)}</td>
@@ -2527,7 +2603,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 tr.innerHTML = `
-                    <td>${displayResId}</td>
+                    <td>${displayResId === 'MERGED (Simulated)' ? displayResId : renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
                     <td data-order="${row.recommended_baseline || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
                     <td data-order="${row.recommended_max_p90 || 0}">${formatNumber(row.recommended_max_p90)}</td>
                     <td data-order="${row.recommended_max_p99 || 0}">${formatNumber(row.recommended_max_p99)}</td>
@@ -2785,7 +2861,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
             
             tr.innerHTML = `
-                <td>${displayResId}</td>
+                <td>${renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
                 <td data-order="${Number(row.total_flagged_hours) || 0}">${formatNumber(row.total_flagged_hours)}</td>
                 <td data-order="${Number(row.peak_hourly_queries) || 0}">${formatNumber(row.peak_hourly_queries)}</td>
                 <td>${row.top_projects}</td>
@@ -2900,7 +2976,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             
             table.row.add([
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.query)}">${esc(row.query)}</div>`,
-                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${renderProjectLink(row.project_id)}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
                     ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
@@ -3203,19 +3279,35 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (isLoading) {
             button.disabled = true;
             button.dataset.originalText = button.innerHTML;
-            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
+            const startTime = Date.now();
+            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing <span class="btn-timer">0s</span>';
+            const timerInterval = setInterval(() => {
+                const el = button.querySelector('.btn-timer');
+                if (el) {
+                    const secs = Math.floor((Date.now() - startTime) / 1000);
+                    el.textContent = `${secs}s`;
+                }
+            }, 1000);
+            button._timerInterval = timerInterval;
+
             // --- Ongoing task tracking ---
-            if (button.id) {
-                const label = TASK_LABELS[button.id]
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                const label = (typeof TASK_LABELS !== 'undefined' && TASK_LABELS[button.id])
                     || button.dataset.originalText.replace(/<[^>]*>/g, '').trim()
                     || 'Processing';
                 NotificationCenter.startTask(button.id, label);
             }
         } else {
+            if (button._timerInterval) {
+                clearInterval(button._timerInterval);
+                button._timerInterval = null;
+            }
             button.disabled = false;
             button.innerHTML = button.dataset.originalText;
             // --- Complete task tracking ---
-            if (button.id) NotificationCenter.completeTask(button.id);
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                NotificationCenter.completeTask(button.id);
+            }
         }
     };
 
@@ -3437,17 +3529,24 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         data.forEach(row => {
             let displayResId = row.reservation_id;
+            let resProject = state.adminProject || state.orgProject;
             if (displayResId && displayResId.includes('.')) {
-                displayResId = displayResId.split('.').pop();
+                const parts = displayResId.split('.');
+                if (parts.length >= 3) {
+                    resProject = parts[0];
+                }
+                displayResId = parts.pop();
             } else if (displayResId && displayResId.includes(':')) {
-                displayResId = displayResId.split(':').pop();
+                const parts = displayResId.split(':');
+                resProject = parts[0];
+                displayResId = parts.pop();
             }
 
             // data-order carries the raw number so DataTables sorts these
             // numerically instead of lexically on the "$1,234.00" string.
             table.row.add([
-                row.project_id,
-                displayResId,
+                renderProjectLink(row.project_id),
+                renderReservationLink(displayResId, resProject, displayResId),
                 `<span data-order="${row.direct_usage_cost_usd || 0}">${formatCurrency(row.direct_usage_cost_usd)}</span>`,
                 `<span data-order="${row.allocated_waste_cost_usd || 0}">${formatCurrency(row.allocated_waste_cost_usd)}</span>`,
                 `<span data-order="${row.total_cost_attribution_usd || 0}"><strong>${formatCurrency(row.total_cost_attribution_usd)}</strong></span>`
@@ -3480,7 +3579,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         for (const [projId, slots] of Object.entries(projectSlots)) {
             slotTable.row.add([
-                projId,
+                renderProjectLink(projId),
                 `<span data-order="${slots}">${slots.toFixed(2)} hrs</span>`
             ]);
         }
@@ -3603,29 +3702,264 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
     }
 
+    let _spendersRawData = [];
+    const _spendersFilterState = { userType: 'all', user: '' };
+
+    const populateSpendersFilterOptions = () => {
+        const sel = document.getElementById('spenders-filter-user');
+        if (!sel) return;
+        const previous = sel.value;
+        const users = Array.from(new Set(_spendersRawData.map(r => r.user_email).filter(Boolean))).sort();
+        sel.innerHTML = '<option value="">All users</option>' +
+            users.map(u => `<option value="${escapeHtmlAttr(u)}">${escapeHtmlAttr(u)}</option>`).join('');
+        const retained = users.includes(previous) ? previous : '';
+        sel.value = retained;
+        _spendersFilterState.user = retained;
+    };
+
+    const applySpendersFilters = () => {
+        let filtered = _spendersRawData;
+        if (_spendersFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_spendersFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+        if (_spendersFilterState.user) {
+            filtered = filtered.filter(r => r.user_email === _spendersFilterState.user);
+        }
+
+        renderTopSpendersTable(filtered);
+    };
+
+    const initSpendersToolbar = () => {
+        const typeEl = document.getElementById('spenders-filter-user-type');
+        if (typeEl) {
+            typeEl.addEventListener('change', () => {
+                _spendersFilterState.userType = typeEl.value;
+                applySpendersFilters();
+            });
+        }
+        const userEl = document.getElementById('spenders-filter-user');
+        if (userEl) {
+            userEl.addEventListener('change', () => {
+                _spendersFilterState.user = userEl.value;
+                applySpendersFilters();
+            });
+        }
+        const resetBtn = document.getElementById('spenders-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                _spendersFilterState.userType = 'all';
+                _spendersFilterState.user = '';
+                if (typeEl) typeEl.value = 'all';
+                if (userEl) userEl.value = '';
+                applySpendersFilters();
+            });
+        }
+    };
+    initSpendersToolbar();
+
     const renderTopSpenders = (data) => {
+        _spendersRawData = Array.isArray(data) ? data : [];
+        populateSpendersFilterOptions();
+        applySpendersFilters();
+    };
+
+    /**
+     * Render a billing mode badge (Reservation vs On-Demand vs Mixed)
+     * with detailed query counts & primary reservations tooltip.
+     */
+    function renderBillingModeBadge(row) {
+        const pct = row.reservation_pct;
+        if (pct === undefined || pct === null) {
+            return '<span class="badge-billing badge-billing-unknown" title="Billing mode unknown">—</span>';
+        }
+        const resPct = Number(pct) || 0;
+        const odPct = Math.max(0, 100 - resPct);
+        const reservations = Array.isArray(row.primary_reservations) ? row.primary_reservations.filter(Boolean) : [];
+
+        let tooltip = `${resPct.toFixed(1)}% Reservation (${(row.reservation_query_count || 0).toLocaleString()} queries)\n${odPct.toFixed(1)}% On-Demand (${(row.od_query_count || 0).toLocaleString()} queries)`;
+        if (reservations.length > 0) {
+            tooltip += `\nPrimary Reservations: ${reservations.join(', ')}`;
+        }
+
+        if (resPct >= 80) {
+            return `<span class="badge-billing badge-billing-res" title="${escapeHtmlAttr(tooltip)}">Reservation</span>`;
+        } else if (resPct <= 20) {
+            return `<span class="badge-billing badge-billing-od" title="${escapeHtmlAttr(tooltip)}">On-Demand</span>`;
+        } else {
+            return `<span class="badge-billing badge-billing-mixed" title="${escapeHtmlAttr(tooltip)}">Mixed (${Math.round(resPct)}% Res)</span>`;
+        }
+    }
+    /**
+     * Waste cell: dollars wasted (failed/cancelled + min-billing floor),
+     * colour-coded by share of that user's actual spend.
+     */
+    function renderWasteCell(row) {
+        const waste = Number(row.total_waste_cost);
+        if (!Number.isFinite(waste)) {
+            return { html: '<span style="color: var(--text-secondary);">—</span>', order: -1 };
+        }
+        const pct        = Number(row.waste_pct) || 0;
+        const failedCost = Number(row.failed_cost) || 0;
+        const minCost    = Number(row.min_billing_cost) || 0;
+        const failedN    = Number(row.failed_query_count) || 0;
+        const subMinN    = Number(row.sub_min_query_count) || 0;
+
+        const parts = [];
+        if (failedN > 0) {
+            parts.push(`Failed/cancelled: ${failedN.toLocaleString()} queries`
+                + ` (${(Number(row.failure_rate) || 0).toFixed(1)}% of runs), $${failedCost.toFixed(2)}`
+                + ` · ${(Number(row.failed_slot_hours) || 0).toLocaleString()} slot-hrs burned`);
+        }
+        if (subMinN > 0) {
+            parts.push(`Min-billing floor: ${subMinN.toLocaleString()} sub-10MiB on-demand queries, $${minCost.toFixed(2)}`);
+        }
+        if (row.cache_hit_rate !== undefined && row.cache_hit_rate !== null) {
+            parts.push(`Cache hit rate: ${Number(row.cache_hit_rate).toFixed(1)}%`);
+        }
+        const tooltip = parts.length
+            ? parts.join('\n') + `\n\nWaste is ${pct.toFixed(1)}% of this user's actual spend (subset, not additional).`
+            : 'No detectable waste in this window.';
+
+        let cls = 'waste-none';
+        if (waste >= 1 && pct >= 10)      cls = 'waste-high';
+        else if (waste >= 1 && pct >= 3)  cls = 'waste-med';
+        else if (waste >= 1)              cls = 'waste-low';
+
+        const label = waste < 0.005
+            ? '—'
+            : `$${Math.round(waste).toLocaleString()}<span class="waste-pct"> (${pct.toFixed(0)}%)</span>`;
+
+        return {
+            html: `<span class="waste-cell ${cls}" title="${escapeHtmlAttr(tooltip)}">${label}</span>`,
+            order: waste
+        };
+    }
+    window.renderWasteCell = renderWasteCell;
+
+    const renderTopSpendersTable = (data) => {
+        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
+            $('#top-spenders-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#top-spenders-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        let totalActual = 0;
+        let totalSavings = 0;
+        let totalWaste = 0;
+        let totalFailedQueries = 0;
+        let usersWithWaste = 0;
+        let totalSlots = 0;
+        let totalBytes = 0;
+        let resUsers = 0;
+        let odUsers = 0;
+        let mixedUsers = 0;
+
+        data.forEach(r => {
+            const hasActual = r.total_actual_cost !== undefined && r.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(r.total_actual_cost) : null;
+            const estOd = Number(r.est_on_demand_cost) || 0;
+            const estEd = Number(r.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            if (hasActual) {
+                totalActual += actualCost;
+                totalSavings += (savings || 0);
+                const pct = Number(r.reservation_pct) || 0;
+                if (pct >= 80) resUsers++;
+                else if (pct <= 20) odUsers++;
+                else mixedUsers++;
+            }
+
+            const w = Number(r.total_waste_cost);
+            if (Number.isFinite(w)) {
+                totalWaste += w;
+                totalFailedQueries += (Number(r.failed_query_count) || 0);
+                if (w >= 1) usersWithWaste++;
+            }
+
+            totalSlots += (Number(r.total_slot_hours) || 0);
+            totalBytes += (Number(r.total_bytes_billed) || 0);
+        });
+
+        const elUsers = document.getElementById('top-spenders-total-users');
+        const elActual = document.getElementById('top-spenders-total-actual');
+        const elSavings = document.getElementById('top-spenders-total-savings');
+        const elWaste = document.getElementById('top-spenders-total-waste');
+        const elWasteSub = document.getElementById('top-spenders-waste-sub');
+        const elSlots = document.getElementById('top-spenders-total-slots');
+        if (elUsers) elUsers.textContent = data.length.toLocaleString();
+        if (elActual) elActual.textContent = `$${Math.round(totalActual).toLocaleString()}`;
+        if (elSavings) elSavings.textContent = `$${Math.round(totalSavings).toLocaleString()}`;
+        if (elWaste) elWaste.textContent = `$${Math.round(totalWaste).toLocaleString()}`;
+        if (elWasteSub) {
+            const share = totalActual > 0 ? (totalWaste / totalActual * 100) : 0;
+            elWasteSub.textContent = `${share.toFixed(1)}% of spend · ${totalFailedQueries.toLocaleString()} failed · ${usersWithWaste} users`;
+        }
+        if (elSlots) elSlots.textContent = formatNumber(totalSlots);
+
+        const statsEl = document.getElementById('spenders-filter-stats');
+        if (statsEl) {
+            const rawLen = (_spendersRawData || []).length;
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${data.length}</span> of ${rawLen} spenders</span>
+                <span class="ap-stat">Total Actual Spend: <span class="ap-stat-value" style="color: #38bdf8;">$${Math.round(totalActual).toLocaleString()}</span></span>
+                <span class="ap-stat">Potential Savings: <span class="ap-stat-value" style="color: #4ade80;">$${Math.round(totalSavings).toLocaleString()}</span></span>
+                <span class="ap-stat">Wasted: <span class="ap-stat-value" style="color: #fb7185;">$${Math.round(totalWaste).toLocaleString()}</span></span>
+                <span class="ap-stat">Billing Split: <span class="ap-stat-value">${resUsers} Res / ${odUsers} OD / ${mixedUsers} Mixed</span></span>
+            `;
+        }
+
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No matching spenders found.</td></tr>`;
+            return;
+        }
+
         data.forEach(row => {
+            const hasActual = row.total_actual_cost !== undefined && row.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(row.total_actual_cost) : null;
+            const estOd = Number(row.est_on_demand_cost) || 0;
+            const estEd = Number(row.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            const actualTitle = hasActual
+                ? `On-Demand: $${(Number(row.actual_od_cost) || 0).toFixed(2)} + Editions: $${(Number(row.actual_ed_cost) || 0).toFixed(2)}`
+                : '';
+
+            const billedTib = (Number(row.total_bytes_billed) || 0) / Math.pow(1024, 4);
+            const hypoTib = (Number(row.hypothetical_od_bytes) || (Number(row.total_bytes_billed) || 0)) / Math.pow(1024, 4);
+            const bytesTitle = hypoTib > billedTib * 1.01
+                ? `${formatNumber(billedTib)} TiB actually billed (reservation queries bill 0 bytes). ${formatNumber(hypoTib)} TiB processed is used for the Est. On-Demand calculation.`
+                : `${formatNumber(billedTib)} TiB billed`;
+
+            const waste = renderWasteCell(row);
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
-                <td data-order="${row.query_count || 0}">${formatNumber(row.query_count)}</td>
-                <td data-order="${row.total_bytes_billed || 0}">${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
-                <td data-order="${row.total_slot_hours || 0}">${formatNumber(row.total_slot_hours)}</td>
-                <td data-order="${row.est_on_demand_cost || 0}">${formatCurrency(row.est_on_demand_cost)}</td>
-                <td data-order="${row.est_editions_cost || 0}">${formatCurrency(row.est_editions_cost)}</td>
+                <td data-order="${escapeHtmlAttr(row.user_email || '')}" style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, state.orgProject)}</span></td>
+                <td data-order="${isServiceAccount(row.user_email) ? 'Service Account' : 'Human'}">${renderIdentityBadge(row.user_email)}</td>
+                <td data-order="${Number(row.reservation_pct) || 0}">${renderBillingModeBadge(row)}</td>
+                <td data-order="${Number(row.query_count) || 0}" style="text-align: right;">${formatCompact(row.query_count)}</td>
+                <td data-order="${Number(row.total_bytes_billed) || 0}" style="text-align: right;" title="${escapeHtmlAttr(bytesTitle)}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatNumber(billedTib)} TiB</strong></td>
+                <td data-order="${Number(row.total_slot_hours) || 0}" style="text-align: right;">${formatCompact(row.total_slot_hours)}</td>
+                <td data-order="${actualCost ?? -1}" style="text-align: right;" title="${escapeHtmlAttr(actualTitle)}">
+                    ${hasActual ? `<strong style="color: #38bdf8; font-weight: 700;">$${Math.round(actualCost).toLocaleString()}</strong>` : '—'}
+                </td>
+                <td data-order="${waste.order}" style="text-align: right;">${waste.html}</td>
+                <td data-order="${estOd}" style="text-align: right;"><span style="color: #f87171; font-weight: 600;">$${Math.round(estOd).toLocaleString()}</span></td>
+                <td data-order="${estEd}" style="text-align: right;"><span style="color: #94a3b8; font-weight: 600;">$${Math.round(estEd).toLocaleString()}</span></td>
+                <td data-order="${savings ?? -1}" style="text-align: right;">
+                    ${hasActual ? `<strong style="color: ${savings > 0 ? '#4ade80' : 'var(--text-secondary)'}; font-weight: 700;">${savings > 0 ? '$' + Math.round(savings).toLocaleString() : '—'}</strong>` : '—'}
+                </td>
             `;
             tbody.appendChild(tr);
         });
 
-        // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
-            $('#top-spenders-table').DataTable().destroy();
-        }
-        $('#top-spenders-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+        safeInitDataTable('#top-spenders-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
     // Build a DOM node for the optimization badges cell.
@@ -3943,8 +4277,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 // Update tiles
                 const slotsEl = document.getElementById('hbo-total-slots');
                 const dollarsEl = document.getElementById('hbo-total-dollars');
-                if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
-                if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+                if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+                if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
 
                 safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
@@ -4055,8 +4389,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${row.stage_id}</td>
                 `;
                 contentionTbody.appendChild(tr);
@@ -4075,8 +4409,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${row.stage_id}</td>
                 `;
                 shuffleTbody.appendChild(tr);
@@ -4095,8 +4429,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td class="text-danger" style="font-weight: 600;">${formatDiffPct(row.diff_pct)}</td>
                 `;
                 volumeTbody.appendChild(tr);
@@ -4135,8 +4469,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const summaryData = JSON.parse(cachedHboSummary);
             const slotsEl = document.getElementById('hbo-total-slots');
             const dollarsEl = document.getElementById('hbo-total-dollars');
-            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
-            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
         } catch (e) { console.warn("Failed to parse cached HBO summary", e); }
     }
 
@@ -4178,7 +4512,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             tr.innerHTML = `
-                <td>${row.project_id || ''}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
                 <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
                 <td data-order="${row.live_active_physical_gb || 0}">${(row.live_active_physical_gb || 0).toFixed(2)}</td>
@@ -4438,6 +4772,37 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
     window.addEventListener('scroll', batchTooltip.hide, true);
     window.addEventListener('resize', batchTooltip.hide);
 
+    const getWorkloadTypeBadge = (wType) => {
+        const t = (wType || '').trim();
+        if (t === 'Airflow DAG') {
+            return `<span class="badge-workload badge-workload--airflow"><i class="fa-solid fa-wind"></i>Airflow DAG</span>`;
+        } else if (t === 'dbt Pipeline') {
+            return `<span class="badge-workload badge-workload--dbt"><i class="fa-solid fa-cube"></i>dbt Pipeline</span>`;
+        } else if (t === 'Dataform Pipeline') {
+            return `<span class="badge-workload badge-workload--dataform"><i class="fa-solid fa-code-branch"></i>Dataform</span>`;
+        } else if (t === 'Scheduled Query') {
+            return `<span class="badge-workload badge-workload--scheduled"><i class="fa-solid fa-clock"></i>Scheduled</span>`;
+        } else if (t === 'BI Dashboard Connection' || t.toLowerCase().includes('bi')) {
+            return `<span class="badge-workload badge-workload--bi"><i class="fa-solid fa-chart-pie"></i>BI Dashboard</span>`;
+        } else if (t === 'Service Account Workload' || t.toLowerCase().includes('service account')) {
+            return `<span class="badge-workload badge-workload--sa"><i class="fa-solid fa-robot"></i>Service Account</span>`;
+        } else if (t === 'Human Ad-hoc' || t.toLowerCase().includes('human') || t.toLowerCase().includes('ad-hoc')) {
+            return `<span class="badge-workload badge-workload--human"><i class="fa-solid fa-user"></i>Human Ad-hoc</span>`;
+        }
+        return `<span class="badge-workload badge-workload--default">${escapeHtmlAttr(t)}</span>`;
+    };
+
+    const getWorkloadIcon = (wType) => {
+        const t = (wType || '').toLowerCase();
+        if (t.includes('airflow')) return 'fa-solid fa-wind';
+        if (t.includes('dbt')) return 'fa-solid fa-cube';
+        if (t.includes('dataform')) return 'fa-solid fa-code-branch';
+        if (t.includes('scheduled')) return 'fa-solid fa-clock';
+        if (t.includes('bi')) return 'fa-solid fa-chart-pie';
+        if (t.includes('service')) return 'fa-solid fa-robot';
+        return 'fa-solid fa-user';
+    };
+
     const renderBatchCandidatesResults = (data) => {
         const tbody = document.querySelector('#batch-candidates-results-table tbody');
         if (!tbody) return;
@@ -4454,9 +4819,9 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const reasons = (row.detection_reasons || []).join('\n');
 
             const isUnder = row.finding_category === 'UNDER_BATCHED';
-            const badgeClass = isUnder ? 'danger' : 'warning';
-            const badgeIcon = isUnder ? 'fa-triangle-exclamation' : 'fa-hourglass-half';
-            const badgeLabel = isUnder ? 'UNDER_BATCHED' : 'OVER_BATCHED';
+            const badgeClass = isUnder ? 'badge-finding--under' : 'badge-finding--over';
+            const badgeIcon = isUnder ? 'fa-bolt' : 'fa-hourglass-half';
+            const badgeLabel = isUnder ? 'Under-Batched' : 'Over-Batched';
             const summary = isUnder
                 ? 'Automated pipeline running in INTERACTIVE mode. Risks starving live dashboards of the 100-query concurrent limit. Switch to BATCH for auto-retry protection at identical pricing.'
                 : 'Human/BI workload facing >30s BATCH queue lag. Switch to INTERACTIVE for instant slot allocation.';
@@ -4467,32 +4832,33 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             // export, which reads cell text via textContent.
             const categoryBadge = `
                 <span class="batch-tooltip-wrap" data-tip-title="${escapeHtmlAttr(badgeLabel)}" data-tip-summary="${escapeHtmlAttr(summary)}" data-tip-reasons="${escapeHtmlAttr(reasons)}">
-                    <span class="badge ${badgeClass}" style="cursor: help;">
-                        <i class="fa-solid ${badgeIcon}" style="margin-right: 0.25rem;"></i>${badgeLabel}
+                    <span class="badge-finding ${badgeClass}" style="cursor: help;">
+                        <i class="fa-solid ${badgeIcon}"></i>${badgeLabel}
                     </span>
                 </span>`;
 
             const confBadge = row.confidence === 'HIGH'
-                ? `<span class="badge success" style="font-size: 0.7rem; margin-left: 0.3rem;">HIGH CONF</span>`
-                : `<span class="badge secondary" style="font-size: 0.7rem; margin-left: 0.3rem;">LOW CONF</span>`;
+                ? `<span class="badge-conf badge-conf--high">HIGH CONF</span>`
+                : `<span class="badge-conf badge-conf--low">LOW CONF</span>`;
 
             const actionBtn = row.has_remediation
-                ? `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code" style="margin-right: 0.25rem;"></i>Snippet</button>`
-                : `<button class="btn-secondary btn-sm btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb" style="margin-right: 0.25rem;"></i>Guidance</button>`;
+                ? `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code"></i>Snippet</button>`
+                : `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb"></i>Guidance</button>`;
 
             tr.innerHTML = `
                 <td>
-                    <div style="display: flex; align-items: center; gap: 0.4rem;">
-                        <strong style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; display: inline-block;" title="${escapeHtmlAttr(row.workload_name)}">${escapeHtmlAttr(row.workload_name)}</strong>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <i class="${getWorkloadIcon(row.workload_type)}" style="font-size: 0.8rem; opacity: 0.75; flex-shrink: 0; color: #94a3b8;"></i>
+                        <span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; display: inline-block;" title="${escapeHtmlAttr(row.workload_name)}">${escapeHtmlAttr(row.workload_name)}</span>
                         ${confBadge}
                     </div>
                 </td>
-                <td><span class="badge secondary">${escapeHtmlAttr(row.workload_type)}</span></td>
-                <td>${escapeHtmlAttr(row.project_id)}</td>
-                <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
-                <td data-order="${row.total_slot_hours}">${row.total_slot_hours.toFixed(2)} hrs</td>
-                <td data-order="${row.pct_interactive}">${row.pct_interactive.toFixed(1)}%</td>
-                <td data-order="${row.total_human_wait_seconds}">${row.total_human_wait_seconds > 0 ? row.total_human_wait_seconds.toFixed(0) + 's' : '-'}</td>
+                <td>${getWorkloadTypeBadge(row.workload_type)}</td>
+                <td><span style="font-family: monospace; font-size: 0.8rem; color: #94a3b8;">${escapeHtmlAttr(row.project_id)}</span></td>
+                <td data-order="${row.total_job_runs}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1;">${row.total_job_runs.toLocaleString()}</span></td>
+                <td data-order="${row.total_slot_hours}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1; white-space: nowrap;">${row.total_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})} <span style="color: #64748b; font-size: 0.72rem;">hrs</span></span></td>
+                <td data-order="${row.pct_interactive}"><span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: ${row.pct_interactive >= 90 ? '#f87171' : '#cbd5e1'};">${row.pct_interactive.toFixed(1)}%</span></td>
+                <td data-order="${row.total_human_wait_seconds}"><span style="font-family: monospace; font-size: 0.82rem; color: ${row.total_human_wait_seconds > 30 ? '#f59e0b' : '#64748b'};">${row.total_human_wait_seconds > 0 ? Math.round(row.total_human_wait_seconds) + 's' : '—'}</span></td>
                 <td>${categoryBadge}</td>
                 <td>${actionBtn}</td>
             `;
@@ -4530,28 +4896,38 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
     };
 
     const renderSkewResults = (data) => {
+        if ($.fn.DataTable.isDataTable('#skew-results-table')) {
+            $('#skew-results-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#skew-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        if (!Array.isArray(data) || data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No data skew detected.</td></tr>`;
+            return;
+        }
+
         data.forEach(row => {
+            const proj = row.project_id || (typeof state !== 'undefined' ? state.orgProject : '');
+            const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+            const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId: row.job_id });
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 ${renderJobId(row.job_id, row.project_id, state.region)}
-                <td>${row.user_email}</td>
-                <td>${row.stage_name}</td>
-                <td>${row.avg_compute_ms.toLocaleString()}</td>
-                <td>${row.max_compute_ms.toLocaleString()}</td>
-                <td data-order="${row.skew_ratio}"><span class="badge error">${row.skew_ratio.toFixed(1)}x</span></td>
+                <td style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem; color: #cbd5e1;">${escapeHtmlAttr(row.stage_name || '')}</span></td>
+                <td data-order="${row.avg_compute_ms || 0}" style="text-align: right;">${(row.avg_compute_ms || 0).toLocaleString()}</td>
+                <td data-order="${row.max_compute_ms || 0}" style="text-align: right;"><strong style="color: #f87171; font-family: monospace;">${(row.max_compute_ms || 0).toLocaleString()}</strong></td>
+                <td data-order="${row.skew_ratio || 0}"><span class="badge error">${(row.skew_ratio || 0).toFixed(1)}x</span></td>
+                <td><a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="btn-action" style="font-size: 0.78rem; padding: 3px 8px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Open stage execution graph in BigQuery Console"><i class="fa-solid fa-arrow-up-right-from-square"></i> Inspect Stage</a></td>
             `;
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#skew-results-table')) {
-            $('#skew-results-table').DataTable().destroy();
-        }
-        $('#skew-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
+        safeInitDataTable('#skew-results-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
     /* --------------------------------------------------------------
@@ -4790,8 +5166,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const estimated_waste_usd = (row.billed_gb || 0) * odRate / 1024;
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><span style="color: #e2e8f0; font-weight: 500;">${row.user_email}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.project_id}</span></td>
+                <td><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem;">${renderProjectLink(row.project_id)}</span></td>
                 ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td data-order="${row.billed_gb || 0}"><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
                 <td>${getAbuseBadge(row.abuse_type)}</td>
@@ -4842,8 +5218,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td data-order="${escapeHtmlAttr(destLabel)}">${destCell}</td>
-                <td>${row.user_email}</td>
-                <td>${row.project_id}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td data-order="${insertCount}">${formatCompact(insertCount)}</td>
                 <td data-order="${activeDays}">${activeDays}</td>
                 <td data-order="${perDay}">${formatCompact(Math.round(perDay))}</td>
@@ -5087,7 +5463,7 @@ write_client.append_rows(iter([request]))`;
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.mv_name}</td>
                 <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.rejected_reason}</td>
@@ -5109,7 +5485,7 @@ write_client.append_rows(iter([request]))`;
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td style="font-size: 0.85rem; color: #f59e0b;">${row.resource_warning}</td>
             `;
@@ -5558,7 +5934,7 @@ write_client.append_rows(iter([request]))`;
             const tr = document.createElement('tr');
             const modeClass = row.bi_engine_mode === 'FULL' ? 'physical' : (row.bi_engine_mode === 'PARTIAL' ? 'logical' : 'error');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.processed_gb.toFixed(2)}</td>
                 <td>${row.billed_gb.toFixed(2)}</td>
@@ -5937,7 +6313,7 @@ write_client.append_rows(iter([request]))`;
 
             tr.innerHTML = `
                 ${renderJobId(row.job_id, row.project_id, state.region)}
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
                 <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
@@ -6212,8 +6588,20 @@ write_client.append_rows(iter([request]))`;
                 }
             } catch (error) {
                 if (progress && progress.stop) progress.stop();
-                console.error("AI Error:", error);
-                showNotification(error.message, 'error');
+                if (error.name === 'AbortError' || abortController.signal.aborted) {
+                    showNotification('AI Doctor analysis cancelled.', 'warning');
+                    if (tableEl) {
+                        const tbody = tableEl.querySelector('tbody');
+                        if (tbody) tbody.innerHTML = '';
+                    }
+                    const cached = localStorage.getItem('bq_ai_results');
+                    if (cached) {
+                        try { renderAiResults(JSON.parse(cached)); } catch (_) {}
+                    }
+                } else {
+                    console.error("AI Error:", error);
+                    showNotification(error.message, 'error');
+                }
             } finally {
                 setLoading(elements.btnRunAiAnalysis, false);
             }

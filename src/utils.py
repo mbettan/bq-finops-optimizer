@@ -365,6 +365,23 @@ def handle_endpoint_exception(e: Exception, service_name: str):
                 "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
             )
         raise HTTPException(status_code=502, detail=detail_msg)
+    # --- Catch remaining server-side errors (BadGateway, GatewayTimeout,
+    #     MethodNotImplemented, Unknown, Aborted, DataLoss, RetryError) that
+    #     aren't one of the three explicit subclasses above. ---
+    elif isinstance(e, gax_exc.ServerError):
+        req_id = request_id_var.get()
+        logger.error(f"{service_name} BigQuery server error [{req_id}]: {e}")
+        if _has_error_reason(e, "bytesBilledLimitExceeded"):
+            raise HTTPException(
+                400,
+                f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
+                f"or narrow scope with focus_projects / shorter lookback. "
+                f"Reference: {req_id} — check server logs for details."
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"BigQuery server error (Reference: {req_id}). This is usually transient — please retry."
+        )
     elif isinstance(e, gax_exc.GoogleAPIError):
         req_id = request_id_var.get()
         logger.error(f"{service_name} BigQuery error [{req_id}]: {e}")

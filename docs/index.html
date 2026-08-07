@@ -882,24 +882,27 @@
                     <!-- Spenders -->
                     <div class="console-panel" id="panel-spenders" role="tabpanel" hidden>
                         <div class="panel-caption">
-                            <p>Who is actually spending? Attribute cost to principals and hold departments accountable.</p>
+                            <p>Who is actually spending? Attribute real multi-engine spend across <strong>Reservations & On-Demand</strong>, track <strong>Wasted Spend</strong> from failed queries, and identify immediate savings.</p>
                         </div>
                         <div class="table-shell">
                             <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>User</th>
+                                        <th>Principal</th>
+                                        <th>Billing Mode</th>
                                         <th class="num">Queries</th>
                                         <th class="num">Data Billed</th>
                                         <th class="num">Slot Hours</th>
-                                        <th class="num">Est. Cost</th>
-                                        <th style="width:22%">Share</th>
-                                        </tr>
-                                        </thead>
+                                        <th class="num">Actual Spend</th>
+                                        <th class="num">Waste</th>
+                                        <th class="num">Potential Savings</th>
+                                        <th style="width:16%">Share</th>
+                                    </tr>
+                                </thead>
                                 <tbody id="mock-top-spenders-table-body"></tbody>
-                                </table>
-                                </div>
-                                </div>
+                            </table>
+                        </div>
+                    </div>
 
                     <!-- Matrix -->
                     <div class="console-panel" id="panel-matrix" role="tabpanel" hidden>
@@ -2129,18 +2132,23 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
         </tr>`).join('');
 
         const mockTopSpendersData = [
-            { user: "airflow@company.com", count: 145000, bytes: 125676211200000, slots: 12050.5, cost: 45500.00 },
-            { user: "analyst@company.com", count: 25000, bytes: 5000000000000, slots: 4520.2, cost: 15350.00 },
-            { user: "powerbi-svc@company.com", count: 12000, bytes: 1000000000000, slots: 1560.6, cost: 8750.00 }
+            { user: "gcp-prd-svc-composer-dags01@prd-data-platform...", isSa: true, mode: "Mixed (28% Res)", modeCls: "tag-amber", count: 142500, bytes: 153722880000000, slots: 168000.0, cost: 12480.61, waste: 162.23, wastePct: 1, savings: 2400.61 },
+            { user: "svc-looker-dashboard@prd-bi-serving...", isSa: true, mode: "Reservation", modeCls: "tag-green", count: 345000, bytes: 51539607552000, slots: 192000.0, cost: 11633.26, waste: 31.75, wastePct: 0, savings: 0 },
+            { user: "dbt-cloud-runner@prd-analytics-mda...", isSa: true, mode: "On-Demand", modeCls: "tag-rose", count: 58400, bytes: 1561334415360000, slots: 84000.0, cost: 8713.93, waste: 64.24, wastePct: 1, savings: 3673.93 },
+            { user: "alex.chen@company.com", isSa: false, mode: "On-Demand", modeCls: "tag-rose", count: 2450, bytes: 1055531162624000, slots: 21500.0, cost: 6000.00, waste: 43.50, wastePct: 1, savings: 4710.00 },
+            { user: "svc-dataproc-worker@prd-mlops...", isSa: true, mode: "Reservation", modeCls: "tag-green", count: 31200, bytes: 0, slots: 115000.0, cost: 6900.00, waste: 101.43, wastePct: 1, savings: 0 }
         ];
         const maxCost = Math.max(...mockTopSpendersData.map(r => r.cost));
 
         getEl('mock-top-spenders-table-body').innerHTML = mockTopSpendersData.map(r => `<tr>
-            <td class="strong">${r.user}</td>
+            <td class="strong"><i class="fa-solid ${r.isSa ? 'fa-robot' : 'fa-user'}" style="margin-right: 6px; opacity: 0.6; font-size: 0.75rem;"></i>${r.user}</td>
+            <td><span class="tag ${r.modeCls}">${r.mode}</span></td>
             <td class="num muted">${r.count.toLocaleString()}</td>
-            <td class="num muted">${(r.bytes / 1024 ** 4).toFixed(2)} TB</td>
-            <td class="num muted">${r.slots.toFixed(1)}</td>
+            <td class="num muted">${(r.bytes / 1024 ** 4).toFixed(1)} TiB</td>
+            <td class="num muted">${r.slots.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
             <td class="num gain">${money(r.cost)}</td>
+            <td class="num" style="color: ${r.waste > 0 ? '#fb7185' : 'var(--text-muted)'}; font-weight: 600;">${r.waste > 0 ? '$' + Math.round(r.waste) + ' <span style="font-size:0.75rem; opacity:0.8;">(' + r.wastePct + '%)</span>' : '—'}</td>
+            <td class="num" style="color: ${r.savings > 0 ? '#34d399' : 'var(--text-muted)'}; font-weight: 700;">${r.savings > 0 ? money(r.savings) : '—'}</td>
             <td><div class="share-bar"><i style="--w:${(r.cost / maxCost * 100).toFixed(1)}%"></i></div></td>
         </tr>`).join('');
 

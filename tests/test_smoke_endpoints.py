@@ -348,8 +348,8 @@ class TestResponseSchemas:
         data = response.json()
         assert response.status_code == 200
         assert "total_optimized_jobs" in data
-        assert "total_saved_slot_hours" in data
-        assert "total_estimated_savings_usd" in data
+        assert "monthly_saved_slot_hours" in data
+        assert "monthly_estimated_savings_usd" in data
 
     def test_governance_has_expiration_and_filter_issues(self, mock_bq_all):
         response = client.post("/api/governance/analyze", json=_BASE)
