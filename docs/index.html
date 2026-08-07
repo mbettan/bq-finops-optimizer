@@ -59,7 +59,31 @@
         "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
         "programmingLanguage": ["Python", "JavaScript", "SQL"],
         "author": { "@type": "Person", "name": "Michael Bettan", "url": "https://github.com/mbettan" },
-        "keywords": "BigQuery, cost optimization, FinOps, GCP, Gemini, SQL optimization, slot analysis, query diagnosis"
+        "keywords": "BigQuery, cost optimization, FinOps, GCP, Gemini, SQL optimization, slot analysis, query diagnosis",
+        "releaseNotes": "v1.4.0 — CSV export on every results table, BigQuery Console deep-links for jobs, datasets and tables, owner-level anti-pattern roll-up, Time Travel TTL auditing, DML abuse tracking, and a notification history center.",
+        "featureList": [
+            "AI Doctor — Gemini-powered SQL anti-pattern diagnosis and query rewriting",
+            "Editions Capacity Simulator for Standard, Enterprise and Enterprise Plus",
+            "Physical vs. logical storage billing arbitrage with ALTER SCHEMA DDL",
+            "Slot utilization timeline and p80/p95/max baseline recommendations",
+            "Hybrid cost attribution with Lender Pays and Borrower Pays idle-slot models",
+            "Query Anti-Pattern Linter with owner-level waste roll-up",
+            "Time Travel TTL auditing per dataset",
+            "DML abuse tracking for Storage Write API migration candidates",
+            "CSV export of the full filtered result set on every table",
+            "BigQuery Console deep-links for jobs, datasets and tables"
+        ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://mbettan.github.io/bq-finops-optimizer/" },
+            { "@type": "ListItem", "position": 2, "name": "Capabilities", "item": "https://mbettan.github.io/bq-finops-optimizer/#features" },
+            { "@type": "ListItem", "position": 3, "name": "Simulator", "item": "https://mbettan.github.io/bq-finops-optimizer/simulator.html" }
+        ]
     }
     </script>
     <script type="application/ld+json">
@@ -97,6 +121,30 @@
                 "acceptedAnswer": {
                     "@type": "Answer",
                     "text": "The tool detects common anti-patterns including CROSS JOIN explosions, SELECT * on wide tables, CAST defeating partition pruning, missing clustering keys, unnecessary ORDER BY in subqueries, and redundant repeated queries."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Can I export BigQuery cost findings to CSV?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. As of v1.4.0 every results table exports to CSV, and the export contains the full filtered result set rather than only the rows visible on the current page. Job IDs, datasets and tables in each table also deep-link straight into the BigQuery Console."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How do I reduce BigQuery time travel storage costs?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The Storage Hygiene Auditor finds tables where time-travel storage exceeds live storage and shows each dataset's configured default_time_travel_days, so you can shorten the window only where it actually pays. It emits the matching ALTER SCHEMA ... SET OPTIONS(max_time_travel_hours = 48) statement. The BigQuery minimum is 48 hours and the maximum is 168 hours (7 days)."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How do I find pipelines that should use the BigQuery Storage Write API?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The DML Abuse Tracker aggregates high-frequency INSERT activity by destination table, reporting active days and average inserts per day. Tables sustaining hundreds of small INSERT statements per day are the pipelines that should migrate to the Storage Write API."
                 }
             },
             {
@@ -411,6 +459,75 @@
       @media (max-width: 768px) {
         .ai-doctor-demo .aid-kpis { grid-template-columns: repeat(2, 1fr); }
         .ai-doctor-demo .aid-kpi-value { font-size: 1.15rem; }
+
+        /* A nine-column, 1520px-wide table is unusable on a phone even with
+           horizontal scroll. Below 768px each row becomes its own card and the
+           header row is replaced by the per-cell data-label stamped on by JS. */
+        .ai-doctor-demo .aid-table-wrap {
+          overflow-x: visible;
+          border: 0;
+          background: none;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
+        }
+        .ai-doctor-demo .aid-table { display: block; min-width: 0; }
+        .ai-doctor-demo .aid-table thead {
+          position: absolute; width: 1px; height: 1px;
+          overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+        }
+        .ai-doctor-demo .aid-table tbody,
+        .ai-doctor-demo .aid-table tr,
+        .ai-doctor-demo .aid-table td { display: block; width: 100%; }
+        .ai-doctor-demo .aid-table tr {
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-left-width: 3px;
+          border-radius: 14px;
+          background: rgba(15, 23, 42, 0.45);
+          margin-bottom: 0.85rem;
+          padding: 0.25rem 0;
+        }
+        /* The shorthand above outranks .aid-row-* , so re-assert the severity
+           stripe at higher specificity. */
+        .ai-doctor-demo .aid-table tr.aid-row-high   { border-left-color: #ef4444; }
+        .ai-doctor-demo .aid-table tr.aid-row-medium { border-left-color: #f59e0b; }
+        .ai-doctor-demo .aid-table tr.aid-row-low    { border-left-color: #22c55e; }
+        /* display:block above would otherwise beat the UA [hidden] rule and
+           break the filter pills. */
+        .ai-doctor-demo .aid-table tr[hidden] { display: none; }
+        .ai-doctor-demo .aid-table td {
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+          padding: 0.7rem 0.9rem;
+          min-width: 0;
+        }
+        .ai-doctor-demo .aid-table tr td:last-child { border-bottom: 0; }
+        .ai-doctor-demo .aid-table td::before {
+          content: attr(data-label);
+          display: block;
+          font-family: 'Sora', sans-serif;
+          font-size: 0.6rem; font-weight: 600;
+          text-transform: uppercase; letter-spacing: 0.08em;
+          color: #64748b;
+          margin-bottom: 0.35rem;
+        }
+        /* Least decision-relevant columns on a phone: identity, raw slot-ms,
+           DDL coverage. The diagnosis itself stays. */
+        .ai-doctor-demo .aid-table td:nth-child(2),
+        .ai-doctor-demo .aid-table td:nth-child(3),
+        .ai-doctor-demo .aid-table td:nth-child(7) { display: none; }
+        .ai-doctor-demo .aid-num { text-align: left; }
+        .ai-doctor-demo .aid-jobid { white-space: normal; word-break: break-all; }
+        .ai-doctor-demo .aid-sql,
+        .ai-doctor-demo .aid-no-rewrite { min-width: 0; }
+        .ai-doctor-demo .aid-advice { min-width: 0; max-width: none; }
+        .ai-doctor-demo .aid-advice-fade { bottom: 2.2rem; }
+        .ai-doctor-demo .aid-pill { padding: 0.6rem 0.95rem; min-height: 44px; }
+        .ai-doctor-demo .aid-copy { width: 34px; height: 34px; }
+        .ai-doctor-demo .aid-yaml-toggle { min-height: 44px; }
+        .ai-doctor-demo .aid-empty { padding: 1rem 0; }
+      }
+
+      @media (max-width: 480px) {
+        .ai-doctor-demo .aid-kpis { grid-template-columns: 1fr; }
       }
     </style>
 
@@ -469,11 +586,13 @@
                 <a href="simulator.html">Simulator</a>
             </div>
             <div class="nav-actions">
-                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-github" target="_blank" rel="noopener">
-                    <i class="fab fa-github"></i><span>Star on GitHub</span>
+                <!-- The label span is hidden below 768px, so the link needs its
+                     own accessible name or it degrades to a bare icon. -->
+                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-github" target="_blank" rel="noopener noreferrer" aria-label="Star BQ FinOps Optimizer on GitHub">
+                    <i class="fab fa-github" aria-hidden="true"></i><span>Star on GitHub</span>
                 </a>
-                <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu">
-                    <i class="fas fa-bars" id="hamburger-icon"></i>
+                <button class="nav-hamburger" id="nav-hamburger" type="button" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="nav-links">
+                    <i class="fas fa-bars" id="hamburger-icon" aria-hidden="true"></i>
                 </button>
             </div>
         </div>
@@ -509,11 +628,16 @@
                         <i class="fas fa-play"></i>Launch the Simulator
                         <span class="btn-shine" aria-hidden="true"></span>
                     </a>
-                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-outline" target="_blank" rel="noopener">
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-outline" target="_blank" rel="noopener noreferrer">
                         <i class="fab fa-github"></i>View Source
                     </a>
                 </div>
-                
+
+                <p class="mobile-note">
+                    <i class="fas fa-desktop" aria-hidden="true"></i>
+                    The full simulator is a desktop experience — open it on a larger screen for the complete console.
+                </p>
+
                 <div class="hero-metrics" aria-label="Product statistics">
                     <div class="hero-metric">
                         <span class="hero-metric-value" data-count="600" data-suffix="+">600+</span>
@@ -653,6 +777,10 @@
                         <i class="fas fa-user-md"></i><span>AI Doctor</span>
                     </button>
                 </div>
+
+                <p class="console-swipe-hint" aria-hidden="true">
+                    <i class="fas fa-arrows-left-right"></i> Swipe for all 7 modules
+                </p>
 
                 <div class="console-stage">
                     <!-- Storage -->
@@ -1377,6 +1505,32 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     </div>
                 </article>
 
+                <!-- Storage Hygiene / Time Travel TTL -->
+                <article class="card card-wide spotlight reveal">
+                    <span class="pill pill-new">✦ v1.4.0 Feature</span>
+                    <div class="card-icon icon-teal"><i class="fas fa-clock-rotate-left"></i></div>
+                    <h3>Storage Hygiene &amp; Time Travel TTL Auditing</h3>
+                    <p>Time travel is billed storage you rarely read. The auditor finds tables where
+                        <strong>time-travel bytes exceed live bytes</strong> and resolves each dataset's configured
+                        <code>default_time_travel_days</code> in one batched lookup — so you shorten the window
+                        only where it actually pays, not everywhere.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Time-Travel vs. Live Byte Ratio</span>
+                        <span><i class="fas fa-check"></i>Per-Dataset TTL Resolution</span>
+                        <span><i class="fas fa-check"></i>48h Minimum · 168h Maximum Aware</span>
+                    </div>
+                </article>
+
+                <!-- DML Abuse Tracker -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">✦ v1.4.0 Feature</span>
+                    <div class="card-icon icon-rose"><i class="fas fa-arrow-right-arrow-left"></i></div>
+                    <h3>DML Abuse Tracker</h3>
+                    <p>Aggregates high-frequency <code>INSERT</code> activity by destination table with active days and
+                        average inserts per day — the pipelines that should be on the
+                        <strong>Storage Write API</strong> instead.</p>
+                </article>
+
                 <!-- Billing Limits -->
                 <article class="card card-wide spotlight reveal">
                     <span class="pill pill-new">New</span>
@@ -1460,6 +1614,15 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     <div class="card-icon"><i class="fas fa-code"></i></div>
                     <h3>Actionable DDL Statements</h3>
                     <p>Emits the exact <code>ALTER SCHEMA</code> you need. Execute in-app or ship to your IaC pipeline.</p>
+                    </article>
+
+                <!-- Notification History -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">✦ v1.4.0 Feature</span>
+                    <div class="card-icon icon-amber"><i class="fas fa-bell"></i></div>
+                    <h3>Notification History Center</h3>
+                    <p>Long org-wide scans raise warnings you'd otherwise miss. Every one is archived, timestamped and
+                        re-readable after the run finishes.</p>
                     </article>
 
             </div>
@@ -1558,7 +1721,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 <h2>Ready to Reclaim Your<br><span class="text-aurora">BigQuery Budget?</span></h2>
                 <p>Deploy the open-source optimizer today and audit your entire organization in minutes.</p>
                 <div class="cta-group">
-                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener">
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
                         <i class="fab fa-github"></i>Get Started on GitHub
                         <span class="btn-shine" aria-hidden="true"></span>
                     </a>
@@ -1566,6 +1729,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                         <i class="fas fa-play"></i>Try the Simulator
                     </a>
                 </div>
+                <p class="mobile-note">
+                    <i class="fas fa-desktop" aria-hidden="true"></i>
+                    The simulator is built for desktop screens.
+                </p>
                 <div class="cta-deploy">
                     <span class="code-strip-lang">bash</span>
                     <code>gcloud run deploy bq-finops-optimizer --image gcr.io/$PROJECT/bq-finops</code>
@@ -1607,7 +1774,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 
                 <details class="faq-item reveal">
                     <summary class="faq-question">
-                        <span>Is this a Google Cloud product?</span>
+                        <span>Is BQ FinOps Optimizer a Google Cloud product?</span>
                         <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
                     </summary>
                     <div class="faq-answer">
@@ -1622,6 +1789,36 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     </summary>
                     <div class="faq-answer">
                         <p>The tool detects common BigQuery anti-patterns including <code>CROSS JOIN</code> explosions, <code>SELECT *</code> on wide tables, <code>CAST</code> defeating partition pruning, missing clustering keys, unnecessary <code>ORDER BY</code> in subqueries, and redundant repeated queries. Gemini classifies each finding by severity (High, Medium, Low) and provides a rewritten optimized query with detailed reasoning.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>Can I export BigQuery cost findings to CSV?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes. As of <strong>v1.4.0</strong> every results table exports to CSV, and the export contains the <strong>full filtered result set</strong> — not just the rows visible on the current page. Job IDs, datasets and tables also deep-link straight into the BigQuery Console, so a finding goes from spreadsheet to console in one click.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>How do I reduce BigQuery time travel storage costs?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The Storage Hygiene Auditor finds tables where time-travel storage exceeds live storage and shows each dataset's configured <code>default_time_travel_days</code>, so you can shorten the window only where it actually pays. It emits the matching DDL — <code>ALTER SCHEMA `ds` SET OPTIONS(max_time_travel_hours = 48)</code>. BigQuery allows a minimum of 48 hours and a maximum of 168 hours (7 days).</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal">
+                    <summary class="faq-question">
+                        <span>How do I find pipelines that should use the BigQuery Storage Write API?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The DML Abuse Tracker aggregates high-frequency <code>INSERT</code> activity by destination table, reporting active days and average inserts per day. Tables sustaining hundreds of small INSERT statements per day are exactly the pipelines that should migrate to the <strong>BigQuery Storage Write API</strong>.</p>
                     </div>
                 </details>
 
@@ -1653,7 +1850,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     <div class="faq-answer">
                         <p>There are several ways to get involved:</p>
                         <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
-                            <li><strong>Report bugs</strong> — open an issue on <a href="https://github.com/mbettan/bq-finops-optimizer/issues" target="_blank" rel="noopener" style="color: var(--cyan); text-decoration: underline;">GitHub Issues</a>. Please keep reports generic and <strong>never include PII, credentials, or sensitive information</strong>.</li>
+                            <li><strong>Report bugs</strong> — open an issue on <a href="https://github.com/mbettan/bq-finops-optimizer/issues" target="_blank" rel="noopener noreferrer" style="color: var(--cyan); text-decoration: underline;">GitHub Issues</a>. Please keep reports generic and <strong>never include PII, credentials, or sensitive information</strong>.</li>
                             <li><strong>Request features</strong> — open a GitHub issue describing the use case you'd like to see supported.</li>
                             <li><strong>Submit pull requests</strong> — if you've fixed a bug, improved performance, or added a feature, PRs are welcome.</li>
                             <li><strong>Share private feedback</strong> — if you prefer to share feedback confidentially, reach out at <a href="mailto:bettan.michael@gmail.com" style="color: var(--cyan); text-decoration: underline;">bettan.michael@gmail.com</a>.</li>
@@ -1687,15 +1884,15 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 </div>
                 <div class="footer-col">
                     <h4>Resources</h4>
-                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener">GitHub</a>
-                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md" target="_blank" rel="noopener">Documentation</a>
-                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener noreferrer">GitHub</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md" target="_blank" rel="noopener noreferrer">Documentation</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">License</a>
                 </div>
             </div>
             <div class="footer-bottom">
                 <p>&copy; 2026 BigQuery FinOps Optimizer · Open Source under Apache 2.0</p>
                 <p class="trademark-notice">BigQuery and Google Cloud are trademarks of Google LLC. BQ FinOps Optimizer is an independent open-source project and is not affiliated with or endorsed by Google.</p>
-                <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener" aria-label="GitHub"><i
+                <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><i
                         class="fab fa-github"></i></a>
             </div>
         </div>
@@ -1720,16 +1917,27 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
         const hamburger = document.getElementById('nav-hamburger');
         const navLinks = document.getElementById('nav-links');
         const icon = document.getElementById('hamburger-icon');
-        hamburger.addEventListener('click', () => {
-            const open = navLinks.classList.toggle('mobile-open');
+        const setMenu = open => {
+            navLinks.classList.toggle('mobile-open', open);
+            hamburger.setAttribute('aria-expanded', open ? 'true' : 'false');
             icon.className = open ? 'fas fa-times' : 'fas fa-bars';
             document.body.style.overflow = open ? 'hidden' : '';
+        };
+        hamburger.addEventListener('click', () => setMenu(!navLinks.classList.contains('mobile-open')));
+        navLinks.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setMenu(false)));
+        addEventListener('keydown', e => {
+            if (e.key === 'Escape' && navLinks.classList.contains('mobile-open')) {
+                setMenu(false);
+                hamburger.focus();
+            }
         });
-        navLinks.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
-            navLinks.classList.remove('mobile-open');
-            icon.className = 'fas fa-bars';
-            document.body.style.overflow = '';
-        }));
+        // Rotating the phone into the desktop layout leaves the overlay stuck
+        // open with body scroll locked, so drop it at the breakpoint.
+        // MediaQueryList.addEventListener is Safari 14+; fall back to resize.
+        const wide = matchMedia('(min-width: 769px)');
+        const onWide = () => { if (wide.matches) setMenu(false); };
+        if (wide.addEventListener) wide.addEventListener('change', onWide);
+        else addEventListener('resize', onWide, { passive: true });
 
         /* ── Reveal on scroll ── */
         const io = new IntersectionObserver(entries => {
@@ -1760,14 +1968,29 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
         }, { threshold: 0.6 });
         document.querySelectorAll('[data-count]').forEach(el => cio.observe(el));
 
-        /* ── Spotlight (mouse-tracking glow) ── */
-        document.addEventListener('pointermove', e => {
-            document.querySelectorAll('.spotlight').forEach(card => {
-                const r = card.getBoundingClientRect();
-                card.style.setProperty('--mx', (e.clientX - r.left) + 'px');
-                card.style.setProperty('--my', (e.clientY - r.top) + 'px');
-            });
-        }, { passive: true });
+        /* ── Spotlight (mouse-tracking glow) ──
+           Only bind on real pointers. On touch it fired on every scroll-drag
+           and forced a layout read of ~30 cards per event for a hover effect
+           phones can't show anyway. The node list is static, so cache it and
+           coalesce the writes into one frame. */
+        if (matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            const spots = Array.from(document.querySelectorAll('.spotlight'));
+            let queued = false, px = 0, py = 0;
+            document.addEventListener('pointermove', e => {
+                px = e.clientX; py = e.clientY;
+                if (queued) return;
+                queued = true;
+                requestAnimationFrame(() => {
+                    queued = false;
+                    spots.forEach(card => {
+                        const r = card.getBoundingClientRect();
+                        if (r.bottom < 0 || r.top > innerHeight) return;
+                        card.style.setProperty('--mx', (px - r.left) + 'px');
+                        card.style.setProperty('--my', (py - r.top) + 'px');
+                    });
+                });
+            }, { passive: true });
+        }
 
         /* ── Hero ticker rotation ── */
         const tickerMsgs = [
@@ -1784,7 +2007,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
         ];
         const ticker = document.getElementById('ticker-text');
         let tIdx = 0;
-        const tickerInterval = setInterval(() => {
+        setInterval(() => {
+            // The ticker sits inside .hero-visual, which is display:none on small
+            // phones — and a backgrounded tab shouldn't be repainting either.
+            if (document.hidden || ticker.offsetParent === null) return;
             tIdx = (tIdx + 1) % tickerMsgs.length;
             ticker.style.opacity = 0;
             setTimeout(() => { ticker.textContent = tickerMsgs[tIdx]; ticker.style.opacity = 1; }, 350);
@@ -1940,6 +2166,40 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
             <td class="num muted">$${r.total_1yr.toLocaleString()}</td>
             <td class="num total-cell ${r.total_3yr === bestTotal ? 'best' : ''}">$${r.total_3yr.toLocaleString()}${r.total_3yr === bestTotal ? ' <i class="fas fa-star"></i>' : ''}</td>
         </tr>`).join('');
+
+        /* ── Mobile: stamp every cell with its column header ────────────────
+           Below 768px each table collapses to one card per row and the header
+           row is visually hidden, so the label has to travel with the cell.
+           Reading it off <thead> keeps the markup and the mock renderers above
+           free of duplicated label strings. Runs last, after every tbody is
+           populated. */
+        document.querySelectorAll('.data-table, .aid-table').forEach(table => {
+            const head = table.tHead;
+            if (!head || !head.rows.length) return;
+
+            // Grouped headers (the Edition Matrix) repeat leaf names like
+            // "PAYG" under three different groups — expand the colspans of the
+            // first row so each leaf can be qualified by its group.
+            const groups = [];
+            if (head.rows.length > 1) {
+                Array.from(head.rows[0].cells).forEach(th => {
+                    const text = th.textContent.trim();
+                    for (let i = 0; i < (th.colSpan || 1); i++) groups.push(text);
+                });
+            }
+            const labels = Array.from(head.rows[head.rows.length - 1].cells).map((th, i) => {
+                const leaf = th.textContent.trim();
+                return groups[i] && groups[i] !== leaf ? groups[i] + ' · ' + leaf : leaf;
+            });
+
+            Array.from(table.tBodies).forEach(tbody => {
+                Array.from(tbody.rows).forEach(row => {
+                    Array.from(row.cells).forEach((cell, i) => {
+                        if (labels[i]) cell.setAttribute('data-label', labels[i]);
+                    });
+                });
+            });
+        });
     })();
     </script>
 

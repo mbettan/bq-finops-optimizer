@@ -79,6 +79,51 @@
     window.sanitizeData = sanitizeData;
 })();
 
+/**
+ * DataTables column renderer that sorts on an embedded `data-order` value.
+ *
+ * DataTables only reads a `data-order` attribute off the <td> itself, and
+ * only for DOM-sourced tables. Tables built with `row.add([...])` hand
+ * DataTables an HTML string, so the attribute is invisible to the sorter and
+ * "12.3k" ends up ordered lexically. This renderer digs the raw number back
+ * out for the sort/type passes and leaves the display pass untouched.
+ * The filter pass gets the tag-stripped text so a search for "span" or
+ * "order" doesn't match the wrapper markup instead of the value.
+ *
+ * Keep in sync with static/app.js.
+ */
+function orderByDataAttr(data, type) {
+    if (type === 'filter') return String(data).replace(/<[^>]*>/g, '');
+    if (type !== 'sort' && type !== 'type') return data;
+    const match = /data-order="([^"]*)"/.exec(String(data));
+    const raw = match ? match[1] : String(data).replace(/[^0-9.eE+-]/g, '');
+    const n = parseFloat(raw);
+    return isNaN(n) ? 0 : n;
+}
+window.orderByDataAttr = orderByDataAttr;
+
+/**
+ * Format a dollar amount to whole dollars. Keep in sync with static/app.js.
+ *
+ * Intl puts the sign ahead of the symbol ("-$1,234"), which hand-rolled
+ * `'$' + Math.round(n).toLocaleString()` gets wrong ("$-1,234"). Amounts
+ * under a dollar keep two decimals so a real-but-small saving doesn't
+ * collapse to "$0" and read as "nothing to do here".
+ */
+function formatWholeDollars(amount) {
+    const n = Number(amount);
+    if (!isFinite(n)) return '$0';
+    const abs = Math.abs(n);
+    const digits = abs > 0 && abs < 1 ? 2 : 0;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    }).format(n);
+}
+window.formatWholeDollars = formatWholeDollars;
+
 /** Escape a value for safe interpolation into an HTML attribute or text node. */
 function escapeHtmlAttr(value) {
     return String(value == null ? '' : value)
@@ -89,6 +134,85 @@ function escapeHtmlAttr(value) {
         .replace(/>/g, '&gt;');
 }
 window.escapeHtmlAttr = escapeHtmlAttr;
+
+/**
+ * Build a Google Cloud Console deep-link URL.
+ * `location` accepts either a metadata region ("region-us") or a plain
+ * location ("us") — the "region-" prefix is stripped for the Console.
+ *
+ * Keep in sync with static/app.js — the simulator renders the same tables.
+ */
+function buildConsoleUrl(type, opts = {}) {
+    const proj = encodeURIComponent(opts.project || '');
+    const loc = encodeURIComponent((opts.location || '').replace(/^region-/, ''));
+    switch (type) {
+        case 'job':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
+        case 'dataset':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m4!1m3!3m2!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}`;
+        case 'table':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m5!1m4!4m3!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}!3s${encodeURIComponent(opts.table || '')}`;
+        case 'project':
+            return `https://console.cloud.google.com/bigquery?project=${proj}`;
+        default:
+            return '#';
+    }
+}
+window.buildConsoleUrl = buildConsoleUrl;
+
+/** Render a project ID with a Console deep-link. */
+function renderProjectLink(project, label) {
+    if (!project) return '—';
+    const url = buildConsoleUrl('project', { project });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
+}
+window.renderProjectLink = renderProjectLink;
+
+/** Render a dataset name with a Console deep-link. */
+function renderDatasetLink(dataset, project, label) {
+    if (!dataset) return '—';
+    const url = buildConsoleUrl('dataset', { project, dataset });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
+}
+window.renderDatasetLink = renderDatasetLink;
+
+/** Render a table name with a Console deep-link. */
+function renderTableLink(table, dataset, project, label) {
+    if (!table) return '—';
+    if (!dataset) return escapeHtmlAttr(label || table);
+    const url = buildConsoleUrl('table', { project, dataset, table });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
+}
+window.renderTableLink = renderTableLink;
+
+/**
+ * Tag a DataTable's container with .dt-empty when it holds no data at all.
+ *
+ * This distinguishes "the analysis has not run yet" (recordsTotal === 0) from
+ * "the current search or filter pill matched nothing" (recordsTotal > 0 but
+ * recordsDisplay === 0). Only the former is collapsed by the stylesheet:
+ * hiding a filtered-to-zero table would take its own search box — and, for
+ * the AI Doctor panel, the #aidoc-filters pills — with it, leaving the user
+ * no way to undo the filter short of a page reload.
+ *
+ * Keep in sync with static/app.js.
+ */
+function markEmptyTables(settings) {
+    try {
+        const api = new $.fn.dataTable.Api(settings);
+        const container = api.table().container();
+        if (container) {
+            $(container).toggleClass('dt-empty', api.page.info().recordsTotal === 0);
+        }
+    } catch (err) {
+        console.warn('[dt-empty] Could not inspect DataTable state:', err);
+    }
+}
+window.markEmptyTables = markEmptyTables;
+
+if (window.jQuery && $.fn && $.fn.dataTable) {
+    $(document).on('init.dt draw.dt', (e, settings) => markEmptyTables(settings));
+}
 
 // Guards against a corrupted/malicious localStorage value (e.g. from a bad
 // Snapshot import) breaking script execution for the rest of this file.
@@ -784,7 +908,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. Cache cleared.', 'success');
+        showNotification('Settings saved. Cached results were cleared for the new scope — re-run any analysis you need.', 'success');
         Router.navigate('storage');
     });
 
@@ -1208,19 +1332,23 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!model) return '—';
             const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
             return isPhysical
-                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;"></i>PHYSICAL</span>`
-                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;"></i>LOGICAL</span>`;
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;" aria-hidden="true"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;" aria-hidden="true"></i>LOGICAL</span>`;
         };
 
         datasets.forEach((row, index) => {
             const tr = document.createElement('tr');
+            const savings = Number(row.monthly_savings) || 0;
+            // Displayed rounded, sorted on the float — so give tied-looking rows
+            // a tooltip that explains why one sorts above the other.
+            const savingsPct = (Number(row.monthly_savings_pct) || 0) * 100;
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_name)}</td>
                 <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
                 <td>${renderModelBadge(row.currently_on)}</td>
                 <td>${renderModelBadge(row.better_on)}</td>
-                <td data-order="${row.monthly_savings || 0}">$${Math.round(row.monthly_savings || 0).toLocaleString()}</td>
-                <td data-order="${(row.monthly_savings_pct || 0) * 100}">${Math.round((row.monthly_savings_pct || 0) * 100)}%</td>
+                <td data-order="${savings}" title="${savings.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/month">${formatWholeDollars(savings)}</td>
+                <td data-order="${savingsPct}" title="${savingsPct.toFixed(2)}%">${Math.round(savingsPct)}%</td>
                 <td>
                     <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
                 </td>
@@ -1397,7 +1525,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const formatNumber = (num) => {
             // Guard null/undefined/NaN from snapshot import
             if (num == null || isNaN(num)) return '0';
-            return num.toLocaleString();
+            // Abbreviated above 10k. Cells using this MUST carry data-order —
+            // DataTables cannot sort "12.3k" numerically on its own.
+            const abs = Math.abs(num);
+            if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+            if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+            if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+            return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
         };
 
         data.forEach(row => {
@@ -1460,7 +1594,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
                 <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
                 <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
-                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
+                <td data-order="${Number(row.row_count) || 0}" title="${(Number(row.row_count) || 0).toLocaleString()} rows"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
                 <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
                 <td>${getPartitionStatus(row.is_partitioned)}</td>
                 <td>${getClusterStatus(row.is_clustered)}</td>
@@ -1922,8 +2056,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td>${row.admin_project_id || ''}</td>
                         <td>${row.region || ''}</td>
                         <td>${row.edition}</td>
-                        <td>${formatNumber(row.current_baseline)}</td>
-                        <td>${formatNumber(row.current_max_slots)}</td>
+                        <td data-order="${Number(row.current_baseline) || 0}">${formatNumber(row.current_baseline)}</td>
+                        <td data-order="${Number(row.current_max_slots) || 0}">${formatNumber(row.current_max_slots)}</td>
                         <td>${row.ignore_idle_slots ? 'No' : 'Yes'}</td>
                         <td>${row.scaling_mode || 'N/A'}</td>
                         <td>${row.target_job_concurrency || 'Auto'}</td>
@@ -1951,10 +2085,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 tr.innerHTML = `
                     <td>${displayResId}</td>
-                    <td><strong>${formatNumber(row.recommended_baseline)}</strong></td>
-                    <td>${formatNumber(row.recommended_max_p90)}</td>
-                    <td>${formatNumber(row.recommended_max_p99)}</td>
-                    <td>${formatNumber(row.recommended_max_peak)}</td>
+                    <td data-order="${Number(row.recommended_baseline) || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td data-order="${Number(row.recommended_max_p90) || 0}">${formatNumber(row.recommended_max_p90)}</td>
+                    <td data-order="${Number(row.recommended_max_p99) || 0}">${formatNumber(row.recommended_max_p99)}</td>
+                    <td data-order="${Number(row.recommended_max_peak) || 0}">${formatNumber(row.recommended_max_peak)}</td>
                 `;
                 
                 if (displayResId === 'MERGED (Simulated)') {
@@ -2209,8 +2343,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             
             tr.innerHTML = `
                 <td>${displayResId}</td>
-                <td>${formatNumber(row.total_flagged_hours)}</td>
-                <td>${formatNumber(row.peak_hourly_queries)}</td>
+                <td data-order="${Number(row.total_flagged_hours) || 0}">${formatNumber(row.total_flagged_hours)}</td>
+                <td data-order="${Number(row.peak_hourly_queries) || 0}">${formatNumber(row.peak_hourly_queries)}</td>
                 <td>${row.top_projects}</td>
                 <td><span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b;">Consider Baseline</span></td>
             `;
@@ -2293,7 +2427,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#profiler-queries-table').DataTable({
                 pageLength: 10,
                 order: [[3, 'desc']],
-                responsive: true
+                responsive: true,
+                // Rows are added as HTML strings, so DataTables cannot see the
+                // <td data-order>. formatNumber() abbreviates to "12.3k"/"4.5m",
+                // which would otherwise sort lexically.
+                columnDefs: [{ targets: [3, 4, 5, 6], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2324,10 +2462,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
                     ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
                 </div>`,
-                formatNumber(row.frequency),
-                formatSlotHours(row.avg_slot_hours),
-                formatNumber(row.avg_duration_seconds),
-                `${formatNumber(avgBytes / (1024 * 1024))} MB`,
+                `<span data-order="${Number(row.frequency) || 0}">${formatNumber(row.frequency)}</span>`,
+                `<span data-order="${Number(row.avg_slot_hours) || 0}">${formatSlotHours(row.avg_slot_hours)}</span>`,
+                `<span data-order="${Number(row.avg_duration_seconds) || 0}">${formatNumber(row.avg_duration_seconds)}</span>`,
+                `<span data-order="${avgBytes}">${formatNumber(avgBytes / (1024 * 1024))} MB</span>`,
                 `<span class="badge" style="background: ${badgeBg}; color: ${badgeColor};" title="${recommendation}">${badgeText}</span>`
             ]);
         });
@@ -2546,6 +2684,12 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const formatNumber = (num) => {
         // Guard null/undefined/NaN from snapshot import
         if (num == null || isNaN(num)) return '0';
+        // Abbreviated above 10k. Cells using this MUST carry data-order —
+        // DataTables cannot sort "12.3k" numerically on its own.
+        const abs = Math.abs(num);
+        if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+        if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
 
@@ -2793,7 +2937,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#cost-attribution-results-table').DataTable({
                 pageLength: 10,
                 order: [[4, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [2, 3, 4], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2811,12 +2956,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 displayResId = displayResId.split(':').pop();
             }
 
+            // data-order carries the raw number so DataTables sorts these
+            // numerically instead of lexically on the "$1,234.00" string.
             table.row.add([
                 row.project_id,
                 displayResId,
-                formatCurrency(row.direct_usage_cost_usd),
-                formatCurrency(row.allocated_waste_cost_usd),
-                `<strong>${formatCurrency(row.total_cost_attribution_usd)}</strong>`
+                `<span data-order="${row.direct_usage_cost_usd || 0}">${formatCurrency(row.direct_usage_cost_usd)}</span>`,
+                `<span data-order="${row.allocated_waste_cost_usd || 0}">${formatCurrency(row.allocated_waste_cost_usd)}</span>`,
+                `<span data-order="${row.total_cost_attribution_usd || 0}"><strong>${formatCurrency(row.total_cost_attribution_usd)}</strong></span>`
             ]);
 
             // Aggregate slots
@@ -2838,7 +2985,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             slotTable = $('#slot-usage-by-project-table').DataTable({
                 pageLength: 5,
                 order: [[1, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [1], type: 'num', render: orderByDataAttr }]
             });
         }
         slotTable.clear();
@@ -2846,7 +2994,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         for (const [projId, slots] of Object.entries(projectSlots)) {
             slotTable.row.add([
                 projId,
-                `${slots.toFixed(2)} hrs`
+                `<span data-order="${slots}">${slots.toFixed(2)} hrs</span>`
             ]);
         }
         slotTable.draw();
@@ -2977,9 +3125,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.user_email}</td>
-                <td>${formatNumber(row.query_count)}</td>
-                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
-                <td>${formatNumber(row.total_slot_hours)}</td>
+                <td data-order="${Number(row.query_count) || 0}">${formatNumber(row.query_count)}</td>
+                <td data-order="${Number(row.total_bytes_billed) || 0}">${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
+                <td data-order="${Number(row.total_slot_hours) || 0}">${formatNumber(row.total_slot_hours)}</td>
                 <td>${formatCurrency(row.est_on_demand_cost)}</td>
                 <td>${formatCurrency(row.est_editions_cost)}</td>
             `;
@@ -3065,6 +3213,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 order: [[1, 'desc']],
                 responsive: true,
                 columnDefs: [
+                    { targets: [1, 2, 3], type: 'num', render: orderByDataAttr },
                     { targets: 4, orderable: false }
                 ]
             });
@@ -3088,11 +3237,13 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
             const badgeNode = _buildBadgeCell(optValue);
+            // data-order carries the raw number: DataTables cannot sort
+            // "12.34%" numerically, and "1,234" only by lucky auto-detection.
             table.row.add([
                 row.job_id,
-                `${row.percent_execution_time_saved.toFixed(2)}%`,
-                row.new_elapsed_ms.toLocaleString(),
-                row.original_elapsed_ms.toLocaleString(),
+                `<span data-order="${Number(row.percent_execution_time_saved) || 0}">${row.percent_execution_time_saved.toFixed(2)}%</span>`,
+                `<span data-order="${Number(row.new_elapsed_ms) || 0}">${row.new_elapsed_ms.toLocaleString()}</span>`,
+                `<span data-order="${Number(row.original_elapsed_ms) || 0}">${row.original_elapsed_ms.toLocaleString()}</span>`,
                 badgeNode.outerHTML
             ]);
         });
@@ -3833,7 +3984,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
 
             tr.innerHTML = `
                 <td><strong>${escapeHtmlAttr(row.workload_name)}</strong> ${confBadge}</td>
-                <td><span class="badge logical">${escapeHtmlAttr(row.workload_type)}</span></td>
+                <td><span class="badge secondary">${escapeHtmlAttr(row.workload_type)}</span></td>
                 <td>${escapeHtmlAttr(row.project_id)}</td>
                 <td data-order="${row.total_job_runs}">${row.total_job_runs.toLocaleString()}</td>
                 <td data-order="${row.total_slot_hours}">${row.total_slot_hours.toFixed(2)} hrs</td>
@@ -4003,7 +4154,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             tr.innerHTML = `
                 <td>${row.project_id}</td>
                 <td>${row.dataset_id}</td>
-                <td><span class="badge logical">Missing Expiration</span></td>
+                <td><span class="badge secondary">Missing Expiration</span></td>
             `;
             tbody.appendChild(tr);
         });
@@ -4799,11 +4950,27 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
-                // Auto-linkify fully qualified BigQuery table references (project.dataset.table)
-                html = html.replace(/\b([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b/g, (match, proj, ds, tbl) => {
-                    const url = `https://console.cloud.google.com/bigquery?project=${encodeURIComponent(proj)}&ws=!1m5!1m4!4m3!1s${encodeURIComponent(proj)}!2s${encodeURIComponent(ds)}!3s${encodeURIComponent(tbl)}`;
-                    return `<a href="${url}" target="_blank" rel="noopener" class="console-link" title="Open ${tbl} in Console">${match}</a>`;
-                });
+                // Auto-linkify fully qualified BigQuery table references
+                // (project.dataset.table).
+                //
+                // The leading group pins the match to a real text boundary —
+                // start-of-string, whitespace, an opening bracket, or the ">"
+                // that closes a tag we just emitted. Crucially it does NOT
+                // allow "/" or ".", which is what keeps the pattern out of
+                // URLs: in "https://console.cloud.google.com/…" the candidate
+                // "console.cloud.google" is preceded by "/" and so is skipped.
+                //
+                // The trailing lookahead rejects a 4th dotted segment for the
+                // same reason, so "a.b.c.d" is left alone rather than being
+                // linkified as "a.b.c" plus a dangling ".d".
+                html = html.replace(
+                    /(^|[\s(>\[])([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?![\w.\-\/])/g,
+                    (match, pre, proj, ds, tbl) => {
+                        const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
+                        const ref = `${proj}.${ds}.${tbl}`;
+                        return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open ${tbl} in Console">${ref}</a>`;
+                    }
+                );
 
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);

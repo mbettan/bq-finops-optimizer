@@ -831,19 +831,44 @@ input:checked + .slider:before {
     gap: 0.375rem;
 }
 
+/* Labels absorb the leftover height of their (grid-stretched) .form-group and
+   sit on the bottom edge, so every control in a row lines up no matter how
+   many lines its label wraps to. This replaces an earlier `min-height: 2.5rem`
+   which only held for one- and two-line labels and broke again at narrow
+   widths where labels wrap to three. */
 .form-group label {
     font-size: 0.8rem;
     font-weight: 500;
     color: var(--text-secondary);
     letter-spacing: 0.01em;
     line-height: 1.35;
-    min-height: 2.5rem;
-    display: block;
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    flex: 1 1 auto;
 }
 
-.form-group[style*="flex-direction: row"] label,
-.form-group[style*="flex-direction:row"] label {
-    min-height: auto;
+.form-group input,
+.form-group select,
+.form-group textarea {
+    flex: 0 0 auto;
+}
+
+/* Checkbox-style rows lay the control and label out side by side, so the
+   label must not stretch. Use this class rather than matching on inline
+   `style` substrings — that only worked while the rule stayed inline and was
+   sensitive to whitespace after the colon. */
+.form-group--inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.form-group--inline label {
+    flex: 0 1 auto;
+    align-items: center;
+    margin-bottom: 0;
+    cursor: pointer;
 }
 
 .form-group input,
@@ -1640,13 +1665,17 @@ table.dataTable tbody tr.severity-low:hover {
         border: 1px solid hsla(217, 91%, 60%, 0.2);
     }
 
-    /* ─── Physical vs Logical Storage Badges ─── */
-    .badge-physical,
-    .badge.PHYSICAL,
-    .badge.physical {
-        background: rgba(56, 189, 248, 0.14) !important;
-        color: #38bdf8 !important;
-        border: 1px solid rgba(56, 189, 248, 0.3) !important;
+    /* ─── Physical vs Logical Storage Badges ───
+       Deliberately scoped to the explicit .badge-physical / .badge-logical
+       classes emitted by renderModelBadge(). Do NOT add ".badge.logical" or
+       ".badge.physical" aliases here: unrelated badges (workload types,
+       "Missing Expiration") ride the generic .badge modifiers, and an alias
+       would repaint them in the storage palette.
+       Keeping the selectors distinct is also what lets us drop !important. */
+    .badge-physical {
+        background: rgba(56, 189, 248, 0.14);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
         font-weight: 600;
         letter-spacing: 0.03em;
         padding: 0.25rem 0.6rem;
@@ -1656,12 +1685,10 @@ table.dataTable tbody tr.severity-low:hover {
         gap: 0.25rem;
     }
 
-    .badge-logical,
-    .badge.LOGICAL,
-    .badge.logical {
-        background: rgba(192, 132, 252, 0.14) !important;
-        color: #c084fc !important;
-        border: 1px solid rgba(192, 132, 252, 0.3) !important;
+    .badge-logical {
+        background: rgba(192, 132, 252, 0.14);
+        color: #c084fc;
+        border: 1px solid rgba(192, 132, 252, 0.3);
         font-weight: 600;
         letter-spacing: 0.03em;
         padding: 0.25rem 0.6rem;
@@ -1994,6 +2021,12 @@ table.dataTable tbody tr.severity-low:hover {
 }
 
 /* Severity escalation: after 20s show this is taking a while */
+.query-progress--slow {
+  background: hsla(var(--warning), 0.08);
+  border-color: hsla(var(--warning), 0.25);
+  border-left-color: hsl(var(--warning));
+}
+
 /* Hide empty table headers, DataTables elements, and KPI strips while an analysis query is actively processing */
 .query-progress ~ .table-responsive,
 .query-progress ~ table,
@@ -2003,21 +2036,38 @@ table.dataTable tbody tr.severity-low:hover {
   display: none !important;
 }
 
-/* Automatically hide table container, headers, dataTables controls, and empty results panels when tbody has no real data rows or has dataTables_empty */
+/* ─── Collapsing empty results ───────────────────────────────────────
+   Two states that look identical in the DOM but must behave differently:
+
+   1. NEVER POPULATED — the analysis has not run. The whole panel is noise,
+      so collapse it. Safe because the trigger button lives in .params-panel,
+      outside the results panel.
+
+   2. FILTERED TO ZERO — the user typed in the DataTables search box or
+      clicked a filter pill. Collapsing here is a dead end: the search input
+      lives inside .dataTables_wrapper and #aidoc-filters lives inside
+      .results-panel, so hiding either removes the only way back. DataTables'
+      own "No matching records found" row is the correct affordance.
+
+   CSS cannot tell the two apart — both render <td class="dataTables_empty">.
+   The .dt-empty class is therefore applied by JS on init.dt/draw.dt using
+   page.info().recordsTotal, which is 0 only in case 1. See markEmptyTables()
+   in app.js. Plain (non-DataTables) tables still use the :has() form below. */
 .table-responsive:not(:has(tbody tr)),
-.table-responsive:has(td.dataTables_empty),
-.dataTables_wrapper:has(td.dataTables_empty),
 table.showcase-table:not(:has(tbody tr)),
-table.showcase-table:has(td.dataTables_empty),
-.results-panel:has(table):not(:has(tbody tr)),
-.results-panel:has(td.dataTables_empty),
-.glass-card.results-panel:has(table):not(:has(tbody tr)),
-.glass-card.results-panel:has(td.dataTables_empty) {
+.results-panel:has(table):not(:has(tbody tr)) {
   display: none !important;
 }
 
+.dataTables_wrapper.dt-empty {
+  display: none !important;
+}
 
-
+/* Collapse the panel only when it holds DataTables and every one of them is
+   truly empty — a panel with one populated and one empty table stays open. */
+.results-panel:has(.dataTables_wrapper):not(:has(.dataTables_wrapper:not(.dt-empty))) {
+  display: none !important;
+}
 
 
 /* ============================================================
@@ -2601,3 +2651,30 @@ table.showcase-table:has(td.dataTables_empty),
     from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+/* =========================================================
+   Console deep-links on project / dataset / table names
+   Keep in sync with static/style.css.
+   ========================================================= */
+.console-link {
+    color: #93c5fd;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(147, 197, 253, 0.4);
+}
+.console-link:hover {
+    color: #bfdbfe;
+    border-bottom-style: solid;
+}
+
+/* Disclosure hint on <details> summaries. Driven by [open] so it never tells
+   the user to "expand" a panel that is already open. aria-hidden because the
+   <summary> element already exposes its expanded state to assistive tech, and
+   generated content is announced inconsistently. */
+.summary-hint {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    font-weight: normal;
+    color: var(--text-secondary);
+}
+.summary-hint::after { content: 'Click to expand'; }
+details[open] > summary .summary-hint::after { content: 'Click to collapse'; }
