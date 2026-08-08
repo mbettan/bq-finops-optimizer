@@ -1,5 +1,5 @@
 name: "🐛 Bug Report"
-description: "File an issue about something not working or unexpected behavior"
+description: "Report an issue, unexpected behavior, or calculation error in BigQuery FinOps Optimizer"
 title: "[Bug] "
 labels: ["bug"]
 body:
@@ -7,11 +7,12 @@ body:
     attributes:
       value: |
         Thank you for reporting a bug! Please provide as much detail as possible to help us reproduce and fix it.
+        ⚠️ **Privacy Reminder:** Never include proprietary project IDs, credentials, or personally identifiable information (PII).
   - type: textarea
     id: description
     attributes:
       label: "Describe the bug"
-      description: "A clear and concise description of what the bug is."
+      description: "A clear and concise description of what the bug or unexpected behavior is."
     validations:
       required: true
   - type: dropdown
@@ -25,6 +26,7 @@ body:
         - "Interactive vs. Batch Prioritization"
         - "Storage Hygiene & Time Travel"
         - "Governance & Partition Guardrails"
+        - "Top Spenders & Dollarized Waste"
         - "Settings & Project Scoping"
         - "General UI / UX"
     validations:
@@ -32,30 +34,42 @@ body:
   - type: textarea
     id: steps
     attributes:
-      label: "Steps to reproduce"
-      description: "How can we reproduce this behavior?"
+      label: "To Reproduce"
+      description: "Steps to reproduce the behavior:"
       placeholder: |
-        1. Go to '...'
-        2. Click on '....'
-        3. See error
+        1. Open BigQuery FinOps Optimizer
+        2. Go to tab '...' (e.g. AI Doctor, Capacity Simulation, Top Spenders)
+        3. Set parameters: Lookback '...', Region '...', Project '...'
+        4. Click 'Run Analysis'
+        5. See error / unexpected calculation
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
       label: "Expected behavior"
-      description: "What did you expect to happen?"
+      description: "A clear and concise description of what you expected to happen."
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: "Environment details"
-      description: "Browser version, deployment mode (Local, Cloud Run), BigQuery region, etc."
-      placeholder: "e.g., Chrome 127, Local Python 3.11, region: us-east4"
+      label: "Environment (please complete the following information):"
+      description: "Deployment mode, version, BigQuery region, and browser details."
+      placeholder: |
+        - Optimizer Version: [e.g. v1.4.0, main branch]
+        - Deployment Mode: [e.g. Local Python 3.11, Docker, Cloud Run]
+        - BigQuery Region: [e.g. us-central1, us-east4, eu-west1]
+        - BigQuery Billing Model: [e.g. On-Demand, Editions Enterprise, Editions Standard]
+        - Browser: [e.g. Chrome, Safari, Firefox]
   - type: textarea
     id: logs
     attributes:
       label: "Logs or Error Output"
-      description: "Relevant snippets from `app.log` or browser console (make sure to omit sensitive project IDs if needed)."
+      description: "Paste any relevant snippets from `app.log` or browser console (make sure to omit sensitive project IDs)."
       render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: "Additional Context"
+      description: "Add any other context or sanitized table schemas about the problem here."

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "📖 BigQuery FinOps Optimizer Documentation"
+    url: "https://mbettan.github.io/bq-finops-optimizer/"
+    about: "Read interactive feature guides, architecture docs, and live demos."
+  - name: "🗺️ Public Product Roadmap"
+    url: "https://github.com/users/mbettan/projects/1"
+    about: "Track active engineering milestones, Backlog ideas, and shipped features."
+  - name: "🔒 Report a Security Vulnerability"
+    url: "https://github.com/mbettan/bq-finops-optimizer/security/policy"
+    about: "Please report security vulnerabilities confidentially."

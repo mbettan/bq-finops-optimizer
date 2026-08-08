@@ -1,0 +1,40 @@
+name: "💬 Feedback"
+description: "Share general feedback, usability thoughts, or practitioner experiences"
+title: "[Feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We appreciate feedback from the community and practitioners running BigQuery in production!
+  - type: textarea
+    id: scenario
+    attributes:
+      label: "Describe your scenario"
+      description: "A clear and concise description of what your scenario or BigQuery environment is."
+      placeholder: "e.g., Managing a multi-project GCP organization with 2,000 BigQuery reservation slots and mixed on-demand pipelines..."
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Which area/module does your feedback relate to? (Optional)"
+      options:
+        - "General / Overall Experience"
+        - "Slots Optimizer & Capacity Simulation"
+        - "AI Doctor & SQL Rewriting"
+        - "Cost Attribution & Waste Distribution"
+        - "Interactive vs. Batch Prioritization"
+        - "Storage Hygiene & Time Travel"
+        - "Governance & Partition Guardrails"
+        - "Top Spenders & Dollarized Waste"
+        - "Settings & Project Scoping"
+        - "General UI / UX"
+  - type: textarea
+    id: feedback
+    attributes:
+      label: "Feedback"
+      description: "Your feedback, comments, or usability suggestions."
+      placeholder: "Share what worked well, what was confusing, or what you'd like improved..."
+    validations:
+      required: true

@@ -529,6 +529,340 @@
       @media (max-width: 480px) {
         .ai-doctor-demo .aid-kpis { grid-template-columns: 1fr; }
       }
+
+      /* ░░ ROADMAP SECTION STYLES ░░ */
+      .roadmap-section {
+        padding: 6rem 0;
+        position: relative;
+      }
+      .roadmap-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+        gap: 1rem;
+      }
+      .roadmap-filters {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .roadmap-filter-btn {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #94a3b8;
+        padding: 0.4rem 0.85rem;
+        border-radius: 9999px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .roadmap-filter-btn:hover,
+      .roadmap-filter-btn.is-active {
+        background: rgba(56, 189, 248, 0.15);
+        border-color: rgba(56, 189, 248, 0.4);
+        color: #38bdf8;
+      }
+      .roadmap-sync-badge {
+        font-size: 0.75rem;
+        color: #34d399;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(52, 211, 153, 0.1);
+        padding: 0.35rem 0.85rem;
+        border-radius: 9999px;
+        border: 1px solid rgba(52, 211, 153, 0.2);
+        font-family: 'JetBrains Mono', monospace;
+      }
+      .roadmap-sync-badge i {
+        font-size: 0.5rem;
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0% { opacity: 0.4; }
+        50% { opacity: 1; }
+        100% { opacity: 0.4; }
+      }
+      .roadmap-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+        align-items: start;
+        margin-bottom: 2.5rem;
+      }
+      .roadmap-col {
+        background: rgba(15, 23, 42, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 1.25rem;
+        backdrop-filter: blur(12px);
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        min-height: 420px;
+      }
+      .roadmap-col-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .roadmap-col-title {
+        font-family: 'Sora', sans-serif;
+        font-size: 0.95rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .roadmap-col-count {
+        font-size: 0.75rem;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #94a3b8;
+        font-weight: 600;
+      }
+      .roadmap-items-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+      }
+      .roadmap-card {
+        background: rgba(30, 41, 59, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 0.75rem;
+        padding: 1rem;
+        transition: transform 0.2s, border-color 0.2s, background 0.2s;
+        text-decoration: none;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .roadmap-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(56, 189, 248, 0.3);
+        background: rgba(30, 41, 59, 0.75);
+      }
+      .roadmap-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .roadmap-card-id {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        color: #64748b;
+        white-space: nowrap;
+      }
+      .roadmap-card-title {
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: #f1f5f9;
+        line-height: 1.4;
+        margin: 0;
+      }
+      .roadmap-card-desc {
+        font-size: 0.78rem;
+        color: #94a3b8;
+        line-height: 1.5;
+        margin: 0;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .roadmap-card-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+      .roadmap-tag {
+        font-size: 0.68rem;
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-weight: 500;
+        background: rgba(255, 255, 255, 0.06);
+        color: #cbd5e1;
+      }
+      .roadmap-tag-slots { background: rgba(212, 197, 249, 0.15); color: #d4c5f9; }
+      .roadmap-tag-ai { background: rgba(191, 218, 220, 0.15); color: #bfdadc; }
+      .roadmap-tag-storage { background: rgba(191, 229, 191, 0.15); color: #bfe5bf; }
+      .roadmap-tag-cost { background: rgba(255, 211, 61, 0.15); color: #ffd33d; }
+      .roadmap-tag-gov { background: rgba(249, 208, 196, 0.15); color: #f9d0c4; }
+      .roadmap-tag-settings { background: rgba(194, 224, 198, 0.15); color: #c2e0c6; }
+      .roadmap-tag-ui { background: rgba(197, 222, 245, 0.15); color: #c5def5; }
+      .roadmap-tag-community { background: rgba(112, 87, 255, 0.15); color: #a78bfa; }
+      
+      .roadmap-cta-bar {
+        background: rgba(15, 23, 42, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 1.5rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+      }
+      .roadmap-cta-text h3 {
+        font-size: 1.05rem;
+        margin: 0 0 0.25rem;
+        color: #f8fafc;
+      }
+      .roadmap-cta-text p {
+        font-size: 0.85rem;
+        color: #94a3b8;
+        margin: 0;
+      }
+      .roadmap-cta-actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+
+      @media (max-width: 960px) {
+        .roadmap-grid {
+          grid-template-columns: 1fr;
+        }
+        .roadmap-cta-bar {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+
+      /* ░░ RELEASES SECTION STYLES ░░ */
+      .releases-section {
+        padding: 6rem 0;
+        position: relative;
+      }
+      .releases-layout {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        gap: 2rem;
+        align-items: start;
+      }
+      .releases-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        background: rgba(15, 23, 42, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 1rem;
+        backdrop-filter: blur(12px);
+      }
+      .release-nav-btn {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        background: transparent;
+        border: 1px solid transparent;
+        color: #94a3b8;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: left;
+      }
+      .release-nav-btn:hover {
+        background: rgba(255, 255, 255, 0.04);
+        color: #f8fafc;
+      }
+      .release-nav-btn.is-active {
+        background: rgba(56, 189, 248, 0.12);
+        border-color: rgba(56, 189, 248, 0.35);
+        color: #38bdf8;
+        font-weight: 600;
+      }
+      .release-nav-date {
+        font-size: 0.72rem;
+        color: #64748b;
+      }
+      .release-detail-card {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 1rem;
+        padding: 2rem;
+        backdrop-filter: blur(12px);
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+      .release-detail-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .release-tag-pill {
+        font-family: 'Sora', sans-serif;
+        font-size: 1.3rem;
+        font-weight: 800;
+        color: #38bdf8;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .release-tag-pill .latest-pill {
+        font-size: 0.7rem;
+        background: rgba(52, 211, 153, 0.15);
+        color: #34d399;
+        border: 1px solid rgba(52, 211, 153, 0.3);
+        padding: 2px 8px;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-family: 'Inter', sans-serif;
+      }
+      .release-meta {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        font-size: 0.8rem;
+        color: #94a3b8;
+      }
+      .release-content {
+        font-size: 0.9rem;
+        line-height: 1.7;
+        color: #cbd5e1;
+      }
+      .release-content h2, .release-content h3 {
+        font-family: 'Sora', sans-serif;
+        color: #f8fafc;
+        margin: 1.25rem 0 0.5rem;
+        font-size: 1rem;
+      }
+      .release-content ul {
+        margin: 0.5rem 0 1rem;
+        padding-left: 1.25rem;
+      }
+      .release-content li {
+        margin-bottom: 0.4rem;
+      }
+      .release-content code {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.82rem;
+        background: rgba(255, 255, 255, 0.08);
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: #38bdf8;
+      }
+      @media (max-width: 860px) {
+        .releases-layout {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
 
     <!-- Preconnect to all external font origins -->
@@ -580,6 +914,8 @@
             <div class="nav-links" id="nav-links">
                 <a href="#demo">Live Demo</a>
                 <a href="#features">Capabilities</a>
+                <a href="#roadmap">Roadmap</a>
+                <a href="#releases">Releases</a>
                 <a href="#trust">Security</a>
                 <a href="#workflow">Workflow</a>
                 <a href="#faq">FAQ</a>
@@ -1716,6 +2052,294 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
         </div>
     </section>
 
+    <!-- ░░ PRODUCT ROADMAP ░░ -->
+    <section id="roadmap" class="roadmap-section" aria-label="Product Roadmap">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-map-location-dot"></i>Product Roadmap</span>
+                <h2>Public Product <span class="text-aurora">Roadmap</span></h2>
+                <p>Transparent, community-driven development for BigQuery FinOps Optimizer. Track upcoming capabilities, active engineering, and recent releases.</p>
+            </div>
+
+            <!-- Filter Toolbar & Live Sync Status -->
+            <div class="roadmap-controls reveal">
+                <div class="roadmap-filters" id="roadmap-filters" role="group" aria-label="Filter roadmap by module">
+                    <button class="roadmap-filter-btn is-active" data-filter="all">All Modules</button>
+                    <button class="roadmap-filter-btn" data-filter="slots-optimizer">Slots Optimizer</button>
+                    <button class="roadmap-filter-btn" data-filter="ai-doctor">AI Doctor</button>
+                    <button class="roadmap-filter-btn" data-filter="cost-attribution">Cost Attribution</button>
+                    <button class="roadmap-filter-btn" data-filter="storage-hygiene">Storage Hygiene</button>
+                    <button class="roadmap-filter-btn" data-filter="governance">Governance</button>
+                    <button class="roadmap-filter-btn" data-filter="settings-core">Settings &amp; Core</button>
+                </div>
+                <div class="roadmap-sync-badge" id="roadmap-sync-badge">
+                    <i class="fas fa-circle"></i><span id="roadmap-sync-text">Live from GitHub</span>
+                </div>
+            </div>
+
+            <!-- 3-Column Lifecycle Board -->
+            <div class="roadmap-grid reveal-group">
+                <!-- Column 1: Generally Available (Done) -->
+                <div class="roadmap-col">
+                    <div class="roadmap-col-header">
+                        <span class="roadmap-col-title" style="color: #34d399;"><i class="fas fa-check-circle"></i>Generally Available (Done)</span>
+                        <span class="roadmap-col-count" id="count-ga">11</span>
+                    </div>
+                    <div class="roadmap-items-list" id="list-ga">
+                        <!-- Populated dynamically via JS with fallback cards -->
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/11" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="cost-attribution feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Top Spenders: Actual Spend, Reservation vs On-Demand &amp; Waste Engine</span>
+                                <span class="roadmap-card-id">#11</span>
+                            </div>
+                            <p class="roadmap-card-desc">Actual spend attribution and dollarized non-productive waste engine with frequency-ranked primary reservations.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-cost">cost-attribution</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/12" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="batch-vs-interactive feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Interactive vs. Batch Priority Engine: Lineage Workload Slicing</span>
+                                <span class="roadmap-card-id">#12</span>
+                            </div>
+                            <p class="roadmap-card-desc">Workload-centric priority analyzer classifying UNDER_BATCHED and OVER_BATCHED pipelines with remediation snippets.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">batch-vs-interactive</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/13" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Universal CSV Export across All Results Tables with UTF-8 BOM</span>
+                                <span class="roadmap-card-id">#13</span>
+                            </div>
+                            <p class="roadmap-card-desc">Automatic Download CSV injection across every DataTables view preserving active search and filter state.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/20" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">AI Doctor: Echo Suppression, DML Optimization &amp; 1-Click Translator Bridge</span>
+                                <span class="roadmap-card-id">#20</span>
+                            </div>
+                            <p class="roadmap-card-desc">Suppresses identical query echoes, supports DML rewrites, and bridges into BigQuery Interactive SQL Translator.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Column 2: Planned (v1.5.0) -->
+                <div class="roadmap-col">
+                    <div class="roadmap-col-header">
+                        <span class="roadmap-col-title" style="color: #38bdf8;"><i class="fas fa-clock"></i>Planned (Committed)</span>
+                        <span class="roadmap-col-count" id="count-planned">5</span>
+                    </div>
+                    <div class="roadmap-items-list" id="list-planned">
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/7" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="slots-optimizer feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Interactive Sliders (Play Axes) for PXX and Autoscale Queueing Simulation</span>
+                                <span class="roadmap-card-id">#7</span>
+                            </div>
+                            <p class="roadmap-card-desc">Interactive sliders for PXX targets and autoscale ceilings to simulate expected queueing time and cost impact in real-time.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">slots-optimizer</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/8" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Dynamic Project Dropdowns via Cloud Resource Manager Discovery</span>
+                                <span class="roadmap-card-id">#8</span>
+                            </div>
+                            <p class="roadmap-card-desc">Resource Manager and active project discovery so users only enter one project ID and pick the rest via dropdowns.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/9" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="governance storage-hygiene feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Partition Guardrail Cardinality, Table Size &amp; Unpruned Query Waste</span>
+                                <span class="roadmap-card-id">#9</span>
+                            </div>
+                            <p class="roadmap-card-desc">Enhance Partition Guardrail auditor to show partition counts, table sizes, and estimated waste from unpruned scans.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-gov">governance</span>
+                                <span class="roadmap-tag roadmap-tag-storage">storage-hygiene</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/10" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Pre-Run API Enablement Discovery &amp; Guided Action Buttons</span>
+                                <span class="roadmap-card-id">#10</span>
+                            </div>
+                            <p class="roadmap-card-desc">Proactively detect disabled APIs (like Vertex AI) to disable action buttons and show inline enablement guidance.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/1" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Custom Date/Time Range for Historical Analysis (Start Date &amp; End Date)</span>
+                                <span class="roadmap-card-id">#1</span>
+                            </div>
+                            <p class="roadmap-card-desc">Allows specifying explicit calendar start and end timestamps rather than trailing relative lookback days.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Column 3: Backlog & Ideas -->
+                <div class="roadmap-col">
+                    <div class="roadmap-col-header">
+                        <span class="roadmap-col-title" style="color: #94a3b8;"><i class="fas fa-lightbulb"></i>Under Consideration</span>
+                        <span class="roadmap-col-count" id="count-backlog">7</span>
+                    </div>
+                    <div class="roadmap-items-list" id="list-backlog">
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/22" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="slots-optimizer ui-ux feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Actionable Query-Level @@reservation Routing Snippet Generator</span>
+                                <span class="roadmap-card-id">#22</span>
+                            </div>
+                            <p class="roadmap-card-desc">1-click snippet generator emitting SET @@reservation statements for candidate routing into reservations or on-demand.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">slots-optimizer</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/23" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="governance storage-hygiene feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Static Migration Guardrails: Proactive Schema Auditor for Big Tables</span>
+                                <span class="roadmap-card-id">#23</span>
+                            </div>
+                            <p class="roadmap-card-desc">Statically scans metadata to flag massive unclustered tables (>10GB / >50M rows) on day one before queries run.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-gov">governance</span>
+                                <span class="roadmap-tag roadmap-tag-storage">storage-hygiene</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/24" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor cost-attribution feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Failed Compute Profiler: Query-Level OOM &amp; resourcesExceeded Diagnostics</span>
+                                <span class="roadmap-card-id">#24</span>
+                            </div>
+                            <p class="roadmap-card-desc">Isolates failing query SQL, extracts error reasons, calculates burned slot-hours, and diagnoses memory overflow.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                                <span class="roadmap-tag roadmap-tag-cost">cost-attribution</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/25" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor batch-vs-interactive feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Concurrent Duplicate Query Analyzer (Request Coalescing &amp; Overlap)</span>
+                                <span class="roadmap-card-id">#25</span>
+                            </div>
+                            <p class="roadmap-card-desc">Sweep-line window algorithm identifying overlapping simultaneous query executions to quantify recoverable slot waste.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom CTA Banner -->
+            <div class="roadmap-cta-bar reveal">
+                <div class="roadmap-cta-text">
+                    <h3>Explore the Interactive Kanban &amp; Timeline</h3>
+                    <p>Track live issue progress, filter by release milestones, or submit your own feature requests directly on GitHub.</p>
+                </div>
+                <div class="roadmap-cta-actions">
+                    <a href="https://github.com/users/mbettan/projects/1" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="background: rgba(255,255,255,0.05);">
+                        <i class="fab fa-github"></i>View Project Board ↗
+                    </a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/issues/new/choose" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
+                        <i class="fas fa-plus"></i>Submit Feature Request
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ RELEASES & CHANGELOG ░░ -->
+    <section id="releases" class="releases-section" aria-label="Release Notes">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-rocket"></i>Release Notes</span>
+                <h2>Production <span class="text-aurora">Changelog</span></h2>
+                <p>Track production releases, architectural upgrades, and newly shipped capabilities live from GitHub.</p>
+            </div>
+
+            <div class="releases-layout reveal">
+                <!-- Left Nav / Version Timeline -->
+                <div class="releases-nav" id="releases-nav" role="tablist" aria-label="Release versions">
+                    <button class="release-nav-btn is-active" data-version="v1.4.0" role="tab" aria-selected="true">
+                        <span>v1.4.0</span>
+                        <span class="release-nav-date">Aug 8, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.3.0" role="tab" aria-selected="false">
+                        <span>v1.3.0</span>
+                        <span class="release-nav-date">Jul 30, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.3" role="tab" aria-selected="false">
+                        <span>v1.2.3</span>
+                        <span class="release-nav-date">Jul 25, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.2" role="tab" aria-selected="false">
+                        <span>v1.2.2</span>
+                        <span class="release-nav-date">Jul 22, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.1" role="tab" aria-selected="false">
+                        <span>v1.2.1</span>
+                        <span class="release-nav-date">Jul 18, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.0" role="tab" aria-selected="false">
+                        <span>v1.2.0</span>
+                        <span class="release-nav-date">Jul 15, 2026</span>
+                    </button>
+                </div>
+
+                <!-- Right Detail Card -->
+                <div class="release-detail-card" id="release-detail-card">
+                    <div class="release-detail-header">
+                        <div class="release-tag-pill" id="release-title-badge">
+                            <span id="release-version-text">v1.4.0</span>
+                            <span class="latest-pill" id="release-latest-pill">Latest Release</span>
+                        </div>
+                        <div class="release-meta">
+                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>August 8, 2026</span>
+                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.0" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
+                                <i class="fab fa-github"></i>View on GitHub ↗
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="release-content" id="release-body-content">
+                        <h3>🌟 Highlights &amp; Major Capabilities</h3>
+                        <ul>
+                            <li><strong>Top Spenders Actual Spend &amp; Waste Engine (#11):</strong> Actual compute spend attribution, on-demand vs reservation mix, dollarized non-productive waste (failed queries, sub-10MiB floors), and frequency-ranked primary reservations.</li>
+                            <li><strong>Interactive vs. Batch Priority Engine (#12):</strong> Workload-centric prioritization classifier discovering <code>UNDER_BATCHED</code> interactive queries and <code>OVER_BATCHED</code> SLA-violating pipelines with SQL remediation.</li>
+                            <li><strong>Universal CSV Export (#13):</strong> One-click CSV export on every table preserving current search and filters with Excel-safe UTF-8 BOM encoding.</li>
+                            <li><strong>BigQuery Console Deep-Links (#14):</strong> Direct console links for job IDs, datasets, and tables with project context and 1-click clipboard actions.</li>
+                            <li><strong>Notification History Center (#15):</strong> Persistent header bell icon with unread badge counter and searchable toast notification archive.</li>
+                            <li><strong>Anti-Pattern Linter Filters &amp; Summary Roll-up (#16):</strong> Owner/identity filtering with service account toggles and high-level waste roll-ups.</li>
+                            <li><strong>Storage Hygiene Time Travel TTL (#17):</strong> Single batched UNION ALL resolving <code>default_time_travel_days</code> across all datasets with <code>ALTER SCHEMA</code> DDL generator.</li>
+                            <li><strong>DML Ingestion &amp; Active Days Tracking (#19):</strong> Aggregates high-frequency small DML statements by destination table to flag candidates for the BigQuery Storage Write API.</li>
+                            <li><strong>AI Doctor Echo Suppression &amp; Translator Bridge (#20):</strong> Suppresses duplicate query echoes, adds DML query optimization, and bridges into BigQuery Interactive SQL Translator.</li>
+                            <li><strong>Compact Number Formatting (#21):</strong> Formats large numbers cleanly (k, M, B, TiB) with accurate numeric sorting across all tables.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <!-- ░░ CTA ░░ -->
     <section class="cta-final" aria-label="Get started">
         <div class="container">
@@ -1880,6 +2504,8 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 <div class="footer-col">
                     <h4>Product</h4>
                     <a href="#features">Capabilities</a>
+                    <a href="#roadmap">Roadmap</a>
+                    <a href="#releases">Release Notes</a>
                     <a href="#demo">Live Demo</a>
                     <a href="simulator.html">Simulator</a>
                     <a href="#workflow">Workflow</a>
@@ -2314,5 +2940,249 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 })();
 </script>
 <!-- ░░ /AI DOCTOR DEMO — BEHAVIOR ░░ -->
+
+<!-- ░░ LIVE GITHUB ROADMAP LOADER & FILTERING ░░ -->
+<script>
+(function() {
+  'use strict';
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function getTagClass(label) {
+    if (label.indexOf('slots') !== -1) return 'roadmap-tag-slots';
+    if (label.indexOf('ai-doctor') !== -1) return 'roadmap-tag-ai';
+    if (label.indexOf('storage') !== -1) return 'roadmap-tag-storage';
+    if (label.indexOf('cost') !== -1) return 'roadmap-tag-cost';
+    if (label.indexOf('governance') !== -1) return 'roadmap-tag-gov';
+    if (label.indexOf('settings') !== -1) return 'roadmap-tag-settings';
+    if (label.indexOf('ui') !== -1) return 'roadmap-tag-ui';
+    if (label.indexOf('community') !== -1) return 'roadmap-tag-community';
+    return '';
+  }
+
+  function renderCard(issue) {
+    var rawTitle = issue.title.replace(/^\[Feature\]\s*/i, '').replace(/^\[Bug\]\s*/i, '');
+    var labels = (issue.labels || []).map(function(l) { return l.name; });
+    var tagClasses = labels.join(' ');
+    
+    var tagsHtml = labels.map(function(l) {
+      return '<span class="roadmap-tag ' + getTagClass(l) + '">' + escapeHtml(l) + '</span>';
+    }).join(' ');
+
+    var desc = escapeHtml(issue.body ? issue.body.split('\n')[0].substring(0, 140) : 'Feature capability.');
+
+    return '<a href="' + escapeHtml(issue.html_url) + '" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="' + escapeHtml(tagClasses) + '">' +
+             '<div class="roadmap-card-header">' +
+               '<span class="roadmap-card-title">' + escapeHtml(rawTitle) + '</span>' +
+               '<span class="roadmap-card-id">#' + issue.number + '</span>' +
+             '</div>' +
+             '<p class="roadmap-card-desc">' + desc + '</p>' +
+             '<div class="roadmap-card-tags">' + tagsHtml + '</div>' +
+           '</a>';
+  }
+
+  async function loadLiveRoadmap() {
+    var syncText = document.getElementById('roadmap-sync-text');
+    try {
+      var res = await fetch('https://api.github.com/repos/mbettan/bq-finops-optimizer/issues?state=all&per_page=100');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var issues = await res.json();
+      if (!Array.isArray(issues) || issues.length === 0) return;
+
+      var gaList = [];
+      var plannedList = [];
+      var backlogList = [];
+
+      var plannedNumbers = [1, 7, 8, 9, 10];
+
+      issues.forEach(function(iss) {
+        if (iss.pull_request) return;
+        if (iss.state === 'closed') {
+          gaList.push(iss);
+        } else if (iss.state === 'open') {
+          if (plannedNumbers.indexOf(iss.number) !== -1 || (iss.milestone && iss.milestone.title === 'v1.5.0')) {
+            plannedList.push(iss);
+          } else {
+            backlogList.push(iss);
+          }
+        }
+      });
+
+      var gaContainer = document.getElementById('list-ga');
+      var plannedContainer = document.getElementById('list-planned');
+      var backlogContainer = document.getElementById('list-backlog');
+
+      if (gaContainer && gaList.length > 0) {
+        gaContainer.innerHTML = gaList.map(renderCard).join('');
+        var countGa = document.getElementById('count-ga');
+        if (countGa) countGa.textContent = gaList.length;
+      }
+      if (plannedContainer && plannedList.length > 0) {
+        plannedContainer.innerHTML = plannedList.map(renderCard).join('');
+        var countPlanned = document.getElementById('count-planned');
+        if (countPlanned) countPlanned.textContent = plannedList.length;
+      }
+      if (backlogContainer && backlogList.length > 0) {
+        backlogContainer.innerHTML = backlogList.map(renderCard).join('');
+        var countBacklog = document.getElementById('count-backlog');
+        if (countBacklog) countBacklog.textContent = backlogList.length;
+      }
+
+      if (syncText) {
+        var total = issues.filter(function(i){ return !i.pull_request; }).length;
+        syncText.textContent = 'Live from GitHub (' + total + ' items)';
+      }
+    } catch (e) {
+      if (syncText) syncText.textContent = 'Live Roadmap';
+    }
+  }
+
+  // Filter interaction
+  var filterButtons = document.querySelectorAll('.roadmap-filter-btn');
+  filterButtons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      filterButtons.forEach(function(b) { b.classList.remove('is-active'); });
+      btn.classList.add('is-active');
+      var filter = btn.dataset.filter;
+
+      document.querySelectorAll('.roadmap-card').forEach(function(card) {
+        var tags = card.dataset.tags || '';
+        if (filter === 'all' || tags.indexOf(filter) !== -1) {
+          card.style.display = 'flex';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    });
+  });
+
+  loadLiveRoadmap();
+})();
+</script>
+
+<!-- ░░ LIVE GITHUB RELEASES LOADER & INTERACTION ░░ -->
+<script>
+(function() {
+  'use strict';
+
+  var releasesData = [];
+
+  function formatDate(isoStr) {
+    if (!isoStr) return '';
+    var d = new Date(isoStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatFullDate(isoStr) {
+    if (!isoStr) return '';
+    var d = new Date(isoStr);
+    return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatMarkdownBody(raw) {
+    if (!raw) return '<p>No release notes provided.</p>';
+    var lines = raw.split('\n');
+    var html = [];
+    var inList = false;
+
+    lines.forEach(function(line) {
+      line = line.trim();
+      if (!line) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        return;
+      }
+
+      if (line.indexOf('### ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h3>' + line.substring(4) + '</h3>');
+      } else if (line.indexOf('## ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h2>' + line.substring(3) + '</h2>');
+      } else if (line.indexOf('* ') === 0 || line.indexOf('- ') === 0) {
+        if (!inList) { html.push('<ul>'); inList = true; }
+        var content = line.substring(2)
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/#(\d+)/g, '<a href="https://github.com/mbettan/bq-finops-optimizer/issues/$1" target="_blank" rel="noopener noreferrer" style="color: #38bdf8; text-decoration: underline;">#$1</a>');
+        html.push('<li>' + content + '</li>');
+      } else {
+        if (inList) { html.push('</ul>'); inList = false; }
+        var para = line
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>');
+        html.push('<p>' + para + '</p>');
+      }
+    });
+
+    if (inList) html.push('</ul>');
+    return html.join('');
+  }
+
+  function displayRelease(rel, isLatest) {
+    var versionText = document.getElementById('release-version-text');
+    var latestPill = document.getElementById('release-latest-pill');
+    var dateText = document.getElementById('release-date-text');
+    var ghLink = document.getElementById('release-github-link');
+    var contentEl = document.getElementById('release-body-content');
+
+    if (versionText) versionText.textContent = rel.tag_name || rel.name;
+    if (latestPill) latestPill.style.display = isLatest ? 'inline-block' : 'none';
+    if (dateText) dateText.innerHTML = '<i class="far fa-calendar-alt" style="margin-right: 6px;"></i>' + formatFullDate(rel.published_at);
+    if (ghLink) ghLink.href = rel.html_url;
+    if (contentEl) contentEl.innerHTML = formatMarkdownBody(rel.body);
+  }
+
+  async function loadLiveReleases() {
+    var navContainer = document.getElementById('releases-nav');
+    try {
+      var res = await fetch('https://api.github.com/repos/mbettan/bq-finops-optimizer/releases');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var releases = await res.json();
+      if (!Array.isArray(releases) || releases.length === 0) return;
+
+      releasesData = releases;
+
+      if (navContainer) {
+        navContainer.innerHTML = releases.map(function(rel, idx) {
+          var tag = rel.tag_name || rel.name;
+          var isAct = idx === 0;
+          return '<button class="release-nav-btn ' + (isAct ? 'is-active' : '') + '" data-idx="' + idx + '" data-version="' + tag + '" role="tab" aria-selected="' + (isAct ? 'true' : 'false') + '">' +
+                   '<span>' + tag + '</span>' +
+                   '<span class="release-nav-date">' + formatDate(rel.published_at) + '</span>' +
+                 '</button>';
+        }).join('');
+
+        // Reattach listeners
+        navContainer.querySelectorAll('.release-nav-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            navContainer.querySelectorAll('.release-nav-btn').forEach(function(b) {
+              b.classList.remove('is-active');
+              b.setAttribute('aria-selected', 'false');
+            });
+            btn.classList.add('is-active');
+            btn.setAttribute('aria-selected', 'true');
+            var idx = parseInt(btn.dataset.idx, 10);
+            if (releasesData[idx]) {
+              displayRelease(releasesData[idx], idx === 0);
+            }
+          });
+        });
+      }
+
+      // Display latest release
+      displayRelease(releases[0], true);
+    } catch (e) {
+      // Graceful fallback to pre-rendered v1.4.0
+    }
+  }
+
+  loadLiveReleases();
+})();
+</script>
 </body>
 </html>

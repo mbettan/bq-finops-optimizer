@@ -1,0 +1,22 @@
+name: "❓ Question"
+description: "Ask a question about setup, IAM permissions, simulation math, or metrics interpretation"
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about configuring, deploying, or interpreting results in BigQuery FinOps Optimizer? Ask below!
+  - type: textarea
+    id: question
+    attributes:
+      label: "What is your question?"
+      description: "Ask anything about IAM permissions, Cloud Run deployment, simulation math, or metrics interpretation."
+      placeholder: "e.g., How does the tool calculate the 60-second cooldown waste for BigQuery Editions?"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: "Context / Environment"
+      description: "Relevant configuration details or deployment mode."
