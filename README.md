@@ -377,8 +377,18 @@ AUTH_ENFORCED_UPSTREAM=true LOG_LEVEL=DEBUG uvicorn src.main:app --reload
 
 ## ⚠️ Disclaimer
 
-This tool performs simulations based on historical BigQuery metadata. Simulated pricing estimates and recommended metrics may not fully capture enterprise-specific Google Cloud pricing structures, custom discounts, or blended flat-rate allocations. 
+> [!IMPORTANT]
+> **This is not an officially supported Google product.**
+> This repository is an independent open-source companion diagnostic tool and should not be considered an official Google product, service, or feature. It is not maintained, endorsed, sponsored, or officially supported by Google.
 
-Always review proposed DDL and reservation alterations manually before applying updates to production environments.
+This tool performs simulations, telemetry analysis, and optimizations based on BigQuery `INFORMATION_SCHEMA` metadata, Vertex AI (`AI.GENERATE`), and the BigQuery Migration API.
 
-This application is a companion diagnostic tool. It is **not a replacement for the official Google Cloud Billing Console** or official invoicing reports.
+* **No Replacement for Official Google Cloud Tools:** This application is an advisory and simulation utility. It is **not a replacement for official Google Cloud products, consoles, or services**, including but not limited to:
+  * **Google Cloud Billing Console** and official invoicing / billing export reports.
+  * **BigQuery Studio & BigQuery Console** (native query execution, slot reservation management, and table administration).
+  * **BigQuery Migration Service** (batch and interactive SQL translation workflows).
+  * **Active Assist & Cloud Recommender APIs** (official Google-generated cost and performance recommendations).
+  * **Cloud Monitoring & Cloud Logging**.
+* **Simulations & Pricing Estimates:** Cost projections, reservation sizing recommendations, and potential savings calculations are simulated estimates based on historical metadata. They may not fully capture enterprise-specific Google Cloud commercial contracts, custom committed use discounts (CUDs), contractual tiering, or blended flat-rate allocations.
+* **Manual Verification:** Always review and validate proposed SQL rewrites, DDL schema alterations, partition/clustering changes, and slot reservation updates manually in non-production environments before applying them to production systems.
+
