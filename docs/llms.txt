@@ -48,3 +48,8 @@ BQ FinOps Optimizer is an enterprise-grade diagnostic and simulation suite for G
 - GitHub: https://github.com/mbettan/bq-finops-optimizer
 - Documentation: https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md
 - License: https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE
+
+## Disclaimer
+
+This is not an officially supported Google product. This repository is an independent open-source diagnostic and simulation tool and should not be considered an official Google product or service.
+

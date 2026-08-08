@@ -324,7 +324,7 @@ The AI Doctor is the **only module that uses AI**. It calls BigQuery's `AI.GENER
 3. **Input Validation (Frontend)**: All project ID text inputs are validated against the GCP project ID regex (`^[a-z][a-z0-9\-]{5,29}$`) before saving. Whitespace is stripped on save, and invalid values block persistence.
 4. **Error Handling**: All endpoints use a centralized `handle_endpoint_exception()` function that maps GCP error types to safe HTTP responses without leaking internal details.
 5. **Large-Scale Quotas**: Querying organization-wide metrics on high-volume environments (10,000+ datasets) can cause query timeout or quota limits. All `lookback_days` parameters are capped at 90 days, and query byte limits are enforced via `maximum_bytes_billed`. The default cap is **800 GiB** — for very large organizations, increase the **Max Bytes Billed (GiB)** setting in the Global Configuration panel.
-6. **AI Doctor Cost Control**: `AI.GENERATE` calls are rate-limited by BigQuery's built-in generative AI quotas. The default query limit is 20 queries per analysis run (configurable up to 100). Each Gemini call uses `thinking_budget: 0` and `max_output_tokens: 300` to minimize token costs.
+6. **AI Doctor Cost Control**: `AI.GENERATE` calls are rate-limited by BigQuery's built-in generative AI quotas. The default query limit is 20 queries per analysis run (configurable up to 100). Each Gemini call uses `thinking_level: MINIMAL` and `max_output_tokens: 1024` to ensure complete bullet-point outputs without truncation while minimizing token overhead.
 
 ---
 
@@ -375,20 +375,55 @@ AUTH_ENFORCED_UPSTREAM=true LOG_LEVEL=DEBUG uvicorn src.main:app --reload
 
 ---
 
-## ⚠️ Disclaimer
+## ⚠️ Comprehensive Disclaimer & Legal Notices
 
 > [!IMPORTANT]
-> **This is not an officially supported Google product.**
-> This repository is an independent open-source companion diagnostic tool and should not be considered an official Google product, service, or feature. It is not maintained, endorsed, sponsored, or officially supported by Google.
+> **1. Not an Officially Supported Google Product**
+>
+> This repository is an **independent, open-source diagnostic and simulation tool** published under the [Apache 2.0 License](LICENSE). **It is not an official product, service, feature, or offering of Google LLC, Alphabet Inc., Google Cloud, or any of their affiliates or subsidiaries.** 
+>
+> This software is neither developed, maintained, audited, certified, endorsed, sponsored, nor officially supported by Google. All trademarks, service marks, product names, logos, and brands (including but not limited to *Google*, *Google Cloud*, *BigQuery*, *BigQuery Studio*, *Vertex AI*, *Gemini*, and *Active Assist*) are the property of their respective owners and are used throughout this repository strictly for nominative, descriptive, and identification purposes.
 
-This tool performs simulations, telemetry analysis, and optimizations based on BigQuery `INFORMATION_SCHEMA` metadata, Vertex AI (`AI.GENERATE`), and the BigQuery Migration API.
+---
 
-* **No Replacement for Official Google Cloud Tools:** This application is an advisory and simulation utility. It is **not a replacement for official Google Cloud products, consoles, or services**, including but not limited to:
-  * **Google Cloud Billing Console** and official invoicing / billing export reports.
-  * **BigQuery Studio & BigQuery Console** (native query execution, slot reservation management, and table administration).
-  * **BigQuery Migration Service** (batch and interactive SQL translation workflows).
-  * **Active Assist & Cloud Recommender APIs** (official Google-generated cost and performance recommendations).
-  * **Cloud Monitoring & Cloud Logging**.
-* **Simulations & Pricing Estimates:** Cost projections, reservation sizing recommendations, and potential savings calculations are simulated estimates based on historical metadata. They may not fully capture enterprise-specific Google Cloud commercial contracts, custom committed use discounts (CUDs), contractual tiering, or blended flat-rate allocations.
-* **Manual Verification:** Always review and validate proposed SQL rewrites, DDL schema alterations, partition/clustering changes, and slot reservation updates manually in non-production environments before applying them to production systems.
+### 2. Independent Advisory Tool — Not a Substitute for Native Google Cloud Services
+
+This application operates as a client-side and serverless diagnostic companion that evaluates historical BigQuery metadata (`INFORMATION_SCHEMA`), executes dry-run queries, and interfaces with Vertex AI (`AI.GENERATE`) and the BigQuery Migration API. 
+
+**This application is strictly advisory and is NOT a replacement, equivalent, or proxy for official Google Cloud products, administration consoles, or native services, including but not limited to:**
+
+*   **Google Cloud Billing Console & Financial Reporting:** This tool is **not** an official billing, invoicing, or auditing platform. It does not replace the [Google Cloud Billing Console](https://console.cloud.google.com/billing), Cloud Billing export to BigQuery, Google Cloud Pricing Calculator, or legally binding monthly invoice statements issued by Google Cloud.
+*   **BigQuery Studio & BigQuery Admin Console:** This tool is **not** a query execution environment or core database engine. It does not replace [BigQuery Studio](https://console.cloud.google.com/bigquery), BigQuery Reservation & Capacity Manager, Table Explorer, or the native Google Cloud CLI (`bq` / `gcloud`).
+*   **BigQuery Migration Service:** The automated query translation integrations are intended for developer preview and optimization guidance. They do not replace formal enterprise data warehouse migration workflows, batch migration pipelines, or certified database translation tools provided natively by Google Cloud.
+*   **Active Assist & Cloud Recommender APIs:** Heuristic findings generated by this tool (such as partition/cluster candidates or baseline slot sizing) are calculated using independent statistical algorithms and do not represent official recommendations generated by Google's [Active Assist](https://cloud.google.com/active-assist) or Cloud Recommender engines.
+*   **Cloud Monitoring & Operations Suite:** This tool does not replace [Cloud Monitoring](https://cloud.google.com/monitoring), Cloud Logging, Cloud Trace, or official Service Level Objective (SLO) tracking.
+
+---
+
+### 3. Nature of Simulations, Heuristic Approximations & Commercial Pricing
+
+All metrics, financial summaries, slot sizing baselines, capacity matrices, and cost savings projections presented across the dashboard are **mathematical simulations, statistical estimates, and heuristic approximations** derived from past usage telemetry:
+
+*   **Commercial Pricing Agreements:** Projections assume standard publicly listed Google Cloud list rates (e.g., $6.25/TB for On-Demand analysis, published slot-hour rates for BigQuery Editions). They **do not and cannot account for** custom enterprise commercial agreements, Private Pricing Addenda (PPA), Committed Use Discounts (CUDs), negotiated spending discounts, promotional credits, custom billing currency exchange rates, or blended internal cost-center allocations.
+*   **Dynamic Workload Variability:** Historical query patterns and telemetry are not guarantees of future compute behavior. Changes in data ingestion volume, concurrent query spikes, execution plan variations, data skew, or BigQuery backend infrastructure changes may result in actual performance and costs differing materially from simulated projections.
+*   **No Financial or Architectural Warranty:** Nothing generated by this application constitutes binding financial, architectural, or legal advice.
+
+---
+
+### 4. Mandatory Verification & Operational Guardrails
+
+Users and organizations deploying or running this tool retain **sole and exclusive responsibility** for reviewing, testing, and validating all diagnostic findings and proposed changes prior to execution:
+
+*   **Dry-Run & Non-Production Testing:** Always test proposed SQL rewrites, DDL table alter statements, partition/clustering migrations, schema modifications, and slot reservation updates in dedicated non-production (sandbox/staging) environments.
+*   **Review Generated Code:** Never apply automated SQL rewrites, DDL statements, or reservation alterations to production systems without independent human review and regression testing.
+*   **IAM & Least Privilege:** Always deploy this application adhering to the Principle of Least Privilege. Restrict IAM permissions, configure appropriate query safety caps (`max_bytes_billed_gb`), and ensure the application runs behind authorized corporate gateways (IAP / Cloud Run IAM).
+
+---
+
+### 5. Limitation of Liability & "AS-IS" Warranty Disclaimer
+
+AS EXPLICITLY PROVIDED UNDER SECTION 7 AND SECTION 8 OF THE [APACHE 2.0 LICENSE](LICENSE):
+
+*   **"AS IS" BASIS:** THE SOFTWARE IS PROVIDED ON AN "AS IS" AND "AS AVAILABLE" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, OR CONTINUOUS AVAILABILITY.
+*   **LIMITATION OF DAMAGES:** IN NO EVENT AND UNDER NO LEGAL THEORY, WHETHER IN TORT (INCLUDING NEGLIGENCE), CONTRACT, OR OTHERWISE, SHALL THE AUTHORS, CONTRIBUTORS, OR COPYRIGHT HOLDERS BE LIABLE TO YOU OR ANY THIRD PARTY FOR DAMAGES, INCLUDING ANY DIRECT, INDIRECT, SPECIAL, INCIDENTAL, CONSEQUENTIAL, PUNITIVE, OR EXEMPLARY DAMAGES OF ANY CHARACTER ARISING AS A RESULT OF THIS LICENSE OR OUT OF THE USE OR INABILITY TO USE THE SOFTWARE (INCLUDING BUT NOT LIMITED TO DAMAGES FOR LOSS OF GOODWILL, WORK STOPPAGE, UNEXPECTED CLOUD BILLING CHARGES OR OVERAGES, QUERY LATENCY, LOSS OF DATA, CORRUPTION OF DATA, SERVICE INTERRUPTIONS, OR COMPUTER FAILURE OR MALFUNCTION), EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
