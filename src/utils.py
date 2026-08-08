@@ -506,7 +506,8 @@ def run_query_with_retry_limit(
     max_attempts: int = 5,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-    fetch_df: bool = False
+    fetch_df: bool = False,
+    location: Optional[str] = None
 ):
     """
     Executes a BigQuery query with a strict limit of max_attempts (default 5).
@@ -521,7 +522,7 @@ def run_query_with_retry_limit(
     while True:
         attempt += 1
         try:
-            query_job = client.query(sql, job_config=job_config, retry=None, job_retry=None)
+            query_job = client.query(sql, job_config=job_config, retry=None, job_retry=None, location=location)
             results = query_job.result(retry=None, job_retry=None)
             if fetch_df:
                 res_data = results.to_dataframe(create_bqstorage_client=True)
@@ -622,9 +623,11 @@ def run_query_and_log(client: bigquery.Client, sql: str, label: str = "Query",
     )
     logger.debug("%s SQL:\n%s", label, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    req_region = getattr(params, 'region', None) or getattr(params, 'location', None)
+    loc = req_region.replace("region-", "") if req_region and isinstance(req_region, str) else None
     t0 = time.time()
     query_job, results = run_query_with_retry_limit(
-        client, sql, job_config, description=label, max_attempts=5, fetch_df=fetch_df
+        client, sql, job_config, description=label, max_attempts=5, fetch_df=fetch_df, location=loc
     )
     elapsed = time.time() - t0
     proc = query_job.total_bytes_processed

@@ -1717,7 +1717,7 @@ def analyze_batch_candidates(params: AntiPatternParams):
     probe_sql = f"SELECT 1 FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION LIMIT 1"
     jobs_target_view = "INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
     try:
-        scoped_client.query(probe_sql, job_config=bigquery.QueryJobConfig(dry_run=True))
+        scoped_client.query(probe_sql, job_config=bigquery.QueryJobConfig(dry_run=True), location=region)
     except Exception as e:
         # Log the decision, not the payload: a BigQuery permission error embeds the
         # caller's service-account identity and the fully-qualified table name, and

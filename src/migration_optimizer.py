@@ -664,7 +664,7 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
             # Dry run original query
             cfg_orig = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
             try:
-                j_before = bq_client.query(query_sql, job_config=cfg_orig)
+                j_before = bq_client.query(query_sql, job_config=cfg_orig, location=params.location)
                 bytes_before = j_before.total_bytes_processed
             except Exception as e:
                 logger.warning(f"Original query dry-run failed: {e}")
@@ -672,7 +672,7 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
             # Dry run translated query
             cfg_trans = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
             try:
-                j_after = bq_client.query(translated, job_config=cfg_trans)
+                j_after = bq_client.query(translated, job_config=cfg_trans, location=params.location)
                 bytes_after = j_after.total_bytes_processed
             except Exception as e:
                 # S2-3 Fix: If translated SQL fails dry-run, report failure loudly!
