@@ -821,7 +821,8 @@ input:checked + .slider:before {
 .form-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-        gap: 1.25rem;
+    gap: 1.25rem;
+    align-items: start;
     margin-bottom: 1.5rem;
 }
 
@@ -836,6 +837,36 @@ input:checked + .slider:before {
     font-weight: 500;
     color: var(--text-secondary);
     letter-spacing: 0.01em;
+    line-height: 1.35;
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    min-height: 2.85rem;
+    margin-bottom: 0;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+    flex: 0 0 auto;
+}
+
+/* Checkbox-style rows lay the control and label out side by side, so the
+   label must not stretch. Use this class rather than matching on inline
+   `style` substrings — that only worked while the rule stayed inline and was
+   sensitive to whitespace after the colon. */
+.form-group--inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.form-group--inline label {
+    flex: 0 1 auto;
+    align-items: center;
+    min-height: auto;
+    margin-bottom: 0;
+    cursor: pointer;
 }
 
 .form-group input,
@@ -1175,6 +1206,189 @@ table.dataTable tbody tr.severity-low {
 }
 table.dataTable tbody tr.severity-low:hover {
     background: rgba(34, 197, 94, 0.06) !important;
+}
+
+/* ─── Workload Type Badges ─── */
+.badge-workload {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.22rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+.badge-workload i {
+    font-size: 0.72rem;
+}
+.badge-workload--airflow {
+    background: rgba(56, 189, 248, 0.12);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+}
+.badge-workload--dbt {
+    background: rgba(251, 146, 60, 0.12);
+    color: #fb923c;
+    border: 1px solid rgba(251, 146, 60, 0.3);
+}
+.badge-workload--dataform {
+    background: rgba(45, 212, 191, 0.12);
+    color: #2dd4bf;
+    border: 1px solid rgba(45, 212, 191, 0.3);
+}
+.badge-workload--scheduled {
+    background: rgba(168, 85, 247, 0.12);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.3);
+}
+.badge-workload--bi {
+    background: rgba(236, 72, 153, 0.12);
+    color: #f472b6;
+    border: 1px solid rgba(236, 72, 153, 0.3);
+}
+.badge-workload--sa {
+    background: rgba(148, 163, 184, 0.12);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+.badge-workload--human {
+    background: rgba(96, 165, 250, 0.12);
+    color: #93c5fd;
+    border: 1px solid rgba(96, 165, 250, 0.25);
+}
+.badge-workload--default {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+/* ─── Finding Badges ─── */
+.badge-finding {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.badge-finding i { font-size: 0.72rem; }
+.badge-finding--under {
+    background: rgba(245, 158, 11, 0.14);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.08);
+}
+.badge-finding--over {
+    background: rgba(56, 189, 248, 0.14);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.08);
+}
+
+/* ─── Confidence Badges ─── */
+.badge-conf {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.12rem 0.38rem;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+.badge-conf--high {
+    background: rgba(34, 197, 94, 0.12);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.badge-conf--low {
+    background: rgba(148, 163, 184, 0.08);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+/* ─── Modern Action Glow Button ─── */
+.btn-action-glow {
+    background: rgba(99, 102, 241, 0.12);
+    color: #c7d2fe;
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    border-radius: 6px;
+    padding: 0.28rem 0.65rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-action-glow:hover {
+    background: rgba(99, 102, 241, 0.25);
+    color: #ffffff;
+    border-color: #818cf8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+}
+.btn-action-glow i { font-size: 0.75rem; }
+
+/* ─── DataTables Controls Polish ─── */
+.dataTables_wrapper .dataTables_length,
+.dataTables_wrapper .dataTables_filter {
+    margin-bottom: 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+.dataTables_wrapper .dataTables_length select {
+    background: #0f172a !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 6px !important;
+    color: #f8fafc !important;
+    padding: 0.3rem 0.5rem !important;
+    font-size: 0.8rem !important;
+    outline: none;
+    margin: 0 0.3rem;
+}
+.dataTables_wrapper .dataTables_filter input {
+    background: #0f172a !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 6px !important;
+    color: #f8fafc !important;
+    padding: 0.35rem 0.75rem !important;
+    font-size: 0.82rem !important;
+    outline: none;
+    margin-left: 0.5rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dataTables_wrapper .dataTables_filter input:focus {
+    border-color: #38bdf8 !important;
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2) !important;
+}
+.dataTables_wrapper .dataTables_paginate {
+    padding-top: 0.75rem;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button {
+    border-radius: 6px !important;
+    padding: 0.3rem 0.65rem !important;
+    font-size: 0.8rem !important;
+    color: #94a3b8 !important;
+    border: 1px solid transparent !important;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button.current,
+.dataTables_wrapper .dataTables_paginate .paginate_button.current:hover {
+    background: rgba(56, 189, 248, 0.15) !important;
+    color: #38bdf8 !important;
+    border: 1px solid rgba(56, 189, 248, 0.4) !important;
+    font-weight: 600 !important;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: #f8fafc !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
 }
 
 /* ─── AI Doctor KPI Strip ─── */
@@ -1632,6 +1846,39 @@ table.dataTable tbody tr.severity-low:hover {
         border: 1px solid hsla(217, 91%, 60%, 0.2);
     }
 
+    /* ─── Physical vs Logical Storage Badges ───
+       Deliberately scoped to the explicit .badge-physical / .badge-logical
+       classes emitted by renderModelBadge(). Do NOT add ".badge.logical" or
+       ".badge.physical" aliases here: unrelated badges (workload types,
+       "Missing Expiration") ride the generic .badge modifiers, and an alias
+       would repaint them in the storage palette.
+       Keeping the selectors distinct is also what lets us drop !important. */
+    .badge-physical {
+        background: rgba(56, 189, 248, 0.14);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .badge-logical {
+        background: rgba(192, 132, 252, 0.14);
+        color: #c084fc;
+        border: 1px solid rgba(192, 132, 252, 0.3);
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
     /* ─── HBO Optimization Badges ─── */
     .opt-badges {
         display: flex;
@@ -1899,28 +2146,30 @@ table.dataTable tbody tr.severity-low:hover {
 .query-progress {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1rem;
-  background: hsla(var(--primary), 0.08);
-  border: 1px solid hsla(var(--primary), 0.25);
-  border-left: 3px solid hsl(var(--primary));
-  border-radius: 8px;
+  gap: 0.85rem;
+  padding: 0.85rem 1.25rem;
+  margin-bottom: 1.25rem;
+  background: hsla(222, 47%, 10%, 0.85);
+  backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid hsla(217, 91%, 60%, 0.25);
+  border-radius: 10px;
   font-size: 0.875rem;
-  color: hsl(var(--foreground));
+  color: #f1f5f9;
   box-sizing: border-box;
   width: 100%;
   align-self: stretch;
   flex-shrink: 0;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4), 0 0 16px -4px hsla(217, 91%, 60%, 0.15);
+  transition: all 0.3s ease;
 }
 
 .query-progress__spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid hsla(var(--primary), 0.3);
-  border-top-color: hsl(var(--primary));
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid hsla(217, 91%, 60%, 0.2);
+  border-top-color: #60a5fa;
   border-radius: 50%;
-  animation: query-spin 0.8s linear infinite;
+  animation: query-spin 0.75s linear infinite;
   flex-shrink: 0;
 }
 
@@ -1932,33 +2181,86 @@ table.dataTable tbody tr.severity-low:hover {
   .query-progress__spinner { animation: none; }
 }
 
-.query-progress__message { flex: 1; }
+.query-progress__message {
+  flex: 1;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #e2e8f0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  line-height: 1.4;
+}
+
 .query-progress__elapsed {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-variant-numeric: tabular-nums;
-  color: hsla(var(--foreground), 0.7);
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #93c5fd;
+  background: hsla(217, 91%, 60%, 0.12);
+  border: 1px solid hsla(217, 91%, 60%, 0.25);
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
   margin-left: 0.5rem;
 }
 
 .query-progress__cancel {
-  background: transparent;
-  border: 1px solid hsla(var(--foreground), 0.2);
-  color: hsl(var(--foreground));
-  padding: 0.25rem 0.75rem;
+  background: hsla(0, 84%, 60%, 0.1);
+  border: 1px solid hsla(0, 84%, 60%, 0.3);
+  color: #fca5a5;
+  padding: 0.3rem 0.85rem;
   border-radius: 6px;
-  font-size: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
 }
+
 .query-progress__cancel:hover {
-  background: hsla(var(--foreground), 0.05);
-  border-color: hsla(var(--foreground), 0.35);
+  background: hsla(0, 84%, 60%, 0.22);
+  border-color: hsla(0, 84%, 60%, 0.5);
+  color: #ffffff;
+  box-shadow: 0 0 10px hsla(0, 84%, 60%, 0.25);
 }
 
 /* Severity escalation: after 20s show this is taking a while */
 .query-progress--slow {
-  background: hsla(var(--warning), 0.08);
-  border-color: hsla(var(--warning), 0.25);
-  border-left-color: hsl(var(--warning));
+  background: hsla(38, 92%, 10%, 0.85);
+  border-color: hsla(38, 92%, 50%, 0.35);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4), 0 0 16px -4px hsla(38, 92%, 50%, 0.18);
+}
+
+.query-progress--slow .query-progress__spinner {
+  border-color: hsla(38, 92%, 50%, 0.25);
+  border-top-color: #fbbf24;
+}
+
+.query-progress--slow .query-progress__message {
+  color: #fef3c7;
+}
+
+.query-progress--slow .query-progress__elapsed {
+  color: #fde047;
+  background: hsla(38, 92%, 50%, 0.15);
+  border-color: hsla(38, 92%, 50%, 0.35);
+}
+
+/* Hide empty table headers, DataTables elements, and KPI strips while an analysis query is actively processing */
+.query-progress ~ .table-responsive,
+.query-progress ~ table,
+.query-progress ~ .aidoc-kpis,
+.query-progress ~ .aidoc-filters,
+/* ─── Collapsing empty unpopulated tables ───────────────────────────
+   Hide unpopulated table containers and bare column headers before an
+   analysis scan is executed.
+   NOTE: We deliberately target .table-responsive and table.showcase-table
+   only, and NEVER .results-panel, so scan trigger buttons, headers,
+   and filter toolbars remain fully accessible to the user. */
+.table-responsive:not(:has(tbody tr)),
+table.showcase-table:not(:has(tbody tr)) {
+  display: none !important;
 }
 
 /* ============================================================
@@ -2467,3 +2769,470 @@ table.dataTable tbody tr.severity-low:hover {
 }
 .btn-spinner[hidden] { display: none; }
 @keyframes btn-spin { to { transform: rotate(360deg); } }
+
+.btn-timer {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 0.78rem;
+  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  margin-left: 0.35rem;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* =========================================================
+   Notification Center (bell icon + history dropdown)
+   ========================================================= */
+#notification-center {
+    position: relative;
+    margin-left: auto;
+}
+
+.notif-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    min-width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    border-radius: 999px;
+    padding: 0 4px;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+    animation: notif-pulse 2s ease-in-out infinite;
+}
+
+@keyframes notif-pulse {
+    0%, 100% { box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+    50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); }
+}
+
+.notif-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 340px;
+    max-height: 420px;
+    background: hsla(222, 47%, 8%, 0.95);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid hsla(215, 28%, 20%, 0.6);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px hsla(222, 47%, 3%, 0.6);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.notif-dropdown__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid hsla(215, 28%, 18%, 0.5);
+}
+
+.notif-dropdown__title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.notif-dropdown__clear {
+    background: none;
+    border: none;
+    color: #60a5fa;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.notif-dropdown__clear:hover {
+    text-decoration: underline;
+}
+
+.notif-dropdown__list {
+    overflow-y: auto;
+    max-height: 350px;
+}
+
+.notif-dropdown__empty {
+    padding: 1.25rem 1rem;
+    text-align: center;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.notif-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid hsla(215, 28%, 16%, 0.3);
+}
+
+.notif-item:last-child { border-bottom: none; }
+
+.notif-item__icon {
+    font-size: 0.85rem;
+    margin-top: 0.1rem;
+    flex-shrink: 0;
+}
+.notif-item__icon.success { color: #22c55e; }
+.notif-item__icon.error   { color: #ef4444; }
+.notif-item__icon.warning { color: #fbbf24; }
+.notif-item__icon.info    { color: #60a5fa; }
+
+/* Ongoing task entries — purple to distinguish from info (blue) */
+.notif-item.ongoing { background: rgba(167, 139, 250, 0.06); }
+.notif-item__icon.ongoing { color: #a78bfa; }
+.notif-divider {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.notif-item__body { min-width: 0; }
+
+.notif-item__message {
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.notif-item__time {
+    font-size: 0.7rem;
+    color: #64748b;
+    margin-top: 0.15rem;
+}
+
+/* =========================================================
+   Job ID cells — monospace with overflow ellipsis
+   ========================================================= */
+.job-id-cell {
+    max-width: 180px;
+    position: relative;
+    white-space: nowrap;
+}
+
+.job-id-text {
+    display: inline-block;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #94a3b8;
+}
+
+/* Hidden until hover/focus to keep dense tables readable. `visibility`, not
+   `opacity: 0` — an opacity-hidden control still takes keyboard focus and
+   still reports as clickable, so tabbing through the table used to land on
+   invisible buttons. */
+.job-id-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    vertical-align: middle;
+    margin-left: 4px;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+}
+
+.job-id-cell:hover .job-id-actions,
+.job-id-cell:focus-within .job-id-actions {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Touch devices never fire :hover, so the actions would be permanently
+   unreachable. Pin them visible wherever hover isn't available. */
+@media (hover: none) {
+    .job-id-actions {
+        opacity: 1;
+        visibility: visible;
+    }
+}
+
+.job-id-link {
+    color: #60a5fa;
+    font-size: 0.75rem;
+    padding: 2px 4px;
+    text-decoration: none;
+}
+
+.job-id-link:hover { color: #93c5fd; }
+
+.job-id-actions .copy-job-id-btn {
+    padding: 2px 5px;
+    font-size: 0.75rem;
+}
+
+/* Console deep-links on dataset / table names */
+.console-link {
+    color: #93c5fd;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(147, 197, 253, 0.4);
+}
+.console-link:hover {
+    color: #bfdbfe;
+    border-bottom-style: solid;
+}
+
+/* =========================================================
+   CSV export bar
+   ========================================================= */
+.csv-export-bar {
+    display: none !important;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+}
+
+/* Show CSV export bar ONLY when there is actual data in the table */
+.glass-card:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+.results-panel:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+.tab-pane:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+div:has(tbody tr td:not(.dataTables_empty)) > .csv-export-bar {
+    display: flex !important;
+}
+
+.btn-csv-export {
+    font-size: 0.78rem;
+    padding: 0.3rem 0.65rem;
+    white-space: nowrap;
+}
+
+.btn-csv-export i { margin-right: 0.3rem; }
+
+/* =========================================================
+   Anti-pattern filter toolbar
+   ========================================================= */
+.ap-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    background: hsla(217, 33%, 12%, 0.5);
+    border: 1px solid hsla(215, 28%, 20%, 0.5);
+    border-radius: 10px;
+}
+
+.ap-toolbar__field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 150px;
+}
+
+.ap-toolbar__label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary, #94a3b8);
+    font-weight: 600;
+}
+
+.ap-toolbar select,
+.ap-toolbar input {
+    background: rgba(0, 0, 0, 0.25);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.82rem;
+}
+
+.ap-view-toggle {
+    display: inline-flex;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.ap-view-toggle button {
+    background: rgba(0, 0, 0, 0.25);
+    color: #94a3b8;
+    border: none;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.ap-view-toggle button.active {
+    background: hsla(217, 91%, 60%, 0.2);
+    color: #93c5fd;
+    font-weight: 600;
+}
+
+.ap-filter-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #94a3b8);
+}
+
+.ap-stat-value {
+    color: #e2e8f0;
+    font-weight: 700;
+}
+
+/* ─── Batch Priority Badge Variants ─── */
+/* The batch-candidates table uses space-separated modifiers (`badge danger`)
+   rather than the hyphenated `.badge-danger` family used elsewhere. */
+.badge.danger    { background: var(--danger-bg);  color: var(--danger);  border: 1px solid var(--danger-border); }
+.badge.warning   { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-border); }
+.badge.success   { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
+.badge.primary   { background: hsla(217, 91%, 60%, 0.12); color: var(--accent-color); border: 1px solid hsla(217, 91%, 60%, 0.28); }
+.badge.secondary { background: hsla(215, 20%, 65%, 0.12); color: var(--text-secondary); border: 1px solid hsla(215, 20%, 65%, 0.25); }
+
+.btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: hsla(217, 33%, 22%, 0.9);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.4rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-secondary:hover {
+    background: hsla(217, 33%, 28%, 0.95);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Batch Tooltip Popover ─── */
+/* The popup is a single node appended to <body> and positioned with JS, not an
+   absolutely-positioned child of the badge. Two ancestors would otherwise clip
+   it: `.glass-card` sets `overflow: hidden`, and `.table-responsive` sets
+   `overflow-x: auto`, which per spec forces `overflow-y` to compute to `auto`.
+   Dropping either is not an option — the DataTables Responsive extension is not
+   loaded, so `.table-responsive` is the only horizontal scroll this 9-column
+   table has. `position: fixed` alone would not escape it either, because
+   `.glass-card:hover` applies a `transform`, which makes the card a containing
+   block for fixed descendants exactly when the row is being hovered. */
+.batch-tooltip-wrap {
+    display: inline-block;
+}
+
+.batch-tooltip-popup {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 340px;
+    max-width: calc(100vw - 16px);
+    padding: 0.85rem 1rem;
+    background: #1e293b;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0.6rem;
+    color: #cbd5e1;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+    /* Below the 10000 modal/overlay tier — a hover hint must never paint over
+       a dialog if the pointer never leaves the row that opened it. */
+    z-index: 9999;
+    pointer-events: none;
+    animation: tooltipFadeIn 0.15s ease-out;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: normal;
+    text-align: left;
+}
+
+.batch-tooltip-popup.is-visible {
+    display: block;
+}
+
+@keyframes tooltipFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Disclosure hint on <details> summaries. Driven by [open] so it never tells
+   the user to "expand" a panel that is already open. aria-hidden because the
+   <summary> element already exposes its expanded state to assistive tech, and
+   generated content is announced inconsistently. */
+.summary-hint {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    font-weight: normal;
+    color: var(--text-secondary);
+}
+.summary-hint::after { content: 'Click to expand'; }
+details[open] > summary .summary-hint::after { content: 'Click to collapse'; }
+
+/* ─── Billing Mode Badges (Top Spenders) ─── */
+.badge-billing {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: help;
+}
+.badge-billing-res {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.badge-billing-od {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.badge-billing-mixed {
+    background: rgba(234, 179, 8, 0.15);
+    color: #facc15;
+    border: 1px solid rgba(234, 179, 8, 0.3);
+}
+.badge-billing-unknown {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+}
+.savings-positive {
+    color: #4ade80;
+    font-weight: 700;
+}
+
+/* ─── Waste cell (Top Spenders) ─── */
+.waste-cell {
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: help;
+}
+.waste-cell .waste-pct {
+    font-weight: 500;
+    font-size: 0.72rem;
+    opacity: 0.75;
+}
+.waste-high { color: #fb7185; }
+.waste-med  { color: #facc15; }
+.waste-low  { color: #94a3b8; }
+.waste-none { color: var(--text-secondary); font-weight: 500; }
+
+

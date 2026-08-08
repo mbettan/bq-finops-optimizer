@@ -21,6 +21,20 @@ from fastapi.testclient import TestClient
 from src.main import app
 
 
+@pytest.fixture(autouse=True)
+def _reset_bq_client_pool():
+    from src import utils
+    with utils._bq_clients_lock:
+        utils._bq_clients.clear()
+    with utils._adc_lock:
+        utils._adc = None
+    yield
+    with utils._bq_clients_lock:
+        utils._bq_clients.clear()
+    with utils._adc_lock:
+        utils._adc = None
+
+
 @pytest.fixture
 def test_client():
     """FastAPI test client instance."""

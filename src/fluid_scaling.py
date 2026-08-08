@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from .utils import (
     _safe_ident,
     _normalize_region,
     get_max_bytes_billed,
+    handle_endpoint_exception,
     FocusMixin,
     OrgParams,
     validate_focus_projects,
@@ -76,7 +78,7 @@ class FluidEstimateParams(OrgParams):
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=MAX_LOOKBACK_DAYS)
-    price_per_slot_hr: float = Field(default=0.06, gt=0)
+    price_per_slot_hr: float = Field(default=float(os.environ.get("BQ_EDITIONS_SLOT_HR_RATE", "0.06")), gt=0)
     max_bytes_billed_gb: Optional[int] = None
 
 
@@ -221,20 +223,8 @@ def check_fluid_scaling_status(params: FluidScalingParams):
         log_endpoint_end("Fluid Scaling Status", t0, _logger=logger)
         return output
 
-    except gax_exc.Forbidden:
-        logger.exception("Permission denied checking fluid scaling status")
-        raise HTTPException(403, "Insufficient permissions for INFORMATION_SCHEMA.RESERVATIONS")
-    except gax_exc.NotFound:
-        logger.exception("Project or region not found")
-        raise HTTPException(404, "Project or region not found")
-    except gax_exc.GoogleAPIError:
-        logger.exception("BigQuery error checking fluid scaling status")
-        raise HTTPException(500, "Query failed; check server logs")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error checking fluid scaling status")
-        raise HTTPException(500, "Unexpected error; check server logs")
+    except Exception as e:
+        handle_endpoint_exception(e, "Fluid scaling status check")
 
 
 # ---------------------------------------------------------------------------
@@ -536,21 +526,5 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
             config_status=config_status
         )
 
-    except gax_exc.Forbidden:
-        logger.exception("Permission denied")
-        raise HTTPException(
-            403,
-            "Insufficient permissions. Need access to "
-            "RESERVATION_TIMELINE_BY_PROJECT and JOBS_TIMELINE_BY_ORGANIZATION.",
-        )
-    except gax_exc.NotFound:
-        logger.exception("Resource not found")
-        raise HTTPException(404, "Project or region not found")
-    except gax_exc.GoogleAPIError:
-        logger.exception("BigQuery error")
-        raise HTTPException(500, "Query failed; check server logs")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error in fluid scaling estimate")
-        raise HTTPException(500, "Internal server error")
+    except Exception as e:
+        handle_endpoint_exception(e, "Fluid scaling estimate")

@@ -228,7 +228,7 @@
 
                 if (urlStr.includes('/api/about')) {
                     const releases = window.SIMULATOR_PARSED_RELEASES || [];
-                    const latestVersion = releases.length ? releases[0].version : '1.3.0';
+                    const latestVersion = releases.length ? releases[0].version : '1.4.0';
                     const latestDate = releases.length ? releases[0].release_date : '—';
                     return new Response(JSON.stringify({
                         "name": "BigQuery FinOps Optimizer",
@@ -301,7 +301,7 @@
         style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.datatables.net;
         font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:;
         img-src 'self' data:;
-        connect-src 'self';
+        connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
         object-src 'none';
         base-uri 'self';
     ">
@@ -623,13 +623,13 @@
                         </p>
 
                         <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-                            <a id="about-changelog-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem;">
+                            <a id="about-changelog-link" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem;">
                                 <i class="fa-solid fa-scroll" style="margin-right: 0.5rem;"></i>Release Notes
                             </a>
-                            <a id="about-demo-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3);">
+                            <a id="about-demo-link" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3);">
                                 <i class="fa-solid fa-play" style="margin-right: 0.5rem;"></i>Simulator
                             </a>
-                            <a id="about-repo-link" href="#" target="_blank" rel="noopener" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
+                            <a id="about-repo-link" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.5rem 1rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
                                 <i class="fa-brands fa-github" style="margin-right: 0.5rem;"></i>GitHub
                             </a>
                         </div>
@@ -643,6 +643,103 @@
                 <!-- Settings View -->
                 <section id="view-settings" class="view" data-view="settings">
                     <h1 class="view-title">Global configuration</h1>
+
+                    <!-- On-Page Text Guide: GCP Project Scopes, APIs & IAM Roles -->
+                    <details class="glass-card info-panel settings-guide-panel" style="margin-bottom: 2rem; border: 1px solid rgba(56, 189, 248, 0.3); padding: 1.5rem;">
+                        <summary style="cursor: pointer; color: #38bdf8; font-weight: 600; font-size: 1.05rem; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+                            <span><i class="fa-solid fa-graduation-cap" style="margin-right: 0.5rem;" aria-hidden="true"></i> GCP Project Scopes, Required APIs &amp; IAM Permission Guide</span>
+                            <span class="summary-hint" aria-hidden="true"></span>
+                        </summary>
+                        
+                        <div style="margin-top: 1.25rem; color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
+                            <p style="margin-bottom: 1.25rem;">
+                                BigQuery FinOps Optimizer decouples <strong>query execution</strong>, <strong>slot reservation management</strong>, and <strong>workload target scopes</strong> so you can run organization-wide audits securely without needing administrative permissions across every single workload project.
+                            </p>
+
+                            <div class="scope-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-top: 0.75rem;">
+                                
+                                <!-- 1. Execution Project Card -->
+                                <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 0.5rem; padding: 1.25rem;">
+                                    <h3 style="color: #38bdf8; margin: 0 0 0.5rem 0; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem;">
+                                        <i class="fa-solid fa-terminal" aria-hidden="true"></i> 1. Execution Project
+                                    </h3>
+                                    <p style="font-size: 0.8rem; margin-bottom: 1rem; color: #94a3b8;">
+                                        The GCP project used to execute analysis queries against <code>INFORMATION_SCHEMA</code> views. All metadata scanning costs incurred by this tool are billed here.
+                                    </p>
+                                    
+                                    <div style="font-size: 0.8rem; margin-bottom: 0.75rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-plug" style="color: #38bdf8; margin-right: 0.3rem;" aria-hidden="true"></i> Required GCP APIs:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-family: monospace; font-size: 0.76rem; color: #cbd5e1;">
+                                            <li><code>bigquery.googleapis.com</code> <span style="color: #ef4444; font-family: sans-serif;">(Mandatory)</span></li>
+                                            <li><code>bigquerymigration.googleapis.com</code> <span style="color: #f59e0b; font-family: sans-serif;">(AI Doctor)</span></li>
+                                            <li><code>cloudaicompanion.googleapis.com</code> <span style="color: #f59e0b; font-family: sans-serif;">(AI Doctor)</span></li>
+                                        </ul>
+                                    </div>
+                                    
+                                    <div style="font-size: 0.8rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-key" style="color: #38bdf8; margin-right: 0.3rem;" aria-hidden="true"></i> IAM Roles &amp; Permissions:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-size: 0.78rem; color: #cbd5e1;">
+                                            <li><code>roles/bigquery.jobUser</code> (runs queries)</li>
+                                            <li><code>roles/bigquery.dataViewer</code> (reads results)</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 2. Admin Project Card -->
+                                <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 0.5rem; padding: 1.25rem;">
+                                    <h3 style="color: #c084fc; margin: 0 0 0.5rem 0; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem;">
+                                        <i class="fa-solid fa-layer-group" aria-hidden="true"></i> 2. Admin Project
+                                    </h3>
+                                    <p style="font-size: 0.8rem; margin-bottom: 1rem; color: #94a3b8;">
+                                        The central GCP project that owns your BigQuery Slot Commitments, Edition Reservations, and Autoscaler baseline/max limits.
+                                    </p>
+                                    
+                                    <div style="font-size: 0.8rem; margin-bottom: 0.75rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-plug" style="color: #c084fc; margin-right: 0.3rem;" aria-hidden="true"></i> Required GCP APIs:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-family: monospace; font-size: 0.76rem; color: #cbd5e1;">
+                                            <li><code>bigqueryreservation.googleapis.com</code> <span style="color: #c084fc; font-family: sans-serif;">(Slots Optimizer)</span></li>
+                                        </ul>
+                                    </div>
+                                    
+                                    <div style="font-size: 0.8rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-key" style="color: #c084fc; margin-right: 0.3rem;" aria-hidden="true"></i> IAM Roles &amp; Permissions:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-size: 0.78rem; color: #cbd5e1;">
+                                            <li><code>roles/bigquery.resourceViewer</code></li>
+                                            <li><em>or</em> <code>roles/bigquery.resourceAdmin</code></li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 3. Monitored Scope Card -->
+                                <div style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(34, 197, 94, 0.25); border-radius: 0.5rem; padding: 1.25rem;">
+                                    <h3 style="color: #4ade80; margin: 0 0 0.5rem 0; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem;">
+                                        <i class="fa-solid fa-sitemap" aria-hidden="true"></i> 3. Monitored Scope (Focus Projects)
+                                    </h3>
+                                    <p style="font-size: 0.8rem; margin-bottom: 1rem; color: #94a3b8;">
+                                        The set of target GCP projects analyzed. Leave empty to run an organization-wide audit across all projects in the GCP org.
+                                    </p>
+                                    
+                                    <div style="font-size: 0.8rem; margin-bottom: 0.75rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-sliders" style="color: #4ade80; margin-right: 0.3rem;" aria-hidden="true"></i> Query Scope Mechanics:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-size: 0.78rem; color: #cbd5e1;">
+                                            <li><strong>Empty</strong>: Queries <code>*_BY_ORGANIZATION</code> views</li>
+                                            <li><strong>Specified</strong>: Filters telemetry to focus list</li>
+                                        </ul>
+                                    </div>
+                                    
+                                    <div style="font-size: 0.8rem;">
+                                        <strong style="color: #e2e8f0; display: block; margin-bottom: 0.25rem;"><i class="fa-solid fa-key" style="color: #4ade80; margin-right: 0.3rem;" aria-hidden="true"></i> IAM Roles &amp; Permissions:</strong>
+                                        <ul style="margin: 0 0 0 1.2rem; padding: 0; font-size: 0.78rem; color: #cbd5e1;">
+                                            <li>Org-level <code>roles/bigquery.resourceViewer</code></li>
+                                            <li><em>or</em> dataset read access on target projects</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+                    </details>
+
                     <div class="glass-card config-panel">
                         <h2>GCP environment</h2>
                         <div class="form-grid">
@@ -719,6 +816,7 @@
                                 <input type="number" id="st-min-save-pct" value="0.0" step="0.01">
                             </div>
                         </div>
+                        <button id="analyze-storage-btn" class="btn-primary">Run Storage Analysis</button>
                     </div>
 
                     <div class="kpi-grid">
@@ -775,10 +873,7 @@
                     </div>
 
                     <div class="glass-card results-panel">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                            <h2 style="display: flex; align-items: center; color: #f1f5f9; margin: 0;"><i class="fa-solid fa-money-bill-transfer" style="margin-right: 0.5rem; color: #10b981;"></i>Storage Billing Arbitrage</h2>
-                            <button id="analyze-storage-btn" class="btn-primary">Run Analysis</button>
-                        </div>
+                        <h2 style="display: flex; align-items: center; color: #f1f5f9; margin: 0 0 0.5rem 0;"><i class="fa-solid fa-money-bill-transfer" style="margin-right: 0.5rem; color: #10b981;" aria-hidden="true"></i>Storage Billing Arbitrage</h2>
                         <div class="table-responsive">
                             <table id="storage-results-table" class="display nowrap" style="width:100%">
                                 <thead>
@@ -965,9 +1060,9 @@
                                 <label for="jb-limit">Max Jobs to Analyze <span class="tooltip" data-tooltip="Limit to the top N most expensive jobs."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
                                 <input type="number" id="jb-limit" value="1000" step="100">
                             </div>
-                            <div class="form-group" style="display: flex; flex-direction: row; align-items: center; gap: 0.5rem; grid-column: span 2;">
+                            <div class="form-group form-group--inline" style="grid-column: span 2;">
                                 <input type="checkbox" id="jb-fluid-scaling" style="width: auto; cursor: pointer;" checked>
-                                <label for="jb-fluid-scaling" style="margin-bottom: 0; cursor: pointer;">Simulate with Fluid Scaling (No 60s Minimum) <span class="tooltip" data-tooltip="Removes the 60-second minimum billing penalty for short queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <label for="jb-fluid-scaling">Simulate with Fluid Scaling (No 60s Minimum) <span class="tooltip" data-tooltip="Removes the 60-second minimum billing penalty for short queries."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;" aria-hidden="true"></i></span></label>
                             </div>
 
                         </div>
@@ -2035,18 +2130,91 @@
                         <button id="analyze-users-btn" class="btn-primary">Run Spenders Analysis</button>
                     </div>
 
+                    <div class="kpi-grid" id="top-spenders-kpi-grid" style="margin-bottom: 2rem;">
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-users kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Active Users Analyzed</span>
+                                <span class="kpi-value" id="top-spenders-total-users">0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-receipt kpi-icon" style="color: #38bdf8;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Actual Total Spend</span>
+                                <span class="kpi-value" id="top-spenders-total-actual" style="color: #38bdf8;">$0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-piggy-bank kpi-icon" style="color: #4ade80;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Potential Savings</span>
+                                <span class="kpi-value" id="top-spenders-total-savings" style="color: #4ade80;">$0</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-fire-flame-curved kpi-icon" style="color: #fb7185;"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Wasted Spend</span>
+                                <span class="kpi-value" id="top-spenders-total-waste" style="color: #fb7185;">$0</span>
+                                <span class="kpi-sub" id="top-spenders-waste-sub" style="font-size: 0.72rem; color: var(--text-secondary); display: block; margin-top: 2px;">—</span>
+                            </div>
+                        </div>
+                        <div class="glass-card kpi-card">
+                            <i class="fa-solid fa-clock-rotate-left kpi-icon"></i>
+                            <div class="kpi-info">
+                                <span class="kpi-label">Total Slot Hours</span>
+                                <span class="kpi-value" id="top-spenders-total-slots">0</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="glass-card results-panel">
-                        <h2>Top spenders results</h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <h2 style="margin: 0;">Top spenders results</h2>
+                        </div>
+
+                        <!-- Filtering toolbar matching Anti-Patterns -->
+                        <div class="ap-toolbar" style="margin-bottom: 1rem;">
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="spenders-filter-user-type">Identity type</label>
+                                <select id="spenders-filter-user-type">
+                                    <option value="all">All identities</option>
+                                    <option value="humans">Humans only</option>
+                                    <option value="service_accounts">Service accounts only</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field">
+                                <label class="ap-toolbar__label" for="spenders-filter-user">User</label>
+                                <select id="spenders-filter-user">
+                                    <option value="">All users</option>
+                                </select>
+                            </div>
+                            <div class="ap-toolbar__field" style="min-width: auto;">
+                                <span class="ap-toolbar__label">&nbsp;</span>
+                                <button type="button" id="spenders-filter-reset" class="btn-action" style="font-size: 0.8rem;">
+                                    <i class="fa-solid fa-rotate-left"></i> Reset
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="spenders-filter-stats" class="ap-filter-stats" style="margin-bottom: 1rem;"></div>
+
                         <div class="table-responsive">
                             <table id="top-spenders-table" class="showcase-table">
                                 <thead>
                                     <tr>
                                         <th>User Email</th>
-                                        <th>Query Count</th>
-                                        <th>Total Data Billed</th>
-                                        <th>Total Slot Hours</th>
-                                        <th>Est. On-Demand Cost</th>
-                                        <th>Est. Editions Cost</th>
+                                        <th>Identity</th>
+                                        <th>Billing Mode</th>
+                                        <th style="text-align: right;">Query Count</th>
+                                        <th style="text-align: right;">Total Data Billed</th>
+                                        <th style="text-align: right;">Total Slot Hours</th>
+                                        <th style="text-align: right;">Actual Cost</th>
+                                        <th style="text-align: right;" title="Spend that produced no result: failed/cancelled queries plus the on-demand 10 MiB minimum-billing floor. This is a subset of Actual Cost, not an addition to it.">Waste</th>
+                                        <th style="text-align: right;">Est. On-Demand</th>
+                                        <th style="text-align: right;">Est. Editions</th>
+                                        <th style="text-align: right;">Potential Savings</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2430,6 +2598,37 @@
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             This table lists jobs where a single worker node took 10x longer than average to process data, indicating unbalanced joins or grouping keys.
                         </p>
+
+                        <details style="margin-bottom: 1.5rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 0.5rem; padding: 1rem;">
+                            <summary style="cursor: pointer; color: #60a5fa; font-size: 0.875rem; font-weight: 600;">
+                                <i class="fa-solid fa-graduation-cap" style="margin-right: 0.4rem;"></i>How to Diagnose &amp; Remediate Data Skew in BigQuery Console
+                            </summary>
+                            <div style="color: var(--text-secondary); font-size: 0.83rem; margin-top: 0.75rem; line-height: 1.6;">
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>🔍 What is Data Skew?</strong> Data skew occurs when data partitions unevenly across worker slots during a <code>JOIN</code>, <code>GROUP BY</code>, or window <code>PARTITION BY</code> operation. A single worker node becomes overwhelmed processing a "hot key" while other workers sit idle, causing query latency to spike and holding slots hostage.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>🛠️ Step-by-Step Investigation in BigQuery Console:</strong>
+                                </p>
+                                <ol style="margin: 0.4rem 0 0.75rem 1.2rem; padding: 0;">
+                                    <li>Click the <strong>Inspect Stage</strong> button or <strong>Job ID</strong> link in the table to open the job in Google Cloud Console.</li>
+                                    <li>Navigate to the <strong>Execution details</strong> / <strong>Execution graph</strong> tab.</li>
+                                    <li>Locate the flagged <strong>Stage Name</strong> (e.g. <code>S02: Join+Aggregate</code>).</li>
+                                    <li>Compare <strong>Compute ms (Max vs Avg)</strong> and <strong>Records written (Max vs Avg)</strong> to pinpoint the bottleneck operator.</li>
+                                </ol>
+
+                                <div style="background: rgba(30, 41, 59, 0.7); padding: 0.75rem; border-radius: 0.375rem; border-left: 3px solid #3b82f6;">
+                                    <strong>💡 Top 3 Remediation Techniques:</strong>
+                                    <ul style="margin: 0.4rem 0 0 1.2rem; padding: 0;">
+                                        <li><strong>Filter NULL / Default Keys:</strong> <code>NULL</code>, <code>""</code>, or <code>'N/A'</code> keys all hash to the same single worker. Add <code>WHERE join_key IS NOT NULL</code> before joining.</li>
+                                        <li><strong>Key Salting (Heavy Entities):</strong> If a valid key (e.g., a massive tenant) causes the hotspot, append a random salt integer (e.g. <code>MOD(FARM_FINGERPRINT(id), 10)</code>) to split rows across 10 workers.</li>
+                                        <li><strong>Partition Analytic Windows:</strong> Avoid unpartitioned <code>OVER (ORDER BY ...)</code> which forces all rows onto a single worker node; add appropriate <code>PARTITION BY</code> clauses.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </details>
+
                         <div class="table-responsive">
                             <table id="skew-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -2438,9 +2637,10 @@
                                         <th>Job ID</th>
                                         <th>User Email</th>
                                         <th>Stage Name</th>
-                                        <th>Avg Compute (ms)</th>
-                                        <th>Max Compute (ms)</th>
+                                        <th style="text-align: right;">Avg Compute (ms)</th>
+                                        <th style="text-align: right;">Max Compute (ms)</th>
                                         <th>Skew Ratio</th>
+                                        <th>Action</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2453,21 +2653,54 @@
                     <div class="glass-card results-panel" style="margin-top: 2rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                             <h2 style="margin: 0;">Interactive vs. Batch Candidates</h2>
-                            <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
+                            <div id="batch-actions" style="display: flex; align-items: center; gap: 0.5rem;">
+                                <button id="analyze-batch-btn" class="btn-primary btn-sm">Run scan</button>
+                            </div>
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
-                            This table lists heavy queries running with <code>INTERACTIVE</code> priority that are candidates for <code>BATCH</code> priority.
+                            Analyzes workload concurrency profiles across automated pipelines, BI dashboards, and ad-hoc query streams to recommend optimal execution priority (<code>BATCH</code> vs <code>INTERACTIVE</code>).
                         </p>
+                        <details style="margin-bottom: 1.5rem; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 0.5rem; padding: 1rem;">
+                            <summary style="cursor: pointer; color: #60a5fa; font-size: 0.875rem; font-weight: 600;">
+                                <i class="fa-solid fa-graduation-cap" style="margin-right: 0.4rem;"></i>Interactive vs. Batch Execution Mechanics &amp; Guidance
+                            </summary>
+                            <div style="color: var(--text-secondary); font-size: 0.83rem; margin-top: 0.75rem; line-height: 1.6;">
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>⚡ Core Execution Differences:</strong> In BigQuery, <code>INTERACTIVE</code> queries are executed immediately against available slot capacity, subject to a strict hard limit of 100 concurrent interactive queries per project. When this limit is hit, additional queries fail with rate-limit errors. <code>BATCH</code> queries are queued and auto-started within minutes as slot capacity becomes available, auto-retrying gracefully without triggering immediate rate-limit failures.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>💰 Hardware &amp; Pricing Parity:</strong> Compute hardware, slot performance, and per-byte/slot-hour pricing are <strong>100% identical</strong> between BATCH and INTERACTIVE queries. Running a pipeline in BATCH mode costs the exact same as INTERACTIVE, but protects your BI dashboards and human users from slot starvation during peak business hours.
+                                </p>
+
+                                <p style="margin-bottom: 0.75rem;">
+                                    <strong>💳 On-Demand Capacity Protection:</strong> For projects without edition reservations (pure On-Demand / Pay-Per-TB), BigQuery enforces a strict ceiling of 2,000 concurrent slots per project. Running heavy ETL pipelines concurrently in INTERACTIVE mode exhausts this 2,000-slot pool, causing BI dashboards and ad-hoc analysts to experience severe query queuing and degradation.
+                                </p>
+
+                                <div style="background: rgba(30, 41, 59, 0.7); padding: 0.75rem; border-radius: 0.375rem; border-left: 3px solid #3b82f6; margin-top: 0.75rem;">
+                                    <strong>📋 Recommended Priority Matrix:</strong>
+                                    <ul style="margin: 0.4rem 0 0 1.2rem; padding: 0;">
+                                        <li><strong>dbt / Airflow / Dataform / Scheduled Pipelines:</strong> Use <code>BATCH</code> priority (guarantees auto-retry and prevents dashboard slot starvation).</li>
+                                        <li><strong>Looker / Tableau / Power BI Dashboards:</strong> Use <code>INTERACTIVE</code> priority (essential for sub-second UI responsiveness).</li>
+                                        <li><strong>Heavy Service Account DML (MERGE / UPDATE):</strong> Use <code>BATCH</code> priority (isolated execution during idle capacity).</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </details>
+
                         <div class="table-responsive">
                             <table id="batch-candidates-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
                                     <tr>
+                                        <th>Workload / Target</th>
+                                        <th>Workload Type</th>
                                         <th>Project ID</th>
-                                        <th>Job ID</th>
-                                        <th>User Email</th>
-                                        <th>Reason</th>
-                                        <th>Duration (Min)</th>
-                                        <th>Total Slot MS</th>
+                                        <th>Runs</th>
+                                        <th>Slot Hours</th>
+                                        <th>% Interactive</th>
+                                        <th>Human Wait (s)</th>
+                                        <th>Finding</th>
+                                        <th>Remediation</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2867,6 +3100,102 @@
                                     </div>
                                 </div>
 
+                                <!-- Dual-Engine Architecture & Pipeline Diagram (collapsible) -->
+                                <div style="margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem;">
+                                    <button id="ai-pipeline-toggle" style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.825rem; font-weight: 600; padding: 0; display: flex; align-items: center; gap: 5px;">
+                                        <i class="fa-solid fa-chevron-right" id="ai-pipeline-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i> Architecture — How SQL Rewrites &amp; Diagnostics Work (Dual-Engine Pipeline)
+                                    </button>
+                                    <div id="ai-pipeline-content" style="display: none; margin-top: 0.85rem;">
+                                        <!-- Visual Architecture Diagram -->
+                                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; padding: 1.25rem; margin-bottom: 1.25rem;">
+                                            <div style="text-align: center; margin-bottom: 1rem;">
+                                                <span style="font-size: 0.8rem; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.05em;">
+                                                    <i class="fa-solid fa-diagram-project"></i> Dual-Engine AI Doctor Orchestration Pipeline
+                                                </span>
+                                            </div>
+
+                                            <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.75rem; align-items: stretch;">
+                                                <!-- Top Input Node -->
+                                                <div style="grid-column: 1 / -1; background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 0.75rem; text-align: center;">
+                                                    <div style="color: #f8fafc; font-weight: 600; font-size: 0.85rem;"><i class="fa-solid fa-database" style="color: #38bdf8;"></i> Input: Top Offending BigQuery SQL + Grounded Table DDLs</div>
+                                                    <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 0.2rem;">Scans <code>INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION</code> and auto-resolves schema types from <code>INFORMATION_SCHEMA.TABLES</code></div>
+                                                </div>
+
+                                                <!-- Pipeline 1: Gemini -->
+                                                <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 0.85rem; display: flex; flex-direction: column;">
+                                                    <div style="color: #c084fc; font-weight: 700; font-size: 0.825rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 6px;">
+                                                        <i class="fa-solid fa-brain"></i> Pipeline 1: Gemini Semantic Model
+                                                    </div>
+                                                    <div style="color: #cbd5e1; font-size: 0.75rem; line-height: 1.45; flex-grow: 1;">
+                                                        Runs <code>AI.GENERATE</code> against schema context. Rewrites queries for column pruning, join order, and partition filters within <code>OPTIMIZED_SQL_START...END</code>.
+                                                    </div>
+                                                    <div style="margin-top: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.7rem; color: #a855f7;">
+                                                        Outputs severity score + semantic advice
+                                                    </div>
+                                                </div>
+
+                                                <!-- Connector / Fork -->
+                                                <div style="display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 1.25rem;">
+                                                    <i class="fa-solid fa-arrows-split-up-and-left" style="transform: rotate(90deg);"></i>
+                                                </div>
+
+                                                <!-- Pipeline 2: BigQuery Migration API -->
+                                                <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 0.85rem; display: flex; flex-direction: column;">
+                                                    <div style="color: #38bdf8; font-weight: 700; font-size: 0.825rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 6px;">
+                                                        <i class="fa-solid fa-wand-magic-sparkles"></i> Pipeline 2: Migration Service Compiler
+                                                    </div>
+                                                    <div style="color: #cbd5e1; font-size: 0.75rem; line-height: 1.45; flex-grow: 1;">
+                                                        Autonomous 2-Stage compiler pass. Synthesizes <code>optimizer.config.yaml</code> to perform AST rewrites (CTE materialization, REGEXP to LIKE).
+                                                    </div>
+                                                    <div style="margin-top: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.7rem; color: #38bdf8;">
+                                                        Deterministic AST optimization &amp; dry-run
+                                                    </div>
+                                                </div>
+
+                                                <!-- Merge / Final Result Node -->
+                                                <div style="grid-column: 1 / -1; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 0.75rem; text-align: center;">
+                                                    <div style="color: #4ade80; font-weight: 600; font-size: 0.825rem;"><i class="fa-solid fa-shield-halved"></i> Merge &amp; Echo Suppression Gate</div>
+                                                    <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 0.2rem;">If optimized SQL is identical to original, echo is cleanly suppressed (—). Validated rewrites display with interactive copy &amp; diff.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- Detailed Technical Explanations -->
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+                                            <!-- PIPELINE 1 DETAILS -->
+                                            <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.2);">
+                                                <div style="color: #c084fc; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-brain"></i> Pipeline 1: Gemini Semantic Model (AI.GENERATE)
+                                                </div>
+                                                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 0.75rem;">
+                                                    Gemini evaluates the query against table partition keys and cluster fields. When a structural query rewrite is possible, it encloses the code in <code>OPTIMIZED_SQL_START ... OPTIMIZED_SQL_END</code>.
+                                                </p>
+                                                <div style="color: #e2e8f0; font-size: 0.775rem; font-weight: 600; margin-bottom: 0.35rem;">Why it may not produce SQL:</div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.775rem; line-height: 1.55; list-style: none;">
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #a855f7; margin-right: 4px;">•</span> <strong>Architectural / Operational Advice:</strong> Many queries cannot be rewritten without altering business logic (e.g. missing partition filters where Gemini cannot guess the intended date range, or queries needing table partitioning changes). In these cases, Gemini provides text recommendations without generating speculative SQL.</li>
+                                                    <li><span style="color: #a855f7; margin-right: 4px;">•</span> <strong>Token Truncation Guard:</strong> If a generated query exceeds token limits and the closing <code>OPTIMIZED_SQL_END</code> marker is missing, the backend discards the partial SQL to prevent invalid syntax.</li>
+                                                </ul>
+                                            </div>
+
+                                            <!-- PIPELINE 2 DETAILS -->
+                                            <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                                                <div style="color: #38bdf8; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-wand-magic-sparkles"></i> Pipeline 2: BigQuery Migration Service API
+                                                </div>
+                                                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 0.75rem;">
+                                                    Executes Google's official BigQuery-to-BigQuery compiler with an autonomous 2-pass workflow (Pass 1 diagnostic discovery $\rightarrow$ Pass 2 config synthesis &amp; execution).
+                                                </p>
+                                                <div style="color: #e2e8f0; font-size: 0.775rem; font-weight: 600; margin-bottom: 0.35rem;">Compiler Rewrites &amp; Safety Behaviors:</div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.775rem; line-height: 1.55; list-style: none;">
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Supported Transformations:</strong> Materializes repeated CTEs (<code>REWRITE_CTE_TO_TEMP_TABLE</code>), converts regex to wildcards (<code>REGEXP_CONTAINS_TO_LIKE</code>), precomputes scalar subqueries (<code>PRECOMPUTE_INDEPENDENT_SUBSELECTS</code>), and prunes set joins (<code>ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON</code>).</li>
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Echo Suppression:</strong> If the compiler finds no applicable rules (or returns the SQL unchanged), echoing is suppressed so identical queries aren't falsely advertised as optimizations.</li>
+                                                    <li><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Fail-Open Resilience:</strong> If <code>bigquerymigration.googleapis.com</code> is not enabled on a project (404), the translation is skipped gracefully without interrupting Gemini's advice.</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div style="margin-top: 1.25rem; margin-bottom: 1.25rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 1rem;">
                                     <div style="color: #e2e8f0; font-weight: 600; font-size: 0.875rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 6px;">
                                         <i class="fa-solid fa-layer-group" style="color: #38bdf8;"></i> Discovery Priority Modes
@@ -3000,8 +3329,8 @@
                         <button id="run-ai-analysis-btn" class="btn-primary">Run AI Analysis</button>
                     </div>
 
-                    <div class="glass-card results-panel">
-                        <h2>Top Inefficient Queries (AI Code Review)</h2>
+                    <div class="glass-card results-panel" id="ai-results-panel" style="display: none;">
+                        <h2>Top Inefficient Queries</h2>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: -0.5rem; margin-bottom: 1.5rem; line-height: 1.6;">
                             A semantic, serverless audit of your most resource-hungry SQL queries. 
                             The system analyzes raw query telemetry, retrieves referenced table schemas (DDLs) from the metadata catalog, and leverages Gemini to highlight performance anti-patterns with tailored refactoring advice.
@@ -3045,7 +3374,7 @@
                                     <tr>
                                         <th>Job ID</th>
                                         <th>User Email</th>
-                                        <th>Total Slot MS</th>
+                                        <th>Total Slot Hours</th>
                                         <th>Severity</th>
                                         <th>Original Cost</th>
                                         <th>Query SQL</th>

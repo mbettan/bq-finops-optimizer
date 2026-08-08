@@ -1,9 +1,14 @@
-import logging
-import re
-import time
 import contextvars
+import logging
+import os
+import re
+import threading
+import time
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from fastapi import HTTPException
+import google.auth
 from google.cloud import bigquery
 from pydantic import BaseModel, ConfigDict
 
@@ -164,6 +169,24 @@ def build_project_filter(
     param = bigquery.ArrayQueryParameter("focus_projects", "STRING", focus_projects)
     return f"AND {qualified_col} IN UNNEST(@focus_projects)", [param]
 
+def time_period_query_params(params) -> List[bigquery.ScalarQueryParameter]:
+    """Returns the ``@start_time_period`` / ``@end_time_period`` TIMESTAMP params
+    for a half-open lookback window ending now (UTC).
+
+    Parameterizing the window (instead of interpolating
+    ``TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL n DAY)``) keeps the SQL text
+    stable across calls, which lets BigQuery reuse partition pruning plans and
+    makes the emitted SQL safe to log verbatim.
+    """
+    lookback_days = int(getattr(params, "lookback_days", 7) or 7)
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(days=lookback_days)
+    return [
+        bigquery.ScalarQueryParameter("start_time_period", "TIMESTAMP", start_time),
+        bigquery.ScalarQueryParameter("end_time_period", "TIMESTAMP", end_time),
+    ]
+
+
 def _safe_ident(value: str, name: str) -> str:
     """Validates that a string is a safe GCP identifier (project, dataset, table, etc.)."""
     if not value or not _IDENT_RE.match(value):
@@ -193,6 +216,86 @@ def reject_dummy_project(project_id: str):
             detail=f"The project ID '{project_id}' is a dummy placeholder. Please set a valid GCP Project ID."
         )
 
+# ---------------------------------------------------------------------------
+# BigQuery client pool
+# ---------------------------------------------------------------------------
+# google-cloud-bigquery Clients are meant to be long-lived. Each owns a urllib3
+# connection pool, and constructing one calls google.auth.default() — two
+# metadata-server round-trips on Cloud Run. Building one per request threw away
+# every keep-alive connection and re-resolved ADC each time. Clients also sit in
+# a reference cycle (Client._connection._client), so a discarded one is not
+# reclaimed until the cyclic collector runs.
+#
+# Sharing across threads is supported: AuthorizedSession guards credential
+# refresh with a lock, urllib3's pool is thread-safe, and nothing here mutates
+# client state — QueryJobConfig is per-call.
+
+_BQ_CLIENT_CACHE_SIZE = int(os.environ.get("BQ_CLIENT_CACHE_SIZE", "64"))
+_bq_clients: "OrderedDict[Optional[str], bigquery.Client]" = OrderedDict()
+_bq_clients_lock = threading.Lock()
+_adc: Optional[tuple] = None
+_adc_lock = threading.Lock()
+
+
+def get_adc_credentials() -> tuple:
+    """Resolve Application Default Credentials once per process.
+
+    Returns (credentials, default_project). Pass the credentials into any
+    bigquery.Client you construct directly so it skips metadata discovery.
+    """
+    global _adc
+    if _adc is None:
+        with _adc_lock:
+            if _adc is None:
+                _adc = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+    return _adc
+
+
+def get_bq_client(project: Optional[str] = None) -> bigquery.Client:
+    """Return a pooled, process-wide BigQuery client for `project`.
+
+    Do NOT close the returned client — it is shared. close_bq_clients() runs
+    once at application shutdown.
+    """
+    with _bq_clients_lock:
+        cached = _bq_clients.get(project)
+        if cached is not None:
+            _bq_clients.move_to_end(project)
+            return cached
+
+    credentials, default_project = get_adc_credentials()
+    client = bigquery.Client(
+        project=project or default_project, credentials=credentials
+    )
+
+    with _bq_clients_lock:
+        existing = _bq_clients.get(project)
+        if existing is not None:
+            # Lost the race — drop ours, use theirs.
+            return existing
+        _bq_clients[project] = client
+        # Evicted clients are dropped, not closed: an in-flight request may
+        # still hold a reference, and closing would yank its socket. The
+        # cyclic collector reclaims them, which is only the rare path now.
+        while len(_bq_clients) > _BQ_CLIENT_CACHE_SIZE:
+            _bq_clients.popitem(last=False)
+    return client
+
+
+def close_bq_clients() -> None:
+    """Close every pooled client. Call once from the lifespan shutdown."""
+    with _bq_clients_lock:
+        clients = list(_bq_clients.values())
+        _bq_clients.clear()
+    for c in clients:
+        try:
+            c.close()
+        except Exception:
+            logger.debug("Failed to close pooled BigQuery client", exc_info=True)
+
+
 def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
     """
     Initializes the BigQuery client and resolves the target project ID.
@@ -207,12 +310,13 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
         reject_dummy_project(project_override)
         
     try:
-        client = bigquery.Client(project=project_override) if project_override else bigquery.Client()
+        client = get_bq_client(project_override)
     except Exception as e:
-        logger.error(f"Failed to initialize BigQuery client: {e}")
+        logger.error("Failed to initialize BigQuery client: %s", e)
         raise HTTPException(
             status_code=400,
-            detail=f"Failed to initialize BigQuery client: {e}"
+            detail="Failed to initialize BigQuery client — check Application "
+                   "Default Credentials. See server logs for details.",
         )
         
     resolved_project = project_override if project_override else client.project
@@ -346,6 +450,23 @@ def handle_endpoint_exception(e: Exception, service_name: str):
                 "This usually indicates missing GCP Organization-level Recommender permissions or a transient BigQuery issue."
             )
         raise HTTPException(status_code=502, detail=detail_msg)
+    # --- Catch remaining server-side errors (BadGateway, GatewayTimeout,
+    #     MethodNotImplemented, Unknown, Aborted, DataLoss, RetryError) that
+    #     aren't one of the three explicit subclasses above. ---
+    elif isinstance(e, gax_exc.ServerError):
+        req_id = request_id_var.get()
+        logger.error(f"{service_name} BigQuery server error [{req_id}]: {e}")
+        if _has_error_reason(e, "bytesBilledLimitExceeded"):
+            raise HTTPException(
+                400,
+                f"Query exceeded the bytes-billed safety cap. Raise max_bytes_billed_gb "
+                f"or narrow scope with focus_projects / shorter lookback. "
+                f"Reference: {req_id} — check server logs for details."
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"BigQuery server error (Reference: {req_id}). This is usually transient — please retry."
+        )
     elif isinstance(e, gax_exc.GoogleAPIError):
         req_id = request_id_var.get()
         logger.error(f"{service_name} BigQuery error [{req_id}]: {e}")
@@ -385,7 +506,8 @@ def run_query_with_retry_limit(
     max_attempts: int = 5,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-    fetch_df: bool = False
+    fetch_df: bool = False,
+    location: Optional[str] = None
 ):
     """
     Executes a BigQuery query with a strict limit of max_attempts (default 5).
@@ -400,7 +522,7 @@ def run_query_with_retry_limit(
     while True:
         attempt += 1
         try:
-            query_job = client.query(sql, job_config=job_config, retry=None, job_retry=None)
+            query_job = client.query(sql, job_config=job_config, retry=None, job_retry=None, location=location)
             results = query_job.result(retry=None, job_retry=None)
             if fetch_df:
                 res_data = results.to_dataframe(create_bqstorage_client=True)
@@ -501,9 +623,11 @@ def run_query_and_log(client: bigquery.Client, sql: str, label: str = "Query",
     )
     logger.debug("%s SQL:\n%s", label, sql)
     logger.info("⏳ %s — submitting query (safety cap: %s GiB)…", label, max_bytes // (1024**3))
+    req_region = getattr(params, 'region', None) or getattr(params, 'location', None)
+    loc = req_region.replace("region-", "") if req_region and isinstance(req_region, str) else None
     t0 = time.time()
     query_job, results = run_query_with_retry_limit(
-        client, sql, job_config, description=label, max_attempts=5, fetch_df=fetch_df
+        client, sql, job_config, description=label, max_attempts=5, fetch_df=fetch_df, location=loc
     )
     elapsed = time.time() - t0
     proc = query_job.total_bytes_processed

@@ -79,6 +79,202 @@
     window.sanitizeData = sanitizeData;
 })();
 
+/**
+ * DataTables column renderer that sorts on an embedded `data-order` value.
+ *
+ * DataTables only reads a `data-order` attribute off the <td> itself, and
+ * only for DOM-sourced tables. Tables built with `row.add([...])` hand
+ * DataTables an HTML string, so the attribute is invisible to the sorter and
+ * "12.3k" ends up ordered lexically. This renderer digs the raw number back
+ * out for the sort/type passes and leaves the display pass untouched.
+ * The filter pass gets the tag-stripped text so a search for "span" or
+ * "order" doesn't match the wrapper markup instead of the value.
+ *
+ * Keep in sync with static/app.js.
+ */
+function orderByDataAttr(data, type) {
+    if (type === 'filter') return String(data).replace(/<[^>]*>/g, '');
+    if (type !== 'sort' && type !== 'type') return data;
+    const match = /data-order="([^"]*)"/.exec(String(data));
+    const raw = match ? match[1] : String(data).replace(/[^0-9.eE+-]/g, '');
+    const n = parseFloat(raw);
+    return isNaN(n) ? 0 : n;
+}
+window.orderByDataAttr = orderByDataAttr;
+
+/**
+ * Format a dollar amount to whole dollars. Keep in sync with static/app.js.
+ *
+ * Intl puts the sign ahead of the symbol ("-$1,234"), which hand-rolled
+ * `'$' + Math.round(n).toLocaleString()` gets wrong ("$-1,234"). Amounts
+ * under a dollar keep two decimals so a real-but-small saving doesn't
+ * collapse to "$0" and read as "nothing to do here".
+ */
+function formatWholeDollars(amount) {
+    const n = Number(amount);
+    if (!isFinite(n)) return '$0';
+    const abs = Math.abs(n);
+    const digits = abs > 0 && abs < 1 ? 2 : 0;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    }).format(n);
+}
+window.formatWholeDollars = formatWholeDollars;
+
+/** Escape a value for safe interpolation into an HTML attribute or text node. */
+function escapeHtmlAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+window.escapeHtmlAttr = escapeHtmlAttr;
+
+/**
+ * Build a Google Cloud Console deep-link URL.
+ * `location` accepts either a metadata region ("region-us") or a plain
+ * location ("us") — the "region-" prefix is stripped for the Console.
+ *
+ * Keep in sync with static/app.js — the simulator renders the same tables.
+ */
+function buildConsoleUrl(type, opts = {}) {
+    const proj = encodeURIComponent(opts.project || '');
+    const rawLoc = (opts.location || (typeof state !== 'undefined' ? state.region : '') || 'region-us').replace(/^region-/, '');
+    const loc = encodeURIComponent(rawLoc);
+    switch (type) {
+        case 'job':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
+        case 'dataset':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m4!1m3!3m2!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}`;
+        case 'table':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m5!1m4!4m3!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}!3s${encodeURIComponent(opts.table || '')}`;
+        case 'project':
+            return `https://console.cloud.google.com/bigquery?project=${proj}`;
+        case 'reservation':
+            return `https://console.cloud.google.com/bigquery/admin/capacity-management?project=${proj}`;
+        case 'user': {
+            const userEmail = opts.user || opts.email || '';
+            const scope = opts.scope || (typeof state !== 'undefined' && state.scopeMode === 'single' ? 'PROJECT' : 'ORGANIZATION');
+            const lookback = opts.lookback || 'P14D';
+            const filterState = [null, null, scope, rawLoc, null, null, userEmail ? [userEmail] : null, null, null, null, null, null, null, null, lookback];
+            let encodedFilter = '';
+            try {
+                encodedFilter = btoa(unescape(encodeURIComponent(JSON.stringify(filterState))));
+            } catch (e) {
+                console.warn('Failed to encode Jobs Explorer filter', e);
+            }
+            const jhParam = encodedFilter ? `;bqmon.jh=${encodedFilter}` : '';
+            return `https://console.cloud.google.com/bigquery/admin/jobs-explorer;region=${loc}${jhParam}?project=${proj}&region=${loc}`;
+        }
+        case 'interactive_translation':
+            return `https://console.cloud.google.com/bigquery?interactiveTranslation=true&project=${proj}`;
+        default:
+            return '#';
+    }
+}
+window.buildConsoleUrl = buildConsoleUrl;
+
+/** Render a project ID with a Console deep-link. */
+function renderProjectLink(project, label) {
+    if (!project) return '—';
+    const url = buildConsoleUrl('project', { project });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
+}
+window.renderProjectLink = renderProjectLink;
+
+/** Render a reservation ID with a Console capacity-management link. */
+function renderReservationLink(reservation, project, label) {
+    if (!reservation) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.adminProject || state.orgProject) : '');
+    const url = buildConsoleUrl('reservation', { project: proj });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open reservation in Capacity Management">${escapeHtmlAttr(label || reservation)}</a>`;
+}
+window.renderReservationLink = renderReservationLink;
+
+/** Render a user email with a Console Jobs Explorer deep-link. */
+function renderUserLink(userEmail, project, label) {
+    if (!userEmail) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.orgProject || state.adminProject) : '');
+    const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+    const url = buildConsoleUrl('user', { user: userEmail, project: proj, location: loc });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open user's jobs in BigQuery Jobs Explorer">${escapeHtmlAttr(label || userEmail)}</a>`;
+}
+window.renderUserLink = renderUserLink;
+
+/** Check whether an email belongs to a GCP Service Account. */
+function isServiceAccount(email) {
+    if (!email) return false;
+    const lower = String(email).toLowerCase();
+    return lower.endsWith('.gserviceaccount.com') ||
+           lower.endsWith('.iam.gserviceaccount.com') ||
+           lower.includes('gserviceaccount.com') ||
+           lower.includes('-compute@developer.gserviceaccount.com') ||
+           lower.startsWith('service-') ||
+           lower.includes('serviceaccount') ||
+           lower.includes('svc-') ||
+           lower.includes('-svc@') ||
+           lower.includes('-sa@');
+}
+window.isServiceAccount = isServiceAccount;
+
+/** Render an identity badge (Service Account vs Human User) matching the Anti-Pattern styling. */
+function renderIdentityBadge(email) {
+    const sa = isServiceAccount(email);
+    return `<span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; white-space: nowrap;">${sa ? 'Service Account' : 'Human'}</span>`;
+}
+window.renderIdentityBadge = renderIdentityBadge;
+
+/** Render a dataset name with a Console deep-link. */
+function renderDatasetLink(dataset, project, label) {
+    if (!dataset) return '—';
+    const url = buildConsoleUrl('dataset', { project, dataset });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
+}
+window.renderDatasetLink = renderDatasetLink;
+
+/** Render a table name with a Console deep-link. */
+function renderTableLink(table, dataset, project, label) {
+    if (!table) return '—';
+    if (!dataset) return escapeHtmlAttr(label || table);
+    const url = buildConsoleUrl('table', { project, dataset, table });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
+}
+window.renderTableLink = renderTableLink;
+
+/**
+ * Tag a DataTable's container with .dt-empty when it holds no data at all.
+ *
+ * This distinguishes "the analysis has not run yet" (recordsTotal === 0) from
+ * "the current search or filter pill matched nothing" (recordsTotal > 0 but
+ * recordsDisplay === 0). Only the former is collapsed by the stylesheet:
+ * hiding a filtered-to-zero table would take its own search box — and, for
+ * the AI Doctor panel, the #aidoc-filters pills — with it, leaving the user
+ * no way to undo the filter short of a page reload.
+ *
+ * Keep in sync with static/app.js.
+ */
+function markEmptyTables(settings) {
+    try {
+        const api = new $.fn.dataTable.Api(settings);
+        const container = api.table().container();
+        if (container) {
+            $(container).toggleClass('dt-empty', api.page.info().recordsTotal === 0);
+        }
+    } catch (err) {
+        console.warn('[dt-empty] Could not inspect DataTable state:', err);
+    }
+}
+window.markEmptyTables = markEmptyTables;
+
+if (window.jQuery && $.fn && $.fn.dataTable) {
+    $(document).on('init.dt draw.dt', (e, settings) => markEmptyTables(settings));
+}
+
 // Guards against a corrupted/malicious localStorage value (e.g. from a bad
 // Snapshot import) breaking script execution for the rest of this file.
 function safeParseJSON(raw, fallback) {
@@ -90,7 +286,7 @@ function safeParseJSON(raw, fallback) {
     }
 }
 
-// F-M4: Extracts a human-readable message from FastAPI error details.
+// Extracts a human-readable message from FastAPI error details.
 // FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
 // renders as [object Object] if used directly. This handles string,
 // array-of-{loc,msg}, and absent cases.
@@ -193,7 +389,7 @@ async function loadScopeMap() {
 function buildPayload(endpoint, basePayload) {
     const scope = FOCUS_SCOPE_MAP[endpoint];
     if (!scope) {
-        // F-M6: Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // Default to 'org' (strip focus_projects) for unmapped endpoints.
         // When the scope map fails to load (502, timeout), every endpoint is
         // unmapped. Passing focus_projects to endpoints with extra='forbid'
         // causes a hard 422. Defaulting to 'org' is the safer fallback.
@@ -290,13 +486,24 @@ const Snapshot = (() => {
     return out;
   }
 
+  // Matching on key names alone is not enough: an address can sit under any
+  // key. The batch priority scan reports a workload under `workload_name`,
+  // which is the operator's email whenever the workload carries no lineage
+  // label — a key-name rule would export those verbatim from a *redacted*
+  // snapshot. This pass only ever removes more, never less.
+  const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const scrubString = (s) => s.replace(EMAIL_RE, 'redacted@example.com');
+
   function redactValue(raw) {
     try {
       const obj = JSON.parse(raw);
       const scrub = (o) => {
         if (!o) return;
         if (Array.isArray(o)) {
-          o.forEach(scrub);
+          o.forEach((item, i) => {
+            if (typeof item === 'string') o[i] = scrubString(item);
+            else scrub(item);
+          });
         } else if (typeof o === 'object') {
           for (const k of Object.keys(o)) {
             const val = o[k];
@@ -305,6 +512,8 @@ const Snapshot = (() => {
               o[k] = 'redacted@example.com';
             } else if (/^query$|^query_text$|^query_snippet$/i.test(k) && typeof val === 'string') {
               o[k] = '-- [redacted query]';
+            } else if (typeof val === 'string') {
+              o[k] = scrubString(val);
             } else if (typeof val === 'object') {
               scrub(val);
             }
@@ -362,18 +571,6 @@ const Snapshot = (() => {
       return;
     }
 
-    let warningMsg;
-    if (redactChecked) {
-      warningMsg = `This snapshot contains ${keyCount} cached result set(s) with project IDs and reservation names from your BigQuery org. User emails and query SQL have been REDACTED.\n\nDownload now?`;
-    } else {
-      const emailCount = countEmails(snapshot.data);
-      const emailText = emailCount > 0 ? `${emailCount} real user email(s)` : 'real user emails';
-      warningMsg = `⚠️ WARNING: This snapshot contains ${keyCount} cached result set(s) INCLUDING ${emailText}, query SQL text, and reservation names.\n\nOnly share it with people authorized to see this data.\n\nDownload now?`;
-    }
-
-    const proceed = confirm(warningMsg);
-    if (!proceed) return;
-
     const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const proj = (snapshot._meta.org_project || 'snapshot').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -396,7 +593,7 @@ const Snapshot = (() => {
       const sanitize = window.sanitizeData || (v => v);
       return JSON.stringify(sanitize(parsed));
     } catch {
-      // F-L4: Bare strings (e.g. project IDs from scalar settings keys)
+      // Bare strings (e.g. project IDs from scalar settings keys)
       // must also be escaped — they bypass the JSON parse above and were
       // returned raw, which is the XSS delivery path for H1.
       const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
@@ -426,11 +623,6 @@ const Snapshot = (() => {
       }
 
       const keys = Object.keys(parsed.data);
-      const isRedacted = parsed._meta.redacted ? ' (Redacted info)' : '';
-      const proceed = confirm(
-        `Import ${keys.length} result set(s) from snapshot${isRedacted} exported on ${parsed._meta.exported_at || 'unknown date'}?\n\n⚠️ This will OVERWRITE your current cached results and settings.`
-      );
-      if (!proceed) return;
 
       // ⚠️ quota safety: clear existing bq_* keys first for a clean replace
       const keysToClear = [];
@@ -473,7 +665,7 @@ const Snapshot = (() => {
       showNotification(
         `Imported ${written} result set(s). Reloading to render…`, 'success'
       );
-      setTimeout(() => window.location.reload(), 800);
+      setTimeout(() => window.location.reload(), 600);
     };
     reader.onerror = () => showNotification('Failed to read file.', 'error');
     reader.readAsText(file);
@@ -677,7 +869,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
         const validationErrors = [];
 
-        // --- F-M1: Validate into local variables FIRST, return before
+        // --- Validate into local variables FIRST, return before
         // touching state or localStorage to prevent half-mutated scope. ---
         const newOrg = elements.cfgOrgProject.value.trim();
         elements.cfgOrgProject.value = newOrg;
@@ -744,7 +936,7 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
 
-        // F-M2: Flush ALL scope-dependent caches. Use an allow-list of
+        // Flush ALL scope-dependent caches. Use an allow-list of
         // scope-independent keys rather than a fragile deny-list.
         const SCOPE_INDEPENDENT = new Set([
             'bq_org_project', 'bq_admin_project', 'bq_region',
@@ -760,7 +952,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. All cached results cleared — re-run analyses for the new scope.', 'success');
+        showNotification('Settings saved. Cached results were cleared for the new scope — re-run any analysis you need.', 'success');
         Router.navigate('storage');
     });
 
@@ -846,10 +1038,6 @@ document.addEventListener('DOMContentLoaded', () => {
             renderStorageResults(responseData);
             renderOrgStatus(responseData.org_status);
             safeSetLocalStorage('bq_storage_results', JSON.stringify(responseData));
-            
-            // Background sync Active Assist recommendations
-            fetchActiveAssistRecommendations(false);
-            fetchStaticAuditResults(false);
             
             showNotification('Storage analysis completed.', 'success');
         } catch (error) {
@@ -1041,7 +1229,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${formatCurrency(row.total_on_demand_cost)}</td>
                     <td>${formatCurrency(row.total_editions_cost)}</td>
                     <td>${formatCurrency(row.editions_error_tax)}</td>
@@ -1104,13 +1292,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const currentColor = currentModel === 'On-Demand' ? '#38bdf8' : '#a855f7';
                 
                 tr.innerHTML = `
-                    <td>${row.project_id}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
                     <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
-                    <td><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">${formatCurrency(row.waste_savings)}</span></td>
-                    <td>${savingsPct.toFixed(2)}%</td>
+                    <td data-order="${row.waste_savings || 0}"><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : '#94a3b8'}">$${Math.round(row.waste_savings || 0).toLocaleString()}</span></td>
+                    <td data-order="${savingsPct || 0}">${Math.round(savingsPct)}%</td>
                     <td>
                         <button class="btn-action copy-job-btn" data-id="${row.job_id}">Copy ID</button>
                     </td>
@@ -1180,15 +1368,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.querySelector('#storage-results-table tbody');
         tbody.innerHTML = '';
 
+        const renderModelBadge = (model) => {
+            if (!model) return '—';
+            const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
+            return isPhysical
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;" aria-hidden="true"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;" aria-hidden="true"></i>LOGICAL</span>`;
+        };
+
         datasets.forEach((row, index) => {
             const tr = document.createElement('tr');
+            const savings = Number(row.monthly_savings) || 0;
+            // Displayed rounded, sorted on the float — so give tied-looking rows
+            // a tooltip that explains why one sorts above the other.
+            const savingsPct = (Number(row.monthly_savings_pct) || 0) * 100;
             tr.innerHTML = `
-                <td>${row.project_name}</td>
-                <td>${row.dataset_name}</td>
-                <td><span class="badge ${row.currently_on}">${row.currently_on}</span></td>
-                <td><span class="badge ${row.better_on}">${row.better_on}</span></td>
-                <td>${formatNumber(row.monthly_savings)}</td>
-                <td>${(row.monthly_savings_pct * 100).toFixed(2)}%</td>
+                <td>${renderProjectLink(row.project_name)}</td>
+                <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
+                <td>${renderModelBadge(row.currently_on)}</td>
+                <td>${renderModelBadge(row.better_on)}</td>
+                <td data-order="${savings}" title="${savings.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/month">${formatWholeDollars(savings)}</td>
+                <td data-order="${savingsPct}" title="${savingsPct.toFixed(2)}%">${Math.round(savingsPct)}%</td>
                 <td>
                     <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
                 </td>
@@ -1274,9 +1474,9 @@ document.addEventListener('DOMContentLoaded', () => {
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
-                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
                 <td>${getRecBadge(row.recommendation)}</td>
                 <td>${formatColumnsList(row.cluster_columns)}</td>
                 <td>${row.partition_column ? `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #38bdf8; font-size: 0.8rem;">${row.partition_column}</code>` : '<span style="color: #64748b;">N/A</span>'}</td>
@@ -1363,9 +1563,15 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const formatNumber = (num) => {
-            // F-L1: Guard null/undefined/NaN from snapshot import
+            // Guard null/undefined/NaN from snapshot import
             if (num == null || isNaN(num)) return '0';
-            return num.toLocaleString();
+            // Abbreviated above 10k. Cells using this MUST carry data-order —
+            // DataTables cannot sort "12.3k" numerically on its own.
+            const abs = Math.abs(num);
+            if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+            if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+            if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+            return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
         };
 
         data.forEach(row => {
@@ -1428,7 +1634,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
                 <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
                 <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
-                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
+                <td data-order="${Number(row.row_count) || 0}" title="${(Number(row.row_count) || 0).toLocaleString()} rows"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
                 <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
                 <td>${getPartitionStatus(row.is_partitioned)}</td>
                 <td>${getClusterStatus(row.is_clustered)}</td>
@@ -1642,7 +1848,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Slot utilization fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         if (actualResult.status === 'fulfilled' && actualResult.value.ok) {
@@ -1661,7 +1867,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Actual provisioning fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         renderSlotsUtilizationAndProvisioning(utilData, actualData);
@@ -1683,7 +1889,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           } catch (_) {}
           console.error('Slots analyze fetch failed:', detail);
-          showNotification(detail, 'error');
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
         }
 
         if (tieredResult.status === 'fulfilled' && tieredResult.value.ok) {
@@ -1698,9 +1904,28 @@ document.addEventListener('DOMContentLoaded', () => {
       // --- Wait for everything, then clean up the spinner/progress ---
       try {
         await Promise.allSettled([chartReady, tablesReady]);
-        showNotification('Slots analysis completed.', 'success');
+        if (abortController.signal.aborted) {
+          showNotification('Slots analysis cancelled.', 'warning');
+          if (tableEl) {
+            const tbody = tableEl.querySelector('tbody');
+            if (tbody) tbody.innerHTML = '';
+          }
+          if (tierContainer) {
+            tierContainer.innerHTML = '';
+          }
+          const cached = localStorage.getItem('bq_slots_results');
+          if (cached) {
+            try { renderSlotsResults(JSON.parse(cached), percentile); } catch (_) {}
+          }
+          const cachedTier = localStorage.getItem('bq_slots_tiered');
+          if (cachedTier) {
+            try { renderTieredRecommendations(JSON.parse(cachedTier)); } catch (_) {}
+          }
+        } else {
+          showNotification('Slots analysis completed.', 'success');
+        }
       } catch (error) {
-        if (error.name === 'AbortError') {
+        if (error.name === 'AbortError' || abortController.signal.aborted) {
           showNotification('Slots analysis cancelled.', 'warning');
         } else {
           console.error('Slots Analysis Error:', error);
@@ -1767,7 +1992,7 @@ document.addEventListener('DOMContentLoaded', () => {
             $('#simulation-table').DataTable().destroy();
         }
         
-        // F-M9: Guard against empty simulation response (brand-new reservation, no jobs).
+        // Guard against empty simulation response (brand-new reservation, no jobs).
         if (!data || data.length === 0) {
             showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
             return;
@@ -1886,12 +2111,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 data.current_reservations.forEach(row => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${row.reservation_id}</td>
-                        <td>${row.admin_project_id || ''}</td>
+                        <td>${renderReservationLink(row.reservation_id, row.admin_project_id, row.reservation_id)}</td>
+                        <td>${renderProjectLink(row.admin_project_id)}</td>
                         <td>${row.region || ''}</td>
                         <td>${row.edition}</td>
-                        <td>${formatNumber(row.current_baseline)}</td>
-                        <td>${formatNumber(row.current_max_slots)}</td>
+                        <td data-order="${Number(row.current_baseline) || 0}">${formatNumber(row.current_baseline)}</td>
+                        <td data-order="${Number(row.current_max_slots) || 0}">${formatNumber(row.current_max_slots)}</td>
                         <td>${row.ignore_idle_slots ? 'No' : 'Yes'}</td>
                         <td>${row.scaling_mode || 'N/A'}</td>
                         <td>${row.target_job_concurrency || 'Auto'}</td>
@@ -1918,11 +2143,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 tr.innerHTML = `
-                    <td>${displayResId}</td>
-                    <td><strong>${formatNumber(row.recommended_baseline)}</strong></td>
-                    <td>${formatNumber(row.recommended_max_p90)}</td>
-                    <td>${formatNumber(row.recommended_max_p99)}</td>
-                    <td>${formatNumber(row.recommended_max_peak)}</td>
+                    <td>${displayResId === 'MERGED (Simulated)' ? displayResId : renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
+                    <td data-order="${Number(row.recommended_baseline) || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td data-order="${Number(row.recommended_max_p90) || 0}">${formatNumber(row.recommended_max_p90)}</td>
+                    <td data-order="${Number(row.recommended_max_p99) || 0}">${formatNumber(row.recommended_max_p99)}</td>
+                    <td data-order="${Number(row.recommended_max_peak) || 0}">${formatNumber(row.recommended_max_peak)}</td>
                 `;
                 
                 if (displayResId === 'MERGED (Simulated)') {
@@ -2176,9 +2401,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
             
             tr.innerHTML = `
-                <td>${displayResId}</td>
-                <td>${formatNumber(row.total_flagged_hours)}</td>
-                <td>${formatNumber(row.peak_hourly_queries)}</td>
+                <td>${renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
+                <td data-order="${Number(row.total_flagged_hours) || 0}">${formatNumber(row.total_flagged_hours)}</td>
+                <td data-order="${Number(row.peak_hourly_queries) || 0}">${formatNumber(row.peak_hourly_queries)}</td>
                 <td>${row.top_projects}</td>
                 <td><span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b;">Consider Baseline</span></td>
             `;
@@ -2261,7 +2486,11 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#profiler-queries-table').DataTable({
                 pageLength: 10,
                 order: [[3, 'desc']],
-                responsive: true
+                responsive: true,
+                // Rows are added as HTML strings, so DataTables cannot see the
+                // <td data-order>. formatNumber() abbreviates to "12.3k"/"4.5m",
+                // which would otherwise sort lexically.
+                columnDefs: [{ targets: [3, 4, 5, 6], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2287,15 +2516,16 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             
             table.row.add([
                 `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.query)}">${esc(row.query)}</div>`,
-                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${row.project_id || 'N/A'}</div>`,
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${renderProjectLink(row.project_id)}</div>`,
                 `<div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
+                    ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
                     ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
                 </div>`,
-                formatNumber(row.frequency),
-                formatSlotHours(row.avg_slot_hours),
-                formatNumber(row.avg_duration_seconds),
-                `${formatNumber(avgBytes / (1024 * 1024))} MB`,
+                `<span data-order="${Number(row.frequency) || 0}">${formatNumber(row.frequency)}</span>`,
+                `<span data-order="${Number(row.avg_slot_hours) || 0}">${formatSlotHours(row.avg_slot_hours)}</span>`,
+                `<span data-order="${Number(row.avg_duration_seconds) || 0}">${formatNumber(row.avg_duration_seconds)}</span>`,
+                `<span data-order="${avgBytes}">${formatNumber(avgBytes / (1024 * 1024))} MB</span>`,
                 `<span class="badge" style="background: ${badgeBg}; color: ${badgeColor};" title="${recommendation}">${badgeText}</span>`
             ]);
         });
@@ -2512,8 +2742,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const formatNumber = (num) => {
-        // F-L1: Guard null/undefined/NaN from snapshot import
+        // Guard null/undefined/NaN from snapshot import
         if (num == null || isNaN(num)) return '0';
+        // Abbreviated above 10k. Cells using this MUST carry data-order —
+        // DataTables cannot sort "12.3k" numerically on its own.
+        const abs = Math.abs(num);
+        if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+        if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
         return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
     };
 
@@ -2577,11 +2813,25 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     window.showNotification = showNotification;
 
     const setLoading = (button, isLoading) => {
+        if (!button) return;
         if (isLoading) {
             button.disabled = true;
             button.dataset.originalText = button.innerHTML;
-            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
+            const startTime = Date.now();
+            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing <span class="btn-timer">0s</span>';
+            const timerInterval = setInterval(() => {
+                const el = button.querySelector('.btn-timer');
+                if (el) {
+                    const secs = Math.floor((Date.now() - startTime) / 1000);
+                    el.textContent = `${secs}s`;
+                }
+            }, 1000);
+            button._timerInterval = timerInterval;
         } else {
+            if (button._timerInterval) {
+                clearInterval(button._timerInterval);
+                button._timerInterval = null;
+            }
             button.disabled = false;
             button.innerHTML = button.dataset.originalText;
         }
@@ -2761,7 +3011,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             table = $('#cost-attribution-results-table').DataTable({
                 pageLength: 10,
                 order: [[4, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [2, 3, 4], type: 'num', render: orderByDataAttr }]
             });
         }
         
@@ -2773,18 +3024,27 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
         data.forEach(row => {
             let displayResId = row.reservation_id;
+            let resProject = state.adminProject || state.orgProject;
             if (displayResId && displayResId.includes('.')) {
-                displayResId = displayResId.split('.').pop();
+                const parts = displayResId.split('.');
+                if (parts.length >= 3) {
+                    resProject = parts[0];
+                }
+                displayResId = parts.pop();
             } else if (displayResId && displayResId.includes(':')) {
-                displayResId = displayResId.split(':').pop();
+                const parts = displayResId.split(':');
+                resProject = parts[0];
+                displayResId = parts.pop();
             }
 
+            // data-order carries the raw number so DataTables sorts these
+            // numerically instead of lexically on the "$1,234.00" string.
             table.row.add([
-                row.project_id,
-                displayResId,
-                formatCurrency(row.direct_usage_cost_usd),
-                formatCurrency(row.allocated_waste_cost_usd),
-                `<strong>${formatCurrency(row.total_cost_attribution_usd)}</strong>`
+                renderProjectLink(row.project_id),
+                renderReservationLink(displayResId, resProject, displayResId),
+                `<span data-order="${row.direct_usage_cost_usd || 0}">${formatCurrency(row.direct_usage_cost_usd)}</span>`,
+                `<span data-order="${row.allocated_waste_cost_usd || 0}">${formatCurrency(row.allocated_waste_cost_usd)}</span>`,
+                `<span data-order="${row.total_cost_attribution_usd || 0}"><strong>${formatCurrency(row.total_cost_attribution_usd)}</strong></span>`
             ]);
 
             // Aggregate slots
@@ -2806,15 +3066,16 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             slotTable = $('#slot-usage-by-project-table').DataTable({
                 pageLength: 5,
                 order: [[1, 'desc']],
-                responsive: true
+                responsive: true,
+                columnDefs: [{ targets: [1], type: 'num', render: orderByDataAttr }]
             });
         }
         slotTable.clear();
 
         for (const [projId, slots] of Object.entries(projectSlots)) {
             slotTable.row.add([
-                projId,
-                `${slots.toFixed(2)} hrs`
+                renderProjectLink(projId),
+                `<span data-order="${slots}">${slots.toFixed(2)} hrs</span>`
             ]);
         }
         slotTable.draw();
@@ -2936,29 +3197,264 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
     }
 
+    let _spendersRawData = [];
+    const _spendersFilterState = { userType: 'all', user: '' };
+
+    const populateSpendersFilterOptions = () => {
+        const sel = document.getElementById('spenders-filter-user');
+        if (!sel) return;
+        const previous = sel.value;
+        const users = Array.from(new Set(_spendersRawData.map(r => r.user_email).filter(Boolean))).sort();
+        sel.innerHTML = '<option value="">All users</option>' +
+            users.map(u => `<option value="${escapeHtmlAttr(u)}">${escapeHtmlAttr(u)}</option>`).join('');
+        const retained = users.includes(previous) ? previous : '';
+        sel.value = retained;
+        _spendersFilterState.user = retained;
+    };
+
+    const applySpendersFilters = () => {
+        let filtered = _spendersRawData;
+        if (_spendersFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_spendersFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+        if (_spendersFilterState.user) {
+            filtered = filtered.filter(r => r.user_email === _spendersFilterState.user);
+        }
+
+        renderTopSpendersTable(filtered);
+    };
+
+    const initSpendersToolbar = () => {
+        const typeEl = document.getElementById('spenders-filter-user-type');
+        if (typeEl) {
+            typeEl.addEventListener('change', () => {
+                _spendersFilterState.userType = typeEl.value;
+                applySpendersFilters();
+            });
+        }
+        const userEl = document.getElementById('spenders-filter-user');
+        if (userEl) {
+            userEl.addEventListener('change', () => {
+                _spendersFilterState.user = userEl.value;
+                applySpendersFilters();
+            });
+        }
+        const resetBtn = document.getElementById('spenders-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                _spendersFilterState.userType = 'all';
+                _spendersFilterState.user = '';
+                if (typeEl) typeEl.value = 'all';
+                if (userEl) userEl.value = '';
+                applySpendersFilters();
+            });
+        }
+    };
+    initSpendersToolbar();
+
     const renderTopSpenders = (data) => {
+        _spendersRawData = Array.isArray(data) ? data : [];
+        populateSpendersFilterOptions();
+        applySpendersFilters();
+    };
+
+    /**
+     * Render a billing mode badge (Reservation vs On-Demand vs Mixed)
+     * with detailed query counts & primary reservations tooltip.
+     */
+    function renderBillingModeBadge(row) {
+        const pct = row.reservation_pct;
+        if (pct === undefined || pct === null) {
+            return '<span class="badge-billing badge-billing-unknown" title="Billing mode unknown">—</span>';
+        }
+        const resPct = Number(pct) || 0;
+        const odPct = Math.max(0, 100 - resPct);
+        const reservations = Array.isArray(row.primary_reservations) ? row.primary_reservations.filter(Boolean) : [];
+
+        let tooltip = `${resPct.toFixed(1)}% Reservation (${(row.reservation_query_count || 0).toLocaleString()} queries)\n${odPct.toFixed(1)}% On-Demand (${(row.od_query_count || 0).toLocaleString()} queries)`;
+        if (reservations.length > 0) {
+            tooltip += `\nPrimary Reservations: ${reservations.join(', ')}`;
+        }
+
+        if (resPct >= 80) {
+            return `<span class="badge-billing badge-billing-res" title="${escapeHtmlAttr(tooltip)}">Reservation</span>`;
+        } else if (resPct <= 20) {
+            return `<span class="badge-billing badge-billing-od" title="${escapeHtmlAttr(tooltip)}">On-Demand</span>`;
+        } else {
+            return `<span class="badge-billing badge-billing-mixed" title="${escapeHtmlAttr(tooltip)}">Mixed (${Math.round(resPct)}% Res)</span>`;
+        }
+    }
+    /**
+     * Waste cell: dollars wasted (failed/cancelled + min-billing floor),
+     * colour-coded by share of that user's actual spend.
+     */
+    function renderWasteCell(row) {
+        const waste = Number(row.total_waste_cost);
+        if (!Number.isFinite(waste)) {
+            return { html: '<span style="color: var(--text-secondary);">—</span>', order: -1 };
+        }
+        const pct        = Number(row.waste_pct) || 0;
+        const failedCost = Number(row.failed_cost) || 0;
+        const minCost    = Number(row.min_billing_cost) || 0;
+        const failedN    = Number(row.failed_query_count) || 0;
+        const subMinN    = Number(row.sub_min_query_count) || 0;
+
+        const parts = [];
+        if (failedN > 0) {
+            parts.push(`Failed/cancelled: ${failedN.toLocaleString()} queries`
+                + ` (${(Number(row.failure_rate) || 0).toFixed(1)}% of runs), $${failedCost.toFixed(2)}`
+                + ` · ${(Number(row.failed_slot_hours) || 0).toLocaleString()} slot-hrs burned`);
+        }
+        if (subMinN > 0) {
+            parts.push(`Min-billing floor: ${subMinN.toLocaleString()} sub-10MiB on-demand queries, $${minCost.toFixed(2)}`);
+        }
+        if (row.cache_hit_rate !== undefined && row.cache_hit_rate !== null) {
+            parts.push(`Cache hit rate: ${Number(row.cache_hit_rate).toFixed(1)}%`);
+        }
+        const tooltip = parts.length
+            ? parts.join('\n') + `\n\nWaste is ${pct.toFixed(1)}% of this user's actual spend (subset, not additional).`
+            : 'No detectable waste in this window.';
+
+        let cls = 'waste-none';
+        if (waste >= 1 && pct >= 10)      cls = 'waste-high';
+        else if (waste >= 1 && pct >= 3)  cls = 'waste-med';
+        else if (waste >= 1)              cls = 'waste-low';
+
+        const label = waste < 0.005
+            ? '—'
+            : `$${Math.round(waste).toLocaleString()}<span class="waste-pct"> (${pct.toFixed(0)}%)</span>`;
+
+        return {
+            html: `<span class="waste-cell ${cls}" title="${escapeHtmlAttr(tooltip)}">${label}</span>`,
+            order: waste
+        };
+    }
+    window.renderWasteCell = renderWasteCell;
+
+    const renderTopSpendersTable = (data) => {
+        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
+            $('#top-spenders-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#top-spenders-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        let totalActual = 0;
+        let totalSavings = 0;
+        let totalWaste = 0;
+        let totalFailedQueries = 0;
+        let usersWithWaste = 0;
+        let totalSlots = 0;
+        let totalBytes = 0;
+        let resUsers = 0;
+        let odUsers = 0;
+        let mixedUsers = 0;
+
+        data.forEach(r => {
+            const hasActual = r.total_actual_cost !== undefined && r.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(r.total_actual_cost) : null;
+            const estOd = Number(r.est_on_demand_cost) || 0;
+            const estEd = Number(r.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            if (hasActual) {
+                totalActual += actualCost;
+                totalSavings += (savings || 0);
+                const pct = Number(r.reservation_pct) || 0;
+                if (pct >= 80) resUsers++;
+                else if (pct <= 20) odUsers++;
+                else mixedUsers++;
+            }
+
+            const w = Number(r.total_waste_cost);
+            if (Number.isFinite(w)) {
+                totalWaste += w;
+                totalFailedQueries += (Number(r.failed_query_count) || 0);
+                if (w >= 1) usersWithWaste++;
+            }
+
+            totalSlots += (Number(r.total_slot_hours) || 0);
+            totalBytes += (Number(r.total_bytes_billed) || 0);
+        });
+
+        const elUsers = document.getElementById('top-spenders-total-users');
+        const elActual = document.getElementById('top-spenders-total-actual');
+        const elSavings = document.getElementById('top-spenders-total-savings');
+        const elWaste = document.getElementById('top-spenders-total-waste');
+        const elWasteSub = document.getElementById('top-spenders-waste-sub');
+        const elSlots = document.getElementById('top-spenders-total-slots');
+        if (elUsers) elUsers.textContent = data.length.toLocaleString();
+        if (elActual) elActual.textContent = `$${Math.round(totalActual).toLocaleString()}`;
+        if (elSavings) elSavings.textContent = `$${Math.round(totalSavings).toLocaleString()}`;
+        if (elWaste) elWaste.textContent = `$${Math.round(totalWaste).toLocaleString()}`;
+        if (elWasteSub) {
+            const share = totalActual > 0 ? (totalWaste / totalActual * 100) : 0;
+            elWasteSub.textContent = `${share.toFixed(1)}% of spend · ${totalFailedQueries.toLocaleString()} failed · ${usersWithWaste} users`;
+        }
+        if (elSlots) elSlots.textContent = formatNumber(totalSlots);
+
+        const statsEl = document.getElementById('spenders-filter-stats');
+        if (statsEl) {
+            const rawLen = (_spendersRawData || []).length;
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${data.length}</span> of ${rawLen} spenders</span>
+                <span class="ap-stat">Total Actual Spend: <span class="ap-stat-value" style="color: #38bdf8;">$${Math.round(totalActual).toLocaleString()}</span></span>
+                <span class="ap-stat">Potential Savings: <span class="ap-stat-value" style="color: #4ade80;">$${Math.round(totalSavings).toLocaleString()}</span></span>
+                <span class="ap-stat">Wasted: <span class="ap-stat-value" style="color: #fb7185;">$${Math.round(totalWaste).toLocaleString()}</span></span>
+                <span class="ap-stat">Billing Split: <span class="ap-stat-value">${resUsers} Res / ${odUsers} OD / ${mixedUsers} Mixed</span></span>
+            `;
+        }
+
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No matching spenders found.</td></tr>`;
+            return;
+        }
+
         data.forEach(row => {
+            const hasActual = row.total_actual_cost !== undefined && row.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(row.total_actual_cost) : null;
+            const estOd = Number(row.est_on_demand_cost) || 0;
+            const estEd = Number(row.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            const actualTitle = hasActual
+                ? `On-Demand: $${(Number(row.actual_od_cost) || 0).toFixed(2)} + Editions: $${(Number(row.actual_ed_cost) || 0).toFixed(2)}`
+                : '';
+
+            const billedTib = (Number(row.total_bytes_billed) || 0) / Math.pow(1024, 4);
+            const hypoTib = (Number(row.hypothetical_od_bytes) || (Number(row.total_bytes_billed) || 0)) / Math.pow(1024, 4);
+            const bytesTitle = hypoTib > billedTib * 1.01
+                ? `${formatNumber(billedTib)} TiB actually billed (reservation queries bill 0 bytes). ${formatNumber(hypoTib)} TiB processed is used for the Est. On-Demand calculation.`
+                : `${formatNumber(billedTib)} TiB billed`;
+
+            const waste = renderWasteCell(row);
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
-                <td>${formatNumber(row.query_count)}</td>
-                <td>${formatNumber(row.total_bytes_billed / (1024**4))} TiB</td>
-                <td>${formatNumber(row.total_slot_hours)}</td>
-                <td>${formatCurrency(row.est_on_demand_cost)}</td>
-                <td>${formatCurrency(row.est_editions_cost)}</td>
+                <td data-order="${escapeHtmlAttr(row.user_email || '')}" style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, state.orgProject)}</span></td>
+                <td data-order="${isServiceAccount(row.user_email) ? 'Service Account' : 'Human'}">${renderIdentityBadge(row.user_email)}</td>
+                <td data-order="${Number(row.reservation_pct) || 0}">${renderBillingModeBadge(row)}</td>
+                <td data-order="${Number(row.query_count) || 0}" style="text-align: right;">${formatCompact(row.query_count)}</td>
+                <td data-order="${Number(row.total_bytes_billed) || 0}" style="text-align: right;" title="${escapeHtmlAttr(bytesTitle)}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatNumber(billedTib)} TiB</strong></td>
+                <td data-order="${Number(row.total_slot_hours) || 0}" style="text-align: right;">${formatCompact(row.total_slot_hours)}</td>
+                <td data-order="${actualCost ?? -1}" style="text-align: right;" title="${escapeHtmlAttr(actualTitle)}">
+                    ${hasActual ? `<strong style="color: #38bdf8; font-weight: 700;">$${Math.round(actualCost).toLocaleString()}</strong>` : '—'}
+                </td>
+                <td data-order="${waste.order}" style="text-align: right;">${waste.html}</td>
+                <td data-order="${estOd}" style="text-align: right;"><span style="color: #f87171; font-weight: 600;">$${Math.round(estOd).toLocaleString()}</span></td>
+                <td data-order="${estEd}" style="text-align: right;"><span style="color: #94a3b8; font-weight: 600;">$${Math.round(estEd).toLocaleString()}</span></td>
+                <td data-order="${savings ?? -1}" style="text-align: right;">
+                    ${hasActual ? `<strong style="color: ${savings > 0 ? '#4ade80' : 'var(--text-secondary)'}; font-weight: 700;">${savings > 0 ? '$' + Math.round(savings).toLocaleString() : '—'}</strong>` : '—'}
+                </td>
             `;
             tbody.appendChild(tr);
         });
 
-        // Initialize DataTable
-        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
-            $('#top-spenders-table').DataTable().destroy();
-        }
-        $('#top-spenders-table').DataTable({ pageLength: 10, order: [[2, 'desc']], responsive: true });
+        safeInitDataTable('#top-spenders-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
     // Build a DOM node for the optimization badges cell.
@@ -3033,6 +3529,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 order: [[1, 'desc']],
                 responsive: true,
                 columnDefs: [
+                    { targets: [1, 2, 3], type: 'num', render: orderByDataAttr },
                     { targets: 4, orderable: false }
                 ]
             });
@@ -3056,18 +3553,20 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
 
             const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
             const badgeNode = _buildBadgeCell(optValue);
+            // data-order carries the raw number: DataTables cannot sort
+            // "12.34%" numerically, and "1,234" only by lucky auto-detection.
             table.row.add([
                 row.job_id,
-                `${row.percent_execution_time_saved.toFixed(2)}%`,
-                row.new_elapsed_ms.toLocaleString(),
-                row.original_elapsed_ms.toLocaleString(),
+                `<span data-order="${Number(row.percent_execution_time_saved) || 0}">${row.percent_execution_time_saved.toFixed(2)}%</span>`,
+                `<span data-order="${Number(row.new_elapsed_ms) || 0}">${row.new_elapsed_ms.toLocaleString()}</span>`,
+                `<span data-order="${Number(row.original_elapsed_ms) || 0}">${row.original_elapsed_ms.toLocaleString()}</span>`,
                 badgeNode.outerHTML
             ]);
         });
 
         table.draw();
 
-        // F-M3: Tile writing moved out of renderHboResults. The live handler
+        // Tile writing moved out of renderHboResults. The live handler
         // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
         // Keeping tile writes here caused a ~300× discrepancy on reload.
     };
@@ -3273,12 +3772,12 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 // Update tiles
                 const slotsEl = document.getElementById('hbo-total-slots');
                 const dollarsEl = document.getElementById('hbo-total-dollars');
-                if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
-                if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+                if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+                if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
 
                 safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
                 safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
-                // F-M3: Cache the summary so tiles survive reload.
+                // Cache the summary so tiles survive reload.
                 safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
 
                 // Non-blocking: enrich jobs with optimization type badges.
@@ -3384,9 +3883,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.slot_contention_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${row.stage_id}</td>
                 `;
                 contentionTbody.appendChild(tr);
@@ -3404,9 +3903,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.shuffle_quota_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td>${row.stage_id}</td>
                 `;
                 shuffleTbody.appendChild(tr);
@@ -3424,9 +3923,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             (data.data_volume_jobs || []).forEach(row => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${row.job_id}</td>
-                    <td>${row.user_email}</td>
-                    <td>${row.project_id}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
                     <td class="text-danger" style="font-weight: 600;">${formatDiffPct(row.diff_pct)}</td>
                 `;
                 volumeTbody.appendChild(tr);
@@ -3458,15 +3957,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             renderHboStatus(JSON.parse(cachedHboStatus));
         } catch (e) { console.warn("Failed to parse cached HBO status", e); }
     }
-    // F-M3: Restore tiles from cached summary instead of recomputing from top-10.
+    // Restore tiles from cached summary instead of recomputing from top-10.
     const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
     if (cachedHboSummary) {
         try {
             const summaryData = JSON.parse(cachedHboSummary);
             const slotsEl = document.getElementById('hbo-total-slots');
             const dollarsEl = document.getElementById('hbo-total-dollars');
-            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.total_saved_slot_hours || 0);
-            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.total_estimated_savings_usd || 0);
+            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
         } catch (e) { console.warn("Failed to parse cached HBO summary", e); }
     }
 
@@ -3496,9 +3995,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const churnPct = row.churn_ratio != null ? (row.churn_ratio * 100).toFixed(1) + '%' : 'N/A';
 
             tr.innerHTML = `
-                <td>${row.project_id || ''}</td>
-                <td>${row.dataset}</td>
-                <td>${row.table_name}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
                 <td>${(row.live_active_physical_gb || 0).toFixed(2)}</td>
                 <td>${(row.time_travel_gb || 0).toFixed(2)}</td>
                 <td>${churnPct}</td>
@@ -3584,53 +4083,335 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
     }
 
+    // Minimal comment/keyword highlighter for the remediation snippets.
+    // Escapes first, then decorates — never inject un-escaped snippet text.
+    const highlightSnippet = (snippet) => escapeHtmlAttr(snippet)
+        .replace(/^(\s*#.*)$/gm, '<span style="color: #64748b;">$1</span>')
+        .replace(/\b(BATCH|INTERACTIVE|batch|interactive)\b/g, '<span style="color: #fbbf24;">$1</span>');
+
+    // Global Remediation Modal Renderer
+    window.showRemediationModal = function (name, type, recPriority) {
+        let snippet = '';
+        const isBatch = recPriority === 'BATCH';
+        if (type.includes('Dataform') || type.includes('Scheduled Query')) {
+            snippet = `# Architecture Migration Required
+# Tooling Constraint:
+# ${type} does not currently support native BATCH priority execution flags.
+
+# Recommended Workaround:
+# Migrate orchestration to Google Cloud Composer (Airflow) or Cloud Workflows,
+# which provide native job configuration overrides for BigQuery execution priority.`;
+        } else if (type.includes('dbt')) {
+            snippet = `# profiles.yml
+target: prod
+outputs:
+  prod:
+    type: bigquery
+    project: your-project-id
+    dataset: analytics
+    priority: ${isBatch ? 'batch' : 'interactive'} # Sets all dbt query executions to ${recPriority}`;
+        } else if (type.includes('Airflow')) {
+            snippet = `# Airflow DAG Operator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+
+run_task = BigQueryInsertJobOperator(
+    task_id="transform_task",
+    configuration={
+        "query": {
+            "query": "MERGE INTO ...",
+            "priority": "${recPriority}", # Configures execution priority
+        }
+    },
+)`;
+        } else {
+            snippet = `# Python SDK & bq CLI
+# Python:
+job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.${recPriority})
+query_job = client.query("...", job_config=job_config)
+
+# bq CLI:
+${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq query --use_legacy_sql=false 'SELECT ...'"}`;
+        }
+
+        const existing = document.getElementById('remediation-modal-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'remediation-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 600px; max-width: 92%; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-code" style="margin-right: 0.5rem;"></i>Remediation Snippet</h3>
+                    <button id="close-remediation-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem;">
+                    Workload: <strong style="color: #e2e8f0;">${escapeHtmlAttr(name)}</strong> <span style="color: #64748b;">(${escapeHtmlAttr(type)})</span><br/>
+                    Recommended Priority: <span class="badge ${isBatch ? 'warning' : 'primary'}" style="font-size: 0.75rem;">${escapeHtmlAttr(recPriority)}</span>
+                </p>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.82rem; line-height: 1.65; overflow-x: auto; white-space: pre-wrap; margin: 0;">${highlightSnippet(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                    <button id="copy-remediation-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('close-remediation-btn').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('copy-remediation-btn').addEventListener('click', function () {
+            // copyToClipboard, not navigator.clipboard directly: the latter is
+            // undefined on non-secure origins (local dev on 0.0.0.0), where a bare
+            // call throws and the button silently does nothing.
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    };
+
+    // Body-level singleton for the detection-reason popover. Lives outside the
+    // results card so no `overflow` or transformed ancestor can clip it, and is
+    // built with textContent so nothing in the payload can be interpreted as markup.
+    const batchTooltip = (() => {
+        let node = null;
+        let anchoredTo = null;
+
+        const ensure = () => {
+            if (!node) {
+                node = document.createElement('div');
+                node.className = 'batch-tooltip-popup';
+                document.body.appendChild(node);
+            }
+            return node;
+        };
+
+        const hide = () => {
+            anchoredTo = null;
+            if (node) node.classList.remove('is-visible');
+        };
+
+        const show = (wrap) => {
+            // mouseover re-fires for every descendant the pointer crosses; without
+            // this the popup would rebuild and restart its fade on each one.
+            if (anchoredTo === wrap) return;
+            anchoredTo = wrap;
+
+            const tip = ensure();
+            tip.textContent = '';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight: 600; margin-bottom: 0.4rem; color: #f8fafc;';
+            title.textContent = wrap.dataset.tipTitle || '';
+            tip.appendChild(title);
+
+            const summary = document.createElement('div');
+            summary.style.cssText = 'margin-bottom: 0.5rem; line-height: 1.5;';
+            summary.textContent = wrap.dataset.tipSummary || '';
+            tip.appendChild(summary);
+
+            const reasons = (wrap.dataset.tipReasons || '').split('\n').filter(Boolean);
+            if (reasons.length) {
+                const block = document.createElement('div');
+                block.style.cssText = 'border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.4rem; font-size: 0.75rem; color: #94a3b8;';
+                const heading = document.createElement('strong');
+                heading.style.color = '#cbd5e1';
+                heading.textContent = 'Detection Reasons:';
+                block.appendChild(heading);
+                reasons.forEach(text => {
+                    const line = document.createElement('div');
+                    line.textContent = `• ${text}`;
+                    block.appendChild(line);
+                });
+                tip.appendChild(block);
+            }
+
+            // Measure before placing: the popup flips below the badge when there
+            // is not enough room above, and is clamped to the viewport sideways.
+            tip.classList.add('is-visible');
+            const anchor = wrap.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+            const GAP = 8;
+            const MARGIN = 8;
+
+            let top = anchor.top - tipRect.height - GAP;
+            if (top < MARGIN) top = anchor.bottom + GAP;
+
+            let left = anchor.left + (anchor.width / 2) - (tipRect.width / 2);
+            left = Math.max(MARGIN, Math.min(left, window.innerWidth - tipRect.width - MARGIN));
+
+            tip.style.top = `${Math.round(top)}px`;
+            tip.style.left = `${Math.round(left)}px`;
+        };
+
+        return { show, hide };
+    })();
+    // Fixed coordinates go stale the moment anything moves underneath them.
+    window.addEventListener('scroll', batchTooltip.hide, true);
+    window.addEventListener('resize', batchTooltip.hide);
+
+    const getWorkloadTypeBadge = (wType) => {
+        const t = (wType || '').trim();
+        if (t === 'Airflow DAG') {
+            return `<span class="badge-workload badge-workload--airflow"><i class="fa-solid fa-wind"></i>Airflow DAG</span>`;
+        } else if (t === 'dbt Pipeline') {
+            return `<span class="badge-workload badge-workload--dbt"><i class="fa-solid fa-cube"></i>dbt Pipeline</span>`;
+        } else if (t === 'Dataform Pipeline') {
+            return `<span class="badge-workload badge-workload--dataform"><i class="fa-solid fa-code-branch"></i>Dataform</span>`;
+        } else if (t === 'Scheduled Query') {
+            return `<span class="badge-workload badge-workload--scheduled"><i class="fa-solid fa-clock"></i>Scheduled</span>`;
+        } else if (t === 'BI Dashboard Connection' || t.toLowerCase().includes('bi')) {
+            return `<span class="badge-workload badge-workload--bi"><i class="fa-solid fa-chart-pie"></i>BI Dashboard</span>`;
+        } else if (t === 'Service Account Workload' || t.toLowerCase().includes('service account')) {
+            return `<span class="badge-workload badge-workload--sa"><i class="fa-solid fa-robot"></i>Service Account</span>`;
+        } else if (t === 'Human Ad-hoc' || t.toLowerCase().includes('human') || t.toLowerCase().includes('ad-hoc')) {
+            return `<span class="badge-workload badge-workload--human"><i class="fa-solid fa-user"></i>Human Ad-hoc</span>`;
+        }
+        return `<span class="badge-workload badge-workload--default">${escapeHtmlAttr(t)}</span>`;
+    };
+
+    const getWorkloadIcon = (wType) => {
+        const t = (wType || '').toLowerCase();
+        if (t.includes('airflow')) return 'fa-solid fa-wind';
+        if (t.includes('dbt')) return 'fa-solid fa-cube';
+        if (t.includes('dataform')) return 'fa-solid fa-code-branch';
+        if (t.includes('scheduled')) return 'fa-solid fa-clock';
+        if (t.includes('bi')) return 'fa-solid fa-chart-pie';
+        if (t.includes('service')) return 'fa-solid fa-robot';
+        return 'fa-solid fa-user';
+    };
+
     const renderBatchCandidatesResults = (data) => {
         const tbody = document.querySelector('#batch-candidates-results-table tbody');
         if (!tbody) return;
+        batchTooltip.hide();
         tbody.innerHTML = '';
 
-        data.forEach(row => {
+        // Cached payloads from before the workload engine used a per-job shape.
+        // Drop them rather than emit rows with the wrong column count, which
+        // would break DataTables initialisation.
+        const rows = (data || []).filter(r => r && r.workload_name && r.finding_category);
+
+        rows.forEach(row => {
             const tr = document.createElement('tr');
+            const reasons = (row.detection_reasons || []).join('\n');
+
+            const isUnder = row.finding_category === 'UNDER_BATCHED';
+            const badgeClass = isUnder ? 'badge-finding--under' : 'badge-finding--over';
+            const badgeIcon = isUnder ? 'fa-bolt' : 'fa-hourglass-half';
+            const badgeLabel = isUnder ? 'Under-Batched' : 'Over-Batched';
+            const summary = isUnder
+                ? 'Automated pipeline running in INTERACTIVE mode. Risks starving live dashboards of the 100-query concurrent limit. Switch to BATCH for auto-retry protection at identical pricing.'
+                : 'Human/BI workload facing >30s BATCH queue lag. Switch to INTERACTIVE for instant slot allocation.';
+
+            // The popup body travels as data-* rather than as a hidden child of the
+            // cell: it is rendered into a single body-level node on hover (see
+            // batchTooltip), and a hidden child would also be swept into the CSV
+            // export, which reads cell text via textContent.
+            const categoryBadge = `
+                <span class="batch-tooltip-wrap" data-tip-title="${escapeHtmlAttr(badgeLabel)}" data-tip-summary="${escapeHtmlAttr(summary)}" data-tip-reasons="${escapeHtmlAttr(reasons)}">
+                    <span class="badge-finding ${badgeClass}" style="cursor: help;">
+                        <i class="fa-solid ${badgeIcon}"></i>${badgeLabel}
+                    </span>
+                </span>`;
+
+            const confBadge = row.confidence === 'HIGH'
+                ? `<span class="badge-conf badge-conf--high">HIGH CONF</span>`
+                : `<span class="badge-conf badge-conf--low">LOW CONF</span>`;
+
+            const actionBtn = row.has_remediation
+                ? `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code"></i>Snippet</button>`
+                : `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb"></i>Guidance</button>`;
+
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
-                <td>${row.user_email}</td>
-                <td><span class="badge logical">${row.batch_candidate_reason}</span></td>
-                <td>${row.duration_minutes.toFixed(1)}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <i class="${getWorkloadIcon(row.workload_type)}" style="font-size: 0.8rem; opacity: 0.75; flex-shrink: 0; color: #94a3b8;"></i>
+                        <span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; display: inline-block;" title="${escapeHtmlAttr(row.workload_name)}">${escapeHtmlAttr(row.workload_name)}</span>
+                        ${confBadge}
+                    </div>
+                </td>
+                <td>${getWorkloadTypeBadge(row.workload_type)}</td>
+                <td><span style="font-family: monospace; font-size: 0.8rem; color: #94a3b8;">${escapeHtmlAttr(row.project_id)}</span></td>
+                <td data-order="${row.total_job_runs}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1;">${row.total_job_runs.toLocaleString()}</span></td>
+                <td data-order="${row.total_slot_hours}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1; white-space: nowrap;">${row.total_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})} <span style="color: #64748b; font-size: 0.72rem;">hrs</span></span></td>
+                <td data-order="${row.pct_interactive}"><span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: ${row.pct_interactive >= 90 ? '#f87171' : '#cbd5e1'};">${row.pct_interactive.toFixed(1)}%</span></td>
+                <td data-order="${row.total_human_wait_seconds}"><span style="font-family: monospace; font-size: 0.82rem; color: ${row.total_human_wait_seconds > 30 ? '#f59e0b' : '#64748b'};">${row.total_human_wait_seconds > 0 ? Math.round(row.total_human_wait_seconds) + 's' : '—'}</span></td>
+                <td>${categoryBadge}</td>
+                <td>${actionBtn}</td>
             `;
             tbody.appendChild(tr);
         });
+
+        // Delegated on the table so the handlers survive DataTables destroy/re-init;
+        // the flag keeps re-renders from stacking duplicates.
+        const batchTable = document.getElementById('batch-candidates-results-table');
+        if (batchTable && !batchTable._batchDelegateAttached) {
+            batchTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-remediation');
+                if (btn) {
+                    batchTooltip.hide();
+                    window.showRemediationModal(btn.dataset.wname, btn.dataset.wtype, btn.dataset.wpriority);
+                }
+            });
+            // mouseover/mouseout rather than mouseenter/mouseleave: the latter do
+            // not bubble, so they cannot be delegated from the table.
+            batchTable.addEventListener('mouseover', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap) batchTooltip.show(wrap);
+            });
+            batchTable.addEventListener('mouseout', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap && !wrap.contains(e.relatedTarget)) batchTooltip.hide();
+            });
+            batchTable._batchDelegateAttached = true;
+        }
 
         if ($.fn.DataTable.isDataTable('#batch-candidates-results-table')) {
             $('#batch-candidates-results-table').DataTable().destroy();
         }
-        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [[5, 'desc']], responsive: true });
+        $('#batch-candidates-results-table').DataTable({ pageLength: 10, order: [], responsive: true });
     };
 
     const renderSkewResults = (data) => {
+        if ($.fn.DataTable.isDataTable('#skew-results-table')) {
+            $('#skew-results-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#skew-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
+        if (!Array.isArray(data) || data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No data skew detected.</td></tr>`;
+            return;
+        }
+
         data.forEach(row => {
+            const proj = row.project_id || (typeof state !== 'undefined' ? state.orgProject : '');
+            const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+            const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId: row.job_id });
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
-                <td>${row.user_email}</td>
-                <td>${row.stage_name}</td>
-                <td>${row.avg_compute_ms.toLocaleString()}</td>
-                <td>${row.max_compute_ms.toLocaleString()}</td>
-                <td data-order="${row.skew_ratio}"><span class="badge error">${row.skew_ratio.toFixed(1)}x</span></td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem; color: #cbd5e1;">${escapeHtmlAttr(row.stage_name || '')}</span></td>
+                <td data-order="${row.avg_compute_ms || 0}" style="text-align: right;">${(row.avg_compute_ms || 0).toLocaleString()}</td>
+                <td data-order="${row.max_compute_ms || 0}" style="text-align: right;"><strong style="color: #f87171; font-family: monospace;">${(row.max_compute_ms || 0).toLocaleString()}</strong></td>
+                <td data-order="${row.skew_ratio || 0}"><span class="badge error">${(row.skew_ratio || 0).toFixed(1)}x</span></td>
+                <td><a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="btn-action" style="font-size: 0.78rem; padding: 3px 8px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Open stage execution graph in BigQuery Console"><i class="fa-solid fa-arrow-up-right-from-square"></i> Inspect Stage</a></td>
             `;
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#skew-results-table')) {
-            $('#skew-results-table').DataTable().destroy();
-        }
-        $('#skew-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
+        safeInitDataTable('#skew-results-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
     const renderLinterResults = (data) => {
@@ -3639,7 +4420,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         tbody.innerHTML = '';
 
         const formatDataSize = (gb) => {
-            // F-L2: threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+            // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
             if (gb >= 1024) {
                 return `${formatNumber(gb / 1024)} TiB`;
             }
@@ -3676,8 +4457,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const estimated_waste_usd = row.billed_gb * odRate / 1024;
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><span style="color: #e2e8f0; font-weight: 500;">${row.user_email}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.project_id}</span></td>
+                <td><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${renderProjectLink(row.project_id)}</span></td>
                 <td><span style="color: #64748b; font-family: monospace; font-size: 0.85rem;">${row.job_id}</span></td>
                 <td><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
                 <td>${getAbuseBadge(row.abuse_type)}</td>
@@ -3698,7 +4479,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             order: [[3, 'desc']],
             autoWidth: false
         });
-    };
+    }
 
     const renderAntiPatternsResults = (data) => {
         const tbody = document.querySelector('#antipatterns-results-table tbody');
@@ -3710,8 +4491,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const wasteUsd = row.wasted_slot_hours * edRate;
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
-                <td>${row.project_id}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${row.insert_job_count.toLocaleString()}</td>
                 <td>${row.wasted_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                 <td><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
@@ -3734,9 +4515,9 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${row.dataset_id}</td>
-                <td><span class="badge logical">Missing Expiration</span></td>
+                <td><span class="badge secondary">Missing Expiration</span></td>
             `;
             tbody.appendChild(tr);
         });
@@ -3755,7 +4536,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${row.dataset_id}</td>
                 <td>${row.table_name}</td>
                 <td>${row.partition_type}</td>
@@ -3777,7 +4558,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.project_id}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
                 <td>${row.dataset}</td>
                 <td>${row.table_name}</td>
                 <td>${row.refresh_count.toLocaleString()}</td>
@@ -3800,7 +4581,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.mv_name}</td>
                 <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.rejected_reason}</td>
@@ -3822,7 +4603,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         data.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <span style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</span>
@@ -4033,7 +4814,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeExpiration.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeExpiration, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             // Clearing the key wipes the sibling scan's cached data.
             clearModuleCache([], ['#expiration-results-table']);
             const params = {
@@ -4077,7 +4858,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         elements.btnAnalyzeFilter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
-            // F-M8: Don't clear bq_gov_results — only clear the DataTable.
+            // Don't clear bq_gov_results — only clear the DataTable.
             clearModuleCache([], ['#filter-results-table']);
             const params = {
                 org_project_id: state.orgProject,
@@ -4275,7 +5056,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const tr = document.createElement('tr');
             const modeClass = row.bi_engine_mode === 'FULL' ? 'physical' : (row.bi_engine_mode === 'PARTIAL' ? 'logical' : 'error');
             tr.innerHTML = `
-                <td>${row.user_email}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
                 <td>${row.processed_gb.toFixed(2)}</td>
                 <td>${row.billed_gb.toFixed(2)}</td>
@@ -4362,6 +5143,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     let currentAiResults = [];
 
     const renderAiResults = (data) => {
+        const panel = document.getElementById('ai-results-panel');
+        if (panel) panel.style.display = 'block';
         const oldTbody = document.querySelector('#ai-results-table tbody');
         if (!oldTbody) return;
         const tbody = oldTbody.cloneNode(false);
@@ -4530,6 +5313,28 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
                 html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
                 html = html.replace(/\n/g, '<br>');
+                // Auto-linkify fully qualified BigQuery table references
+                // (project.dataset.table).
+                //
+                // The leading group pins the match to a real text boundary —
+                // start-of-string, whitespace, an opening bracket, or the ">"
+                // that closes a tag we just emitted. Crucially it does NOT
+                // allow "/" or ".", which is what keeps the pattern out of
+                // URLs: in "https://console.cloud.google.com/…" the candidate
+                // "console.cloud.google" is preceded by "/" and so is skipped.
+                //
+                // The trailing lookahead rejects a 4th dotted segment for the
+                // same reason, so "a.b.c.d" is left alone rather than being
+                // linkified as "a.b.c" plus a dangling ".d".
+                html = html.replace(
+                    /(^|[\s(>\[])([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?![\w.\-\/])/g,
+                    (match, pre, proj, ds, tbl) => {
+                        const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
+                        const ref = `${proj}.${ds}.${tbl}`;
+                        return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open ${tbl} in Console">${ref}</a>`;
+                    }
+                );
+
                 codeBlocks.forEach((blockHtml, index) => {
                     html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
                 });
@@ -4550,12 +5355,21 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                             padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
                             color: #fb7185; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
                             word-break: break-all; margin: 0;">${escapedOrigSqlPreview}</pre>
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
                             <button class="copy-orig-sql-btn" style="background: rgba(251,113,133,0.15); border: 1px solid rgba(251,113,133,0.3);
                                 color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
                                 cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                                 <i class="fa-solid fa-copy"></i> Copy SQL
                             </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-orig-translator-btn"
+                                style="background: rgba(251,113,133,0.12); border: 1px solid rgba(251,113,133,0.25);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
                         </div>
                     </div>`;
             }
@@ -4581,12 +5395,21 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                             color: #38bdf8; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
                             word-break: break-all; margin: 0;">${escapedSqlPreview}</pre>
                         ${approxBadge}
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
                             <button class="copy-sql-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3);
                                 color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
                                 cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                                 <i class="fa-solid fa-copy"></i> Copy SQL
                             </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.optimized_query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-opt-translator-btn"
+                                style="background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.25);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
                         </div>
                         __YAML_BADGE_PLACEHOLDER__
                     </div>`;
@@ -4608,10 +5431,15 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
             optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
 
+            const slotHours = (row.total_slot_ms || 0) / 3600000;
+            const formattedSlotHours = slotHours >= 1000
+                ? `${Math.round(slotHours).toLocaleString()} hrs`
+                : (slotHours >= 1 ? `${slotHours.toFixed(1)} hrs` : `${slotHours.toFixed(2)} hrs`);
+
             tr.innerHTML = `
                 <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
-                <td>${row.user_email}</td>
-                <td>${row.total_slot_ms.toLocaleString()}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
                 <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
                 <td>${originalQueryCell}</td>
@@ -4728,6 +5556,36 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 return;
             }
 
+            // Open in Translator with Auto-Copy
+            const transBtn = e.target.closest('.open-orig-translator-btn, .open-opt-translator-btn');
+            if (transBtn) {
+                const tr = transBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const isOrig = transBtn.classList.contains('open-orig-translator-btn');
+                const sql = isOrig ? (rowData?.query || '') : (rowData?.optimized_query || '');
+
+                if (sql) {
+                    try {
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(sql);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = sql;
+                            ta.style.cssText = 'position:fixed;left:-9999px';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                        }
+                        showNotification('SQL copied to clipboard! Paste (Cmd+V / Ctrl+V) in the translator.', 'info');
+                    } catch (err) {
+                        console.warn('Auto-copy failed on translator button click', err);
+                    }
+                }
+                return;
+            }
+
             // YAML accordion toggle
             const yamlBtn = e.target.closest('.yaml-toggle-btn');
             if (yamlBtn) {
@@ -4797,6 +5655,18 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
     }
 
+    // AI Dual-Engine Pipeline Architecture Toggle
+    const aiPipelineToggle = document.getElementById('ai-pipeline-toggle');
+    const aiPipelineContent = document.getElementById('ai-pipeline-content');
+    const aiPipelineChevron = document.getElementById('ai-pipeline-chevron');
+    if (aiPipelineToggle && aiPipelineContent) {
+        aiPipelineToggle.addEventListener('click', () => {
+            const isHidden = aiPipelineContent.style.display === 'none';
+            aiPipelineContent.style.display = isHidden ? 'block' : 'none';
+            if (aiPipelineChevron) aiPipelineChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
+        });
+    }
+
     // Consent Modal Logic
     const consentModal = document.getElementById('ddl-consent-modal');
     const consentCheckbox = document.getElementById('ddl-consent-checkbox');
@@ -4816,6 +5686,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const runActualAiAnalysis = async () => {
             const tableEl = document.getElementById('ai-results-table');
             const container = tableEl ? tableEl.closest('.results-panel') : null;
+            if (container) container.style.display = 'block';
 
             if (tableEl && $.fn.DataTable.isDataTable('#ai-results-table')) {
                 $('#ai-results-table').DataTable().destroy();
@@ -4884,8 +5755,20 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
             } catch (error) {
                 if (progress && progress.stop) progress.stop();
-                console.error("AI Error:", error);
-                showNotification(error.message, 'error');
+                if (error.name === 'AbortError' || abortController.signal.aborted) {
+                    showNotification('AI Doctor analysis cancelled.', 'warning');
+                    if (tableEl) {
+                        const tbody = tableEl.querySelector('tbody');
+                        if (tbody) tbody.innerHTML = '';
+                    }
+                    const cached = localStorage.getItem('bq_ai_results');
+                    if (cached) {
+                        try { renderAiResults(JSON.parse(cached)); } catch (_) {}
+                    }
+                } else {
+                    console.error("AI Error:", error);
+                    showNotification(error.message, 'error');
+                }
             } finally {
                 setLoading(elements.btnRunAiAnalysis, false);
             }

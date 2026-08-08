@@ -10,43 +10,53 @@ class MockParams(BaseModel):
 
 def test_resolve_with_explicit_valid_project():
     params = MockParams(org_project_id="valid-project-id")
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = "resolved-project-id"
         mock_client_class.return_value = mock_client
         
         client, resolved_project = init_bq_client_and_resolve_project(params)
         
-        mock_client_class.assert_called_once_with(project="valid-project-id")
+        assert mock_client_class.call_count == 1
+        assert mock_client_class.call_args[1]["project"] == "valid-project-id"
+        assert "credentials" in mock_client_class.call_args[1]
         assert resolved_project == "valid-project-id"
 
 def test_resolve_with_client_fallback():
     params = MockParams(org_project_id=None)
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = "resolved-project-id"
         mock_client_class.return_value = mock_client
         
         client, resolved_project = init_bq_client_and_resolve_project(params)
         
-        mock_client_class.assert_called_once_with()
+        assert mock_client_class.call_count == 1
+        assert mock_client_class.call_args[1]["project"] == "adc-project"
+        assert "credentials" in mock_client_class.call_args[1]
         assert resolved_project == "resolved-project-id"
 
 def test_resolve_empty_string_falls_back():
     params = MockParams(org_project_id="  ")
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = "resolved-project-id"
         mock_client_class.return_value = mock_client
         
         client, resolved_project = init_bq_client_and_resolve_project(params)
         
-        mock_client_class.assert_called_once_with()
+        assert mock_client_class.call_count == 1
+        assert mock_client_class.call_args[1]["project"] == "adc-project"
+        assert "credentials" in mock_client_class.call_args[1]
         assert resolved_project == "resolved-project-id"
 
 def test_resolve_raises_if_empty():
     params = MockParams(org_project_id="")
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = ""
         mock_client_class.return_value = mock_client
@@ -58,7 +68,8 @@ def test_resolve_raises_if_empty():
 
 def test_resolve_raises_if_dummy():
     params = MockParams(org_project_id="mbettan-sandbox")
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = "mbettan-sandbox"
         mock_client_class.return_value = mock_client
@@ -70,7 +81,8 @@ def test_resolve_raises_if_dummy():
 
 def test_resolve_raises_if_invalid_format():
     params = MockParams(org_project_id="project;drop table jobs;")
-    with patch("src.utils.bigquery.Client") as mock_client_class:
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
         mock_client = MagicMock()
         mock_client.project = "project"
         mock_client_class.return_value = mock_client

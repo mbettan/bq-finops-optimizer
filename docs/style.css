@@ -1201,6 +1201,12 @@ th.num {
     background: rgba(251, 191, 36, 0.08);
 }
 
+.tag-rose {
+    color: #fb7185;
+    border-color: rgba(251, 113, 133, 0.35);
+    background: rgba(251, 113, 133, 0.08);
+}
+
 .share-bar {
     height: 8px;
     border-radius: 99px;
@@ -2289,4 +2295,248 @@ th.num {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border-width: 0;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   MOBILE EXPERIENCE
+   Appended last on purpose: these overrides need to win against the base
+   rules at equal specificity. Prose is never hidden — only the mock demo
+   data and decorative chrome — so mobile-first indexing still sees the whole
+   page.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Desktop-only by default; revealed in the ≤768px block below. */
+.mobile-note,
+.console-swipe-hint {
+    display: none;
+}
+
+.mobile-note {
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.55rem;
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--ink-3);
+    text-align: center;
+}
+
+.mobile-note i {
+    flex: none;
+    color: var(--blue-hi);
+}
+
+.console-swipe-hint {
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0.5rem 1rem 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+}
+
+@media (max-width: 768px) {
+
+    .mobile-note,
+    .console-swipe-hint {
+        display: flex;
+    }
+
+    /* ── Tap targets (WCAG 2.5.8 / 44px) ── */
+    .nav-hamburger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .console-tab {
+        min-height: 44px;
+        padding: 0.6rem 0.95rem;
+        scroll-snap-align: start;
+    }
+
+    .copy-btn {
+        width: 44px;
+        height: 44px;
+    }
+
+    .footer-col a {
+        padding-block: 0.35rem;
+    }
+
+    /* ── Console tab strip: swipeable, snapping, no scrollbar ── */
+    .console-tabs {
+        gap: 0.4rem;
+        padding: 0.75rem 0.9rem;
+        scroll-snap-type: x proximity;
+        -webkit-overflow-scrolling: touch;
+        /* Fade the right edge so the overflow reads as "more to swipe". */
+        -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent 100%);
+        mask-image: linear-gradient(90deg, #000 88%, transparent 100%);
+    }
+
+    /* ── Wide data tables → one card per row ──
+       Six-to-thirteen column tables can't be read on a phone, and pinch-zoom
+       is not a design. The <thead> is visually hidden (kept in the a11y tree)
+       and each cell carries its column name in data-label, stamped on by the
+       page script. */
+    .table-shell {
+        max-height: none;
+        overflow: visible;
+        background: none;
+        border: 0;
+        border-radius: 0;
+    }
+
+    .data-table {
+        display: block;
+        font-size: 0.86rem;
+    }
+
+    .data-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
+    .data-table tbody,
+    .data-table tr,
+    .data-table td {
+        display: block;
+        width: 100%;
+    }
+
+    /* display:block above outranks the UA [hidden] rule. */
+    .data-table tr[hidden] {
+        display: none;
+    }
+
+    .data-table tbody tr {
+        background: rgba(0, 0, 0, 0.32);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        margin-bottom: 0.75rem;
+        padding: 0.15rem 0;
+    }
+
+    .data-table tbody tr:hover {
+        background: rgba(0, 0, 0, 0.32);
+    }
+
+    .data-table td {
+        display: grid;
+        grid-template-columns: minmax(6.5rem, auto) 1fr;
+        gap: 0.85rem;
+        align-items: baseline;
+        padding: 0.6rem 0.9rem;
+        white-space: normal;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    }
+
+    .data-table tbody tr td:last-child {
+        border-bottom: 0;
+    }
+
+    .data-table td::before {
+        content: attr(data-label);
+        font-family: var(--font-body);
+        font-size: 0.62rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        line-height: 1.4;
+        color: var(--ink-3);
+        text-align: left;
+    }
+
+    .data-table .num {
+        text-align: right;
+    }
+
+    .data-table .mono {
+        word-break: break-all;
+    }
+
+    /* Grid blockifies children, which would stretch a pill to the full column. */
+    .data-table td .tag {
+        justify-self: start;
+    }
+
+    .query-cell {
+        max-width: none;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-word;
+    }
+
+    .share-bar {
+        align-self: center;
+        min-width: 0;
+    }
+
+    .matrix-table td {
+        text-align: left;
+    }
+
+    .matrix-table .sep {
+        border-right: 0;
+    }
+
+    /* ── Cheaper compositing: stacked blur layers are the main scroll cost
+       on mid-range phones, and none of it is load-bearing. ── */
+    .aurora {
+        filter: blur(70px);
+        opacity: 0.5;
+    }
+
+    .grid-overlay,
+    .noise {
+        display: none;
+    }
+
+    .console {
+        backdrop-filter: none;
+    }
+}
+
+@media (max-width: 480px) {
+
+    /* The dashboard mockup is aria-hidden decoration; on a phone it costs a
+       tall block of layout above the fold for no information. */
+    .hero-visual {
+        display: none;
+    }
+
+    .hero-inner {
+        gap: 0;
+    }
+
+    .data-table td {
+        grid-template-columns: 1fr;
+        gap: 0.2rem;
+    }
+
+    .data-table .num,
+    .matrix-table td {
+        text-align: left;
+    }
+
+    .cta-deploy code {
+        white-space: normal;
+        word-break: break-all;
+    }
+
+    .console-stage {
+        padding: 0.9rem;
+    }
 }

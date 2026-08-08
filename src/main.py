@@ -41,10 +41,12 @@ from .utils import (
     build_project_filter,
     log_endpoint_start,
     log_endpoint_end,
+    time_period_query_params,
     request_id_var,
     RequestIdFilter,
     run_query_with_retry_limit,
     run_query_and_log,
+    close_bq_clients,
 )
 from .migration_optimizer import (
     TranslationParams,
@@ -55,10 +57,11 @@ import time
 import uuid
 
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # Centralized on-demand pricing — single source of truth [R-pricing]
 ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))
+EDITIONS_SLOT_HR_RATE = float(os.environ.get("BQ_EDITIONS_SLOT_HR_RATE", "0.06"))
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -73,6 +76,7 @@ THREAD_POOL_CAPACITY = 100
 async def lifespan(app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_POOL_CAPACITY
     yield
+    close_bq_clients()
 
 
 app = FastAPI(
@@ -617,11 +621,16 @@ def fetch_active_assist_recommendations(params: StorageParams):
 
             sql = "\nUNION ALL\n".join(union_blocks)
             logger.info(f"Querying Active Assist Recommendations across {len(target_projects)} focus projects...")
-            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+            try:
+                results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations", params=params)
+            except Exception as e_focus:
+                logger.warning(f"Active Assist focus project query failed ({e_focus}); returning empty recommendations.")
+                results = []
         else:
-            # Org mode: single query using the org-scoped RECOMMENDATIONS view
+            # Org mode: try org-scoped RECOMMENDATIONS_BY_ORGANIZATION first;
+            # gracefully fall back to project-scoped RECOMMENDATIONS if org view is unavailable or fails.
             logger.info(f"▶ Active Assist — project={resolved_project} | region={region_val} | org-wide scan")
-            sql = f"""
+            sql_org = f"""
             SELECT
               project_id,
               target_resources,
@@ -634,7 +643,28 @@ def fetch_active_assist_recommendations(params: StorageParams):
               recommender = 'google.bigquery.table.PartitionClusterRecommender'
               AND state = 'ACTIVE'
             """
-            results = run_query_and_log(scoped_client, sql, "Active Assist Recommendations (Org)", params=params)
+            try:
+                results = run_query_and_log(scoped_client, sql_org, "Active Assist Recommendations (Org)", params=params)
+            except Exception as e_org:
+                logger.warning(f"RECOMMENDATIONS_BY_ORGANIZATION failed ({e_org}); falling back to project-scoped RECOMMENDATIONS view.")
+                sql_proj = f"""
+                SELECT
+                  '{resolved_project}' AS project_id,
+                  target_resources,
+                  description,
+                  primary_impact,
+                  additional_details
+                FROM
+                  `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.RECOMMENDATIONS
+                WHERE
+                  recommender = 'google.bigquery.table.PartitionClusterRecommender'
+                  AND state = 'ACTIVE'
+                """
+                try:
+                    results = run_query_and_log(scoped_client, sql_proj, "Active Assist Recommendations (Project Fallback)", params=params)
+                except Exception as e_proj:
+                    logger.warning(f"Project-scoped RECOMMENDATIONS query also failed ({e_proj}); returning empty recommendations list.")
+                    results = []
         output = []
         
         # If the view exists but returns nothing, or if it succeeds
@@ -690,19 +720,21 @@ def fetch_active_assist_recommendations(params: StorageParams):
                         cluster_cols = [cols]
                 
                 # Estimate savings if not provided in primary_impact
-                # On-Demand: $6.25 per TB
+                # On-Demand: $6.25 per TB (decimal TB = 10**12 bytes to match bytesSavedMonthlyTb)
                 tb_saved = overview.get('bytesSavedMonthlyTb')
-                if not tb_saved:
+                if tb_saved is None:
                     b_saved = overview.get('bytesSavedMonthly') or 0.0
-                    tb_saved = float(b_saved) / (1024**4)
+                    tb_saved = float(b_saved) / (10**12)  # Decimal TB matching bytesSavedMonthlyTb
+                else:
+                    tb_saved = float(tb_saved)
                 
                 if tb_saved and savings == 0.0:
-                    savings = float(tb_saved) * 6.25
+                    savings = float(tb_saved) * ON_DEMAND_USD_PER_TB
                 
                 # Editions: $0.06 per slot-hour (1 hr = 3600000 ms)
                 slot_ms_saved = overview.get('slotMsSavedMonthly') or 0.0
                 if slot_ms_saved:
-                    editions_savings = (float(slot_ms_saved) / 3600000.0) * 0.06
+                    editions_savings = (float(slot_ms_saved) / 3600000.0) * EDITIONS_SLOT_HR_RATE
 
             output.append(ActiveAssistResult(
                 project_id=row['project_id'] or resolved_project,
@@ -723,8 +755,8 @@ def fetch_active_assist_recommendations(params: StorageParams):
 
 
 class JobAnalysisParams(FocusMixin):
-    on_demand_rate_per_tb: float = 6.25
-    edition_slot_hr_rate: float = 0.06
+    on_demand_rate_per_tb: float = ON_DEMAND_USD_PER_TB
+    edition_slot_hr_rate: float = EDITIONS_SLOT_HR_RATE
     slot_step_size: int = Field(default=50, gt=0)
     lookback_days: int = Field(default=3, ge=1, le=90)
     region: str = "region-us"
@@ -1152,6 +1184,16 @@ def analyze_jobs(params: JobAnalysisParams):
         handle_endpoint_exception(e, "Job analysis")
 
 
+# BigQuery's out-of-the-box time travel window when a dataset has no
+# explicit `default_time_travel_days` option set.
+DEFAULT_TIME_TRAVEL_DAYS = 7
+
+# Ceiling on how many projects the hygiene TTL lookup will union together.
+# HygieneParams.limit allows 500 rows, and each distinct project adds a branch
+# to the union; past this point the query text itself becomes the bottleneck.
+MAX_TTL_LOOKUP_PROJECTS = 50
+
+
 class HygieneParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
@@ -1166,6 +1208,10 @@ class HygieneResult(BaseModel):
     time_travel_gb: float
     churn_ratio: float
     health_status: str
+    # Dataset-level time travel window in days. BigQuery's default is 7;
+    # shortening it to 2 is the single highest-leverage fix for a high-churn
+    # table, so the value is surfaced next to the churn ratio.
+    time_travel_days: int = DEFAULT_TIME_TRAVEL_DAYS
 
 @app.post("/api/storage/hygiene", response_model=List[HygieneResult])
 def analyze_storage_hygiene(params: HygieneParams):
@@ -1194,10 +1240,70 @@ def analyze_storage_hygiene(params: HygieneParams):
         """
         
 
-        results = run_query_and_log(scoped_client, sql, "Storage Hygiene", params=params, query_parameters=focus_params)
-        
+        rows_raw = list(run_query_and_log(
+            scoped_client, sql, "Storage Hygiene", params=params, query_parameters=focus_params
+        ))
+
+        # SCHEMATA_OPTIONS is region-qualified per project, so the only way to
+        # read several projects at once is a UNION ALL. One round-trip keeps a
+        # wide result set from turning this endpoint into a minutes-long chain
+        # of sequential metadata queries. Everything here is non-fatal: a dataset
+        # we can't read simply falls back to BigQuery's 7-day default.
+        ttl_lookup: dict = {}  # {(project, dataset): int}
+        projects_in_results = {r.project_id for r in rows_raw}
+
+        safe_projects = []
+        for proj in sorted(projects_in_results):
+            try:
+                safe_projects.append(_safe_ident(proj, "ttl_project_id"))
+            except Exception:
+                logger.warning(f"Skipping TTL lookup for unsafe project identifier: {proj!r}")
+
+        if len(safe_projects) > MAX_TTL_LOOKUP_PROJECTS:
+            logger.warning(
+                "TTL lookup covers %d of %d projects (cap: %d); the remaining %d "
+                "will display the %d-day default",
+                MAX_TTL_LOOKUP_PROJECTS, len(safe_projects), MAX_TTL_LOOKUP_PROJECTS,
+                len(safe_projects) - MAX_TTL_LOOKUP_PROJECTS, DEFAULT_TIME_TRAVEL_DAYS,
+            )
+            safe_projects = safe_projects[:MAX_TTL_LOOKUP_PROJECTS]
+
+        def _ttl_branch(project: str) -> str:
+            # SAFE_CAST, not CAST: one unparseable option_value must not abort
+            # the whole union and blank out every other project's TTL.
+            return f"""
+            SELECT '{project}' AS ttl_project_id, schema_name,
+                   SAFE_CAST(option_value AS INT64) AS ttl_days
+            FROM `{project}`.`{params.region}`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS
+            WHERE option_name = 'default_time_travel_days'
+            """
+
+        def _collect_ttl(ttl_results) -> None:
+            for ttl_row in ttl_results:
+                if ttl_row.ttl_days is None:
+                    continue
+                ttl_lookup[(ttl_row.ttl_project_id, ttl_row.schema_name)] = int(ttl_row.ttl_days)
+
+        if safe_projects:
+            try:
+                _collect_ttl(run_query_and_log(
+                    scoped_client, "\nUNION ALL\n".join(_ttl_branch(p) for p in safe_projects),
+                    "Storage Hygiene TTL Lookup", params=params,
+                ))
+            except Exception as ttl_err:
+                # A single project the caller cannot read fails the whole union.
+                # Retry per project so partial access still yields partial data.
+                logger.warning(f"Batched TTL lookup failed ({ttl_err}); retrying per project")
+                for proj in safe_projects:
+                    try:
+                        _collect_ttl(run_query_and_log(
+                            scoped_client, _ttl_branch(proj), f"TTL Lookup ({proj})", params=params,
+                        ))
+                    except Exception as proj_err:
+                        logger.warning(f"Failed to query TTL for project {proj}: {proj_err}")
+
         output = []
-        for row in results:
+        for row in rows_raw:
             output.append(HygieneResult(
                 project_id=row.project_id,
                 dataset=row.dataset,
@@ -1205,7 +1311,10 @@ def analyze_storage_hygiene(params: HygieneParams):
                 live_active_physical_gb=float(row.live_active_physical_gb or 0),
                 time_travel_gb=float(row.time_travel_gb or 0),
                 churn_ratio=float(row.churn_ratio or 0),
-                health_status=row.health_status
+                health_status=row.health_status,
+                time_travel_days=ttl_lookup.get(
+                    (row.project_id, row.dataset), DEFAULT_TIME_TRAVEL_DAYS
+                ),
             ))
         log_endpoint_end("Storage Hygiene", t0, _logger=logger)
         return output
@@ -1217,7 +1326,12 @@ class DMLAbuseParams(FocusMixin):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=1, ge=1, le=90)
-    threshold: int = Field(default=1000, ge=1)
+    # Applies per (destination table, user, project) — NOT per user. The old
+    # per-user default of 1000 hid pipelines that fan a large insert volume
+    # out across many tables. BigQuery caps a table at 1500 table-modifying
+    # operations per day, so 100/day against one table is already a pipeline
+    # worth migrating to the Storage Write API.
+    threshold: int = Field(default=100, ge=1)
     max_bytes_billed_gb: Optional[int] = None
 
 class DMLAbuseResult(BaseModel):
@@ -1225,6 +1339,14 @@ class DMLAbuseResult(BaseModel):
     project_id: str
     insert_job_count: int
     wasted_slot_hours: float
+    # Table-centric attribution: the destination table is the unit that
+    # actually gets migrated to the Storage Write API, so it — not the
+    # writing identity — is the primary grouping key.
+    dest_project_id: Optional[str] = None
+    dest_dataset_id: Optional[str] = None
+    dest_table_id: Optional[str] = None
+    active_days: int = 1
+    avg_inserts_per_day: float = 0.0
 
 @app.post("/api/antipatterns/dml", response_model=List[DMLAbuseResult])
 def analyze_dml_abuse(params: DMLAbuseParams):
@@ -1236,35 +1358,47 @@ def analyze_dml_abuse(params: DMLAbuseParams):
         
         sql = f"""
         SELECT
+          destination_table.project_id AS dest_project_id,
+          destination_table.dataset_id AS dest_dataset_id,
+          destination_table.table_id   AS dest_table_id,
           user_email,
           project_id,
           COUNT(job_id) AS insert_job_count,
-          SUM(total_slot_ms) / (1000 * 60 * 60) AS wasted_slot_hours
+          SUM(total_slot_ms) / (1000 * 60 * 60) AS wasted_slot_hours,
+          COUNT(DISTINCT DATE(creation_time)) AS active_days,
+          SAFE_DIVIDE(COUNT(job_id), GREATEST(COUNT(DISTINCT DATE(creation_time)), 1)) AS avg_inserts_per_day
         FROM
           `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE
           statement_type = 'INSERT'
           AND state = 'DONE'
+          AND destination_table.table_id IS NOT NULL
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           {focus_clause}
         GROUP BY
-          user_email, project_id
-        HAVING 
+          dest_project_id, dest_dataset_id, dest_table_id, user_email, project_id
+        HAVING
           insert_job_count > {params.threshold}
         ORDER BY
           wasted_slot_hours DESC
         """
-        
+
 
         results = run_query_and_log(scoped_client, sql, "DML Abuse", params=params, query_parameters=focus_params)
-        
+
         output = []
         for row in results:
+            active_days = int(row.active_days or 1) or 1
             output.append(DMLAbuseResult(
                 user_email=row.user_email,
                 project_id=row.project_id,
                 insert_job_count=row.insert_job_count,
-                wasted_slot_hours=row.wasted_slot_hours
+                wasted_slot_hours=row.wasted_slot_hours or 0.0,
+                dest_project_id=row.dest_project_id,
+                dest_dataset_id=row.dest_dataset_id,
+                dest_table_id=row.dest_table_id,
+                active_days=active_days,
+                avg_inserts_per_day=float(row.avg_inserts_per_day or 0.0),
             ))
         log_endpoint_end("DML Abuse Auditor", t0, _logger=logger)
         return output
@@ -1416,9 +1550,6 @@ def analyze_query_linter(params: AntiPatternParams):
             
         output = []
         
-        import re
-        select_star_regex = re.compile(r'SELECT\s+\*\s+FROM', re.IGNORECASE)
-        
         # 2. Loop through projects and lint queries
         for p in projects:
             safe_p = _safe_ident(p, "linter_project_id")
@@ -1434,6 +1565,8 @@ def analyze_query_linter(params: AntiPatternParams):
               AND state = 'DONE'
               AND query IS NOT NULL
               AND total_bytes_billed > 107374182400 -- > 100 GB
+              AND REGEXP_CONTAINS(query, r'(?i)SELECT\\s+\\*\\s+FROM')
+            ORDER BY total_bytes_billed DESC
             LIMIT {params.limit_per_project}
             """
             
@@ -1442,15 +1575,15 @@ def analyze_query_linter(params: AntiPatternParams):
                 results = run_query_and_log(scoped_client, sql, f"Linter Scan {p}", params=params)
                 for row in results:
                     query_text = row.query or ''
-                    if select_star_regex.search(query_text):
-                        output.append(LinterResult(
-                            project_id=p,
-                            job_id=row.job_id,
-                            user_email=row.user_email,
-                            query_snippet=query_text[:100] + "...",
-                            abuse_type="[SELECT * ABUSE]",
-                            billed_gb=row.billed_gb or 0.0
-                        ))
+                    snippet = query_text[:100] + "..." if len(query_text) > 100 else query_text
+                    output.append(LinterResult(
+                        project_id=p,
+                        job_id=row.job_id,
+                        user_email=row.user_email,
+                        query_snippet=snippet,
+                        abuse_type="[SELECT * ABUSE]",
+                        billed_gb=row.billed_gb or 0.0
+                    ))
             except Exception as e:
                 logger.warning(f"Failed to scan project {p} for linter: {e}")
                 
@@ -1538,68 +1671,304 @@ def analyze_data_skew(params: AntiPatternParams):
         handle_endpoint_exception(e, "Skew analysis")
 
 class BatchCandidateResult(BaseModel):
+    workload_name: str
+    workload_type: str
     project_id: str
-    job_id: str
-    user_email: str
-    duration_minutes: float
-    total_slot_ms: int
-    batch_candidate_reason: str
+    total_job_runs: int
+    total_slot_hours: float
+    avg_duration_minutes: Optional[float] = 0.0
+    pct_interactive: float
+    pct_batch: float
+    pct_on_demand: float
+    total_human_wait_seconds: float
+    p95_queue_delay_seconds: Optional[int] = 0
+    sample_job_id: str
+    finding_category: str
+    recommended_priority: str
+    confidence: str
+    has_remediation: bool
+    detection_reasons: List[str]
+    impact_score: float
 
 @app.post("/api/antipatterns/batch_candidates", response_model=List[BatchCandidateResult])
 def analyze_batch_candidates(params: AntiPatternParams):
+    """Workload-centric concurrency & priority engine.
+
+    Aggregates individual job executions into logical workloads (dbt / Airflow /
+    Dataform / Scheduled Queries / BI connections / service accounts) via lineage
+    labels, then classifies each workload as:
+
+      • UNDER_BATCHED — automated pipeline or heavy DML burning the 100-query
+        INTERACTIVE concurrency limit that live dashboards depend on.
+      • OVER_BATCHED  — human / BI workload stuck behind a >30s BATCH queue.
+
+    BATCH and INTERACTIVE bill identically (same hardware, same slot-hour and
+    per-byte pricing), so these are pure concurrency wins, not cost trade-offs.
+    """
     _validate_safe_params(params)
     t0 = log_endpoint_start("Batch Candidates Analysis", params, _logger=logger)
     scoped_client, target_project = init_bq_client_and_resolve_project(params)
     focus_clause, focus_params = build_project_filter(params.focus_projects)
+
+    region = _normalize_region(params.region)
+
+    # Prefer the org-wide jobs view; fall back to project scope when the caller
+    # lacks the org-level IAM role. A dry run costs nothing and never executes.
+    probe_sql = f"SELECT 1 FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION LIMIT 1"
+    jobs_target_view = "INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
     try:
-        
+        scoped_client.query(probe_sql, job_config=bigquery.QueryJobConfig(dry_run=True), location=region)
+    except Exception as e:
+        # Log the decision, not the payload: a BigQuery permission error embeds the
+        # caller's service-account identity and the fully-qualified table name, and
+        # this branch is an expected configuration (the org view simply is not
+        # granted) rather than a failure worth capturing verbatim.
+        logger.info(
+            f"Org-level jobs view unavailable ({type(e).__name__}); "
+            "falling back to JOBS_BY_PROJECT"
+        )
+        jobs_target_view = "INFORMATION_SCHEMA.JOBS_BY_PROJECT"
+
+    try:
         sql = f"""
+        WITH raw_jobs AS (
+          SELECT
+            job_id,
+            project_id,
+            user_email,
+            priority,
+            statement_type,
+            reservation_id,
+            edition,
+            total_slot_ms,
+            TIMESTAMP_DIFF(start_time, creation_time, SECOND) AS queue_delay_seconds,
+            TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS execution_ms,
+
+            -- Average slots consumed by the job = slot-ms burned / wall-clock ms.
+            SAFE_DIVIDE(total_slot_ms, NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS job_slots,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('dbt_model', 'dbt_node', 'dbt')) AS dbt_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('airflow_dag_id', 'dag_id', 'composer')) AS airflow_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('dataform', 'dataform_workspace')) AS dataform_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') IN ('looker', 'tableau', 'dashboard_id')) AS bi_label,
+
+            (SELECT ARRAY_AGG(value IGNORE NULLS ORDER BY key)[SAFE_OFFSET(0)]
+             FROM UNNEST(labels)
+             WHERE REPLACE(LOWER(key), '-', '_') = 'requestor') AS requestor_label,
+
+            session_info.session_id AS session_id
+          FROM
+            `{target_project}`.`{region}`.{jobs_target_view}
+          WHERE
+            job_type = 'QUERY'
+            AND state = 'DONE'
+            AND error_result IS NULL
+            AND (cache_hit IS FALSE OR cache_hit IS NULL)
+            AND parent_job_id IS NULL
+            AND creation_time >= @start_time_period AND creation_time < @end_time_period
+            {focus_clause}
+        ),
+
+        workload_grouped AS (
+          SELECT
+            COALESCE(
+              dbt_label,
+              airflow_label,
+              dataform_label,
+              IF(STARTS_WITH(job_id, 'scheduled_query_'), 'Scheduled Query Pipeline', NULL),
+              IF(bi_label IS NOT NULL, CONCAT('BI (', bi_label, ')'), NULL),
+              IF(requestor_label = 'connected_sheets', 'Connected Sheets User', NULL),
+              IF(requestor_label = 'looker_studio', 'Looker Studio Dashboard', NULL),
+              user_email,
+              'Unattributed'
+            ) AS workload_name,
+
+            COALESCE(
+              IF(dbt_label IS NOT NULL, 'dbt Pipeline', NULL),
+              IF(airflow_label IS NOT NULL, 'Airflow DAG', NULL),
+              IF(dataform_label IS NOT NULL, 'Dataform Pipeline', NULL),
+              IF(STARTS_WITH(job_id, 'scheduled_query_'), 'Scheduled Query', NULL),
+              IF(bi_label IS NOT NULL OR requestor_label IN ('connected_sheets', 'looker_studio'), 'BI Dashboard Connection', NULL),
+              IF(user_email LIKE '%.gserviceaccount.com', 'Service Account Workload', 'Human Ad-hoc')
+            ) AS workload_type,
+
+            project_id,
+
+            COUNT(1) AS total_job_runs,
+            -- IFNULL, not a bare SUM: total_slot_ms is NULL for jobs that never
+            -- reserved slots (metadata-only queries, script parents whose slots
+            -- are attributed to child jobs). A workload made up entirely of
+            -- those would otherwise emit NULL into a required response field.
+            ROUND(IFNULL(SUM(total_slot_ms), 0) / 3600000.0, 2) AS total_slot_hours,
+            ROUND(SAFE_DIVIDE(AVG(execution_ms), 60000.0), 1) AS avg_duration_minutes,
+
+            -- Share of runs carrying real lineage provenance — drives HIGH/LOW confidence.
+            SAFE_DIVIDE(COUNTIF(dbt_label IS NOT NULL OR airflow_label IS NOT NULL OR dataform_label IS NOT NULL OR bi_label IS NOT NULL OR requestor_label IS NOT NULL OR STARTS_WITH(job_id, 'scheduled_query_')), COUNT(1)) AS label_provenance_ratio,
+
+            ROUND(COUNTIF(priority = 'INTERACTIVE') / COUNT(1) * 100.0, 1) AS pct_interactive,
+            ROUND(COUNTIF(priority = 'BATCH') / COUNT(1) * 100.0, 1) AS pct_batch,
+            ROUND(COUNTIF(reservation_id IS NULL) / COUNT(1) * 100.0, 1) AS pct_on_demand,
+
+            -- Only count queue lag a human actually waited on; service-account
+            -- pipelines are supposed to queue.
+            SUM(IF(priority = 'BATCH' AND (bi_label IS NOT NULL OR requestor_label IN ('connected_sheets', 'looker_studio') OR user_email NOT LIKE '%.gserviceaccount.com'), COALESCE(queue_delay_seconds, 0), 0)) AS total_human_wait_seconds,
+
+            APPROX_QUANTILES(IF(priority = 'BATCH', queue_delay_seconds, NULL), 100)[SAFE_OFFSET(95)] AS p95_batch_queue_delay_seconds,
+            APPROX_QUANTILES(IF(priority = 'INTERACTIVE', job_slots, NULL), 100)[SAFE_OFFSET(50)] AS p50_interactive_job_slots,
+            APPROX_QUANTILES(IF(priority = 'INTERACTIVE', total_slot_ms, NULL), 100)[SAFE_OFFSET(50)] AS p50_interactive_slot_ms,
+
+            ARRAY_AGG(DISTINCT statement_type IGNORE NULLS) AS statement_types,
+            LOGICAL_OR(user_email LIKE '%.gserviceaccount.com') AS has_service_account,
+            LOGICAL_OR(session_id IS NOT NULL) AS has_interactive_session,
+
+            ANY_VALUE(job_id) AS sample_job_id
+          FROM
+            raw_jobs
+          GROUP BY
+            1, 2, 3
+        ),
+
+        workload_flags AS (
+          SELECT
+            *,
+            -- Flag 1: Labeled pipeline running interactive (dbt, Airflow, Dataform, Scheduled Query)
+            (pct_interactive > 5.0 AND workload_type IN ('dbt Pipeline', 'Airflow DAG', 'Dataform Pipeline', 'Scheduled Query')) AS flag_pipeline_interactive,
+            -- Flag 2: Heavy DML SA (>= 10 slots, >= 10min slot-ms, mutation statements)
+            (pct_interactive > 5.0 AND has_service_account AND p50_interactive_slot_ms >= 600000 AND p50_interactive_job_slots >= 10.0 AND EXISTS(SELECT 1 FROM UNNEST(statement_types) s WHERE s IN ('MERGE', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE_TABLE', 'CREATE_TABLE_AS_SELECT'))) AS flag_heavy_dml_interactive,
+            -- Flag 3: Any SA running majority-interactive with meaningful slot-hours (catch unlabeled pipelines)
+            (pct_interactive > 50.0 AND has_service_account AND total_slot_hours > 1.0 AND workload_type = 'Service Account Workload') AS flag_sa_interactive,
+            -- Flag 4: Human/BI workload stuck in batch queue
+            (pct_batch > 5.0 AND p95_batch_queue_delay_seconds > 30 AND (workload_type = 'BI Dashboard Connection' OR NOT has_service_account OR has_interactive_session)) AS flag_human_batch_queued
+          FROM
+            workload_grouped
+        ),
+
+        scored_workloads AS (
+          SELECT
+            workload_name,
+            workload_type,
+            project_id,
+            total_job_runs,
+            total_slot_hours,
+            avg_duration_minutes,
+            pct_interactive,
+            pct_batch,
+            pct_on_demand,
+            total_human_wait_seconds,
+            p95_batch_queue_delay_seconds,
+            p50_interactive_job_slots,
+            sample_job_id,
+
+            CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN 'UNDER_BATCHED'
+              WHEN flag_human_batch_queued THEN 'OVER_BATCHED'
+              ELSE 'OPTIMAL'
+            END AS finding_category,
+
+            CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN 'BATCH'
+              WHEN flag_human_batch_queued THEN 'INTERACTIVE'
+              ELSE IF(pct_interactive >= 50.0, 'INTERACTIVE', 'BATCH')
+            END AS recommended_priority,
+
+            CASE
+              WHEN label_provenance_ratio > 0.5 THEN 'HIGH'
+              ELSE 'LOW'
+            END AS confidence,
+
+            -- Dataform and Scheduled Queries expose no priority flag — guidance only.
+            CASE
+              WHEN workload_type IN ('Dataform Pipeline', 'Scheduled Query') THEN FALSE
+              ELSE TRUE
+            END AS has_remediation,
+
+            ARRAY(
+              SELECT tag FROM UNNEST([
+                IF(flag_pipeline_interactive, CONCAT('Automated pipeline running ', CAST(pct_interactive AS STRING), '% of queries in INTERACTIVE mode'), NULL),
+                IF(flag_heavy_dml_interactive, CONCAT('Heavy DML transformation (p50: ', CAST(ROUND(p50_interactive_job_slots, 1) AS STRING), ' slots, ', CAST(ROUND(p50_interactive_slot_ms / 60000.0, 1) AS STRING), ' slot-min) running ', CAST(pct_interactive AS STRING), '% in INTERACTIVE mode'), NULL),
+                IF(flag_sa_interactive AND NOT flag_pipeline_interactive AND NOT flag_heavy_dml_interactive, CONCAT('Service account running ', CAST(pct_interactive AS STRING), '% interactive (', CAST(ROUND(total_slot_hours, 1) AS STRING), ' slot-hrs)'), NULL),
+                -- Plain "over 30s" rather than ">30s": the client HTML-escapes API
+                -- strings globally and again at the render sink, so a literal '>'
+                -- would surface to the user as "&gt;".
+                IF(flag_human_batch_queued, CONCAT('Human/BI workload facing over 30s BATCH queue delay (p95: ', CAST(p95_batch_queue_delay_seconds AS STRING), 's)'), NULL)
+              ]) AS tag WHERE tag IS NOT NULL
+            ) AS detection_reasons,
+
+            IFNULL(CASE
+              WHEN flag_pipeline_interactive OR flag_heavy_dml_interactive OR flag_sa_interactive THEN ROUND(total_slot_hours * (pct_interactive / 100.0), 2)
+              WHEN flag_human_batch_queued THEN ROUND(total_human_wait_seconds / 3600.0, 2)
+              ELSE 0.0
+            END, 0.0) AS impact_score
+
+          FROM workload_flags
+        )
+
         SELECT
-          job_id,
-          user_email,
+          workload_name,
+          workload_type,
           project_id,
-          total_slot_ms,
-          TIMESTAMP_DIFF(end_time, start_time, MINUTE) AS duration_minutes,
-          CASE 
-            WHEN user_email LIKE '%.gserviceaccount.com' THEN 'Service Account'
-            WHEN TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5 THEN 'Long-Running ETL'
-            WHEN EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23 THEN 'Off-Peak Hours (US)'
-            ELSE 'Other'
-          END AS batch_candidate_reason
-        FROM
-          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
-        WHERE
-          job_type = 'QUERY'
-          AND priority = 'INTERACTIVE'
-          AND total_slot_ms > 10000
-          AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
-          AND (
-            user_email LIKE '%.gserviceaccount.com'
-            OR TIMESTAMP_DIFF(end_time, start_time, MINUTE) > 5
-            OR EXTRACT(HOUR FROM creation_time AT TIME ZONE "UTC") NOT BETWEEN 13 AND 23
-          )
-          {focus_clause}
-        ORDER BY
-          total_slot_ms DESC
+          total_job_runs,
+          total_slot_hours,
+          avg_duration_minutes,
+          pct_interactive,
+          pct_batch,
+          pct_on_demand,
+          total_human_wait_seconds,
+          p95_batch_queue_delay_seconds AS p95_queue_delay_seconds,
+          sample_job_id,
+          finding_category,
+          recommended_priority,
+          confidence,
+          has_remediation,
+          detection_reasons,
+          impact_score
+        FROM scored_workloads
+        WHERE ARRAY_LENGTH(detection_reasons) > 0
+        ORDER BY impact_score DESC
         LIMIT {params.limit_per_project}
         """
-        
 
-        results = run_query_and_log(scoped_client, sql, "Batch Candidates", params=params, query_parameters=focus_params)
-        
+        results = run_query_and_log(
+            scoped_client, sql, "Batch Candidates", params=params,
+            query_parameters=time_period_query_params(params) + focus_params,
+        )
+
         output = []
         for row in results:
             output.append(BatchCandidateResult(
+                workload_name=row.workload_name,
+                workload_type=row.workload_type,
                 project_id=row.project_id,
-                job_id=row.job_id,
-                user_email=row.user_email,
-                duration_minutes=row.duration_minutes or 0.0,
-                total_slot_ms=row.total_slot_ms or 0,
-                batch_candidate_reason=row.batch_candidate_reason or 'Other'
+                total_job_runs=row.total_job_runs,
+                total_slot_hours=row.total_slot_hours or 0.0,
+                avg_duration_minutes=row.avg_duration_minutes or 0.0,
+                pct_interactive=row.pct_interactive or 0.0,
+                pct_batch=row.pct_batch or 0.0,
+                pct_on_demand=row.pct_on_demand or 0.0,
+                total_human_wait_seconds=row.total_human_wait_seconds or 0.0,
+                p95_queue_delay_seconds=row.p95_queue_delay_seconds or 0,
+                sample_job_id=row.sample_job_id or '',
+                finding_category=row.finding_category,
+                recommended_priority=row.recommended_priority,
+                confidence=row.confidence,
+                has_remediation=bool(row.has_remediation),
+                detection_reasons=list(row.detection_reasons) if row.detection_reasons else [],
+                impact_score=row.impact_score or 0.0
             ))
         log_endpoint_end("Batch Candidates Analysis", t0, _logger=logger)
         return output
-        
+
     except Exception as e:
         handle_endpoint_exception(e, "Batch candidates analysis")
 
@@ -1617,16 +1986,16 @@ class AIParams(FocusMixin):
         description="composite | cumulative_cost | execution_frequency | memory_spill | slot_ms"
     )
 
-# Output safety guard: allow SELECT/WITH and CTAS/CVAS rewrites from Gemini [R3/R-security]
-# CTAS pattern: CREATE [OR REPLACE] TABLE|VIEW ... AS SELECT — common in scheduled queries.
+# Output safety guard: allow SELECT/WITH, DML (INSERT/UPDATE/DELETE/MERGE), and CTAS/CVAS rewrites from Gemini [R3/R-security]
 ALLOWED_QUERY_PREFIX_RE = re.compile(
-    r"^\s*(?:WITH|SELECT|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE)\b)",
+    r"^\s*(?:WITH|SELECT|INSERT(?:\s+INTO)?|UPDATE|DELETE(?:\s+FROM)?|MERGE(?:\s+INTO)?|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE|MATERIALIZED\s+VIEW)\b)",
     re.IGNORECASE,
 )
 
 class AIResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     total_slot_ms: int
     query: str
     optimized_query: Optional[str] = None
@@ -1634,7 +2003,7 @@ class AIResult(BaseModel):
     gemini_optimization_advice: str
     tables_referenced_count: int
     tables_found_count: int
-    # F-L5: Removed dry_run_validated, bytes_scanned_optimized,
+    # Removed dry_run_validated, bytes_scanned_optimized,
     # estimated_savings_pct, and is_external_table_query — backend never
     # populates them and frontend never reads them. Keeping zero defaults
     # in the public response risks silent "0%" in a future UI column.
@@ -1813,6 +2182,9 @@ def analyze_ai_query(params: AIParams):
                 expensive_queries.append({
                     "job_id": w["job_id"],
                     "user_email": w.get("user_email") or 'unknown',
+                    # Carried through to AIResult so the UI can build a Console
+                    # deep-link to the project that actually ran the job.
+                    "project_id": pid,
                     "total_slot_ms": r.total_slot_ms or 0,
                     "query": query_text,
                     "total_bytes_billed": r.total_bytes_billed or 0,
@@ -2041,6 +2413,7 @@ def analyze_ai_query(params: AIParams):
             audits_to_run.append({
                 "job_id": item["job_id"],
                 "user_email": item["user_email"],
+                "project_id": item.get("project_id"),
                 "total_slot_ms": item["total_slot_ms"],
                 "query": raw_sql,
                 "total_bytes_billed": item["total_bytes_billed"],
@@ -2069,6 +2442,21 @@ def analyze_ai_query(params: AIParams):
             for idx, audit in enumerate(chunk):
                 param_suffix = f"c{chunk_idx}_a{idx}"
                 
+                # thinking_level is deliberately MINIMAL, not MEDIUM.
+                #
+                # The AI Doctor fans out one AI.GENERATE call per candidate
+                # query and the whole batch runs inside a single BigQuery job,
+                # so reasoning tokens multiply by the chunk size and count
+                # against both max_output_tokens and the job's wall-clock
+                # budget. MEDIUM measurably increased timeouts on large
+                # chunks for a marginal gain in advice quality, since the
+                # prompt already supplies the DDL and the anti-pattern
+                # taxonomy rather than asking the model to derive them.
+                #
+                # If advice quality regresses, raise this back to MEDIUM and
+                # lower chunk_size above to compensate — do not raise it alone.
+                # Note that valid values are model-dependent; an unsupported
+                # level fails at query time, not at startup.
                 subqueries.append(f"""
                 SELECT
                   @job_id_{param_suffix} AS job_id,
@@ -2080,7 +2468,7 @@ def analyze_ai_query(params: AIParams):
                   AI.GENERATE(
                     @prompt_{param_suffix},
                     endpoint => '{endpoint_url}',
-                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 8192, "thinking_config": {{"thinking_level": "MEDIUM"}}}}, "safety_settings": [{{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}}]}}' 
+                    model_params => JSON '{{"generation_config": {{"temperature": 0.1, "max_output_tokens": 8192, "thinking_config": {{"thinking_level": "MINIMAL"}}}}, "safety_settings": [{{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"}}, {{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}}]}}' 
                   ) AS ai_struct
                 """)
                 
@@ -2211,6 +2599,7 @@ def analyze_ai_query(params: AIParams):
                         t_params = TranslationParams(
                             query=row.query or '',
                             project_id=target_project,
+                            location=params.region.replace("region-", ""),
                             auto_opt_in_yaml=True,
                             dry_run_compare=True,
                         )
@@ -2250,10 +2639,24 @@ def analyze_ai_query(params: AIParams):
                     except Exception as mig_err:
                         logger.warning(f"Migration API integration skipped for Job {row.job_id}: {mig_err}")
 
+                    # Echo suppression: both the model and the Migration API
+                    # sometimes hand back the input verbatim. Rendering that as
+                    # an "Optimized SQL" column implies a rewrite that isn't
+                    # there, so drop it and leave the cell empty instead.
+                    if optimized_query and optimized_query.strip() == (row.query or '').strip():
+                        logger.info(f"Optimized SQL for Job {row.job_id} is identical to the original — suppressing echo")
+                        optimized_query = None
+                        # The Migration API config demonstrably changed nothing,
+                        # so advertising "config applied" would overstate it.
+                        migration_applied_yaml = None
+
                     logger.info(f"AI Doctor advice generated for Job {row.job_id}")
                     output.append(AIResult(
                         job_id=str(row.job_id),
                         user_email=str(row.user_email),
+                        # From the audit dict, not `row` — the AI.GENERATE
+                        # subquery only selects the columns it needs.
+                        project_id=audit.get("project_id"),
                         total_slot_ms=int(row.total_slot_ms or 0),
                         query=str(row.query or ''),
                         optimized_query=optimized_query,
@@ -2323,6 +2726,7 @@ class BIParams(FocusMixin):
 class BIResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     processed_gb: float
     billed_gb: float
     estimated_dollars_saved: float
@@ -2341,9 +2745,10 @@ def analyze_bi_engine(params: BIParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           total_bytes_processed / POW(1024, 3) AS processed_gb,
           total_bytes_billed / POW(1024, 3) AS billed_gb,
-          ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * 6.25 AS estimated_dollars_saved,
+          ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * {ON_DEMAND_USD_PER_TB} AS estimated_dollars_saved,
           bi_engine_statistics.bi_engine_mode,
           ARRAY_TO_STRING(
             ARRAY(SELECT code FROM UNNEST(bi_engine_statistics.bi_engine_reasons)), ', '
@@ -2367,6 +2772,7 @@ def analyze_bi_engine(params: BIParams):
             output.append(BIResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 processed_gb=row.processed_gb or 0.0,
                 billed_gb=row.billed_gb or 0.0,
                 estimated_dollars_saved=row.estimated_dollars_saved or 0.0,
@@ -2551,7 +2957,7 @@ def analyze_governance(params: GovernanceParams):
 
                     logger.info("Executing bulk missing partition filters audit via INFORMATION_SCHEMA...")
                     try:
-                        results = run_query_and_log(scoped_client, audit_sql, "Missing Partition Filters Audit", params=params, query_parameters=focus_params)
+                        results = run_query_and_log(scoped_client, audit_sql, "Missing Partition Filters Audit", params=params)
                         for row in results:
                             filter_issues.append(PartitionFilterResult(
                                 project_id=row.p,
@@ -2579,6 +2985,10 @@ def analyze_governance(params: GovernanceParams):
 class MVResult(BaseModel):
     job_id: str
     user_email: str
+    # The project the job ran in. JOBS_BY_ORGANIZATION spans the whole org, so
+    # without this the UI can only guess at the Console deep-link project and
+    # every cross-project link 404s.
+    project_id: Optional[str] = None
     mv_name: str
     chosen: bool
     rejected_reason: str
@@ -2595,6 +3005,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           mv.table_reference.table_id AS mv_name,
           mv.chosen,
           mv.rejected_reason
@@ -2615,6 +3026,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
             output.append(MVResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 mv_name=row.mv_name,
                 chosen=row.chosen,
                 rejected_reason=row.rejected_reason or ''
@@ -2628,6 +3040,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
 class WarningResult(BaseModel):
     job_id: str
     user_email: str
+    project_id: Optional[str] = None  # Console deep-link target — see MVResult.
     resource_warning: str
 
 @app.post("/api/resource_warnings/analyze", response_model=List[WarningResult])
@@ -2642,6 +3055,7 @@ def analyze_resource_warnings(params: JobGovernanceParams):
         SELECT
           job_id,
           user_email,
+          project_id,
           query_info.resource_warning
         FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
@@ -2659,6 +3073,7 @@ def analyze_resource_warnings(params: JobGovernanceParams):
             output.append(WarningResult(
                 job_id=row.job_id,
                 user_email=row.user_email,
+                project_id=row.project_id,
                 resource_warning=row.resource_warning or ''
             ))
         log_endpoint_end("Resource Warnings", t0, _logger=logger)
@@ -3042,7 +3457,7 @@ class SlotSimulationParams(OrgParams):
     timezone: str = "America/New_York"
     max_baseline: int = Field(default=10000, ge=50, le=100000)
     step_size: int = Field(default=50, gt=0)
-    payg_price: float = 0.06
+    payg_price: float = EDITIONS_SLOT_HR_RATE
     commit_1yr_price: float = 0.048
     commit_3yr_price: float = 0.036
     max_bytes_billed_gb: Optional[int] = None
@@ -3130,7 +3545,7 @@ def simulate_slots(params: SlotSimulationParams):
                 "utilization_pct": round(utilization_pct * 100, 2),
                 "idle_slot_hours": round(idle_slot_hours_mo, 0),
                 "autoscale_slot_hours": round(autoscale_slot_hours_mo, 0),
-                "autoscale_slot_months": round(autoscale_slot_months, 0),
+                "autoscale_slot_months": round(autoscale_slot_months, 1),
                 "cost_autoscale_payg": round(autoscale_cost_payg, 2),
                 "cost_base_payg": round(baseline_cost_payg, 2),
                 "cost_base_1yr": round(baseline_cost_1yr, 2),
@@ -3199,7 +3614,7 @@ class FluidSimParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
-    edition_slot_hr_rate: float = Field(default=0.06, gt=0)
+    edition_slot_hr_rate: float = Field(default=EDITIONS_SLOT_HR_RATE, gt=0)
     cooldown_window: int = Field(default=60, ge=1, le=300)
     max_bytes_billed_gb: Optional[int] = None
 
@@ -3401,7 +3816,6 @@ WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @lookback_day
   AND end_time > start_time
   AND total_slot_ms > 0
   AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
-  {focus_clause}
 ORDER BY total_slot_ms DESC
 LIMIT 500000
 """
@@ -3424,7 +3838,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
     t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
-        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=params.region, focus_clause="")
+        sql = _render_sql_local(_SQL_JOBS, org_project=org_project, region=params.region)
         all_params = [
             bigquery.ScalarQueryParameter("lookback_days", "INT64", params.lookback_days),
             bigquery.ScalarQueryParameter("cooldown_window", "INT64", params.cooldown_window),
@@ -3558,20 +3972,8 @@ def simulate_fluid_scaling(params: FluidSimParams):
             patterns=patterns,
         )
 
-    except gax_exc.Forbidden:
-        logger.exception("Permission denied running fluid simulation")
-        raise HTTPException(403, "Insufficient permissions for JOBS_BY_ORGANIZATION")
-    except gax_exc.NotFound:
-        logger.exception("Project or region not found")
-        raise HTTPException(404, "Project or region not found")
-    except gax_exc.GoogleAPIError:
-        logger.exception("BigQuery error running fluid simulation")
-        raise HTTPException(500, "Query failed; check server logs")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error in fluid simulation")
-        raise HTTPException(500, "Internal server error")
+    except Exception as e:
+        handle_endpoint_exception(e, "Fluid simulation")
 
 
 class SlotActualParams(OrgParams):
@@ -3616,6 +4018,11 @@ def get_actual_provisioning(params: SlotActualParams):
     reject_dummy_project(target_project)
 
     # Base CTEs for both queries
+    # TODO(v1.5): Refactor to use @parameter bindings instead of f-string
+    # interpolation for edition, start_str, and end_str.  Currently safe
+    # because edition is validated against _ALLOWED_EDITIONS and timestamps
+    # come from datetime.strftime, but every other endpoint uses parameterised
+    # queries and this inconsistency is a maintenance hazard.
     base_ctes = f"""
 WITH
   autoscale_slot_data AS (
@@ -4136,8 +4543,8 @@ class UserProfilerParams(FocusMixin):
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
     admin_project_id: Optional[str] = None
-    od_price: float = 6.25
-    ed_price: float = 0.06
+    od_price: float = ON_DEMAND_USD_PER_TB
+    ed_price: float = EDITIONS_SLOT_HR_RATE
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/users/top_spenders")
@@ -4151,23 +4558,60 @@ def get_top_spenders(params: UserProfilerParams):
     target_project = _safe_ident(admin_project_raw, "admin_project_id")
     reject_dummy_project(target_project)
     
+    od_price = float(params.od_price)
+    ed_price = float(params.ed_price)
+
     sql = f"""
     SELECT
       user_email,
       COUNT(*) AS query_count,
+      COUNTIF(reservation_id IS NOT NULL) AS reservation_query_count,
+      COUNTIF(reservation_id IS NULL) AS od_query_count,
       SUM(total_bytes_billed) AS total_bytes_billed,
-      SUM(total_slot_ms) / (1000 * 60 * 60) AS total_slot_hours
+      SUM(IF(reservation_id IS NULL, total_bytes_billed, 0)) AS od_bytes_billed,
+      -- For hypothetical on-demand cost: use total_bytes_billed for OD queries, and total_bytes_processed for reservation queries
+      SUM(IF(reservation_id IS NULL, total_bytes_billed, total_bytes_processed)) AS hypothetical_od_bytes,
+      SUM(total_slot_ms) / (1000 * 60 * 60) AS total_slot_hours,
+      SUM(IF(reservation_id IS NOT NULL, total_slot_ms, 0)) / (1000 * 60 * 60) AS reservation_slot_hours,
+      SUM(IF(reservation_id IS NULL, total_slot_ms, 0)) / (1000 * 60 * 60) AS od_slot_hours,
+      -- ── Waste: failed / cancelled work that still consumed capacity ──
+      COUNTIF(error_result.reason IS NOT NULL) AS failed_query_count,
+      SUM(IF(error_result.reason IS NOT NULL, total_slot_ms, 0)) / 3600000 AS failed_slot_hours,
+      SUM(IF(error_result.reason IS NOT NULL AND reservation_id IS NOT NULL, total_slot_ms, 0)) / 3600000
+        AS failed_res_slot_hours,
+      SUM(IF(error_result.reason IS NOT NULL AND reservation_id IS NULL, total_bytes_billed, 0))
+        AS failed_od_bytes_billed,
+      -- ── Waste: on-demand 10 MiB minimum-billing floor + per-MB rounding (successful queries only) ──
+      COUNTIF(reservation_id IS NULL AND error_result.reason IS NULL AND IFNULL(total_bytes_processed, 0) < 10 * 1024 * 1024)
+        AS sub_min_query_count,
+      SUM(IF(reservation_id IS NULL AND error_result.reason IS NULL,
+             GREATEST(0, IFNULL(total_bytes_billed, 0) - IFNULL(total_bytes_processed, 0)),
+             0)) AS min_billing_overage_bytes,
+      -- ── Diagnostic (not dollarized) ──
+      COUNTIF(cache_hit) AS cache_hit_count,
+      -- Precomputed sort key in SELECT (avoids aggregation-of-aggregations in ORDER BY)
+      (((SUM(IF(reservation_id IS NULL, total_bytes_billed, 0)) / 1099511627776) * {od_price}) +
+       ((SUM(IF(reservation_id IS NOT NULL, total_slot_ms, 0)) / 3600000) * {ed_price})) AS actual_cost_sort_key,
+      -- Frequency-ranked top reservations
+      APPROX_TOP_COUNT(
+        IF(
+          reservation_id IS NOT NULL,
+          ARRAY_REVERSE(SPLIT(REPLACE(reservation_id, ".", ":"), ":"))[SAFE_OFFSET(0)],
+          NULL
+        ),
+        4
+      ) AS primary_reservations
     FROM
       `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
     WHERE
       creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
-      AND parent_job_id IS NULL
+      AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
       {focus_clause}
     GROUP BY
       user_email
     ORDER BY
-      total_slot_hours DESC
+      actual_cost_sort_key DESC
     LIMIT 50
     """
     
@@ -4176,22 +4620,94 @@ def get_top_spenders(params: UserProfilerParams):
         
         user_records = []
         for row in results:
+            query_count = row['query_count'] or 0
+            res_query_count = row['reservation_query_count'] or 0
+            od_query_count = row['od_query_count'] or 0
+            res_pct = round((res_query_count / query_count * 100.0), 1) if query_count > 0 else 0.0
+
             bytes_billed = row['total_bytes_billed'] or 0
-            slot_hours = row['total_slot_hours'] or 0.0
+            od_bytes = row['od_bytes_billed'] or 0
+            hypothetical_od_bytes = row['hypothetical_od_bytes'] or 0
             
-            # Calculate costs
-            est_od_cost = (bytes_billed / (1024**4)) * params.od_price
-            est_ed_cost = slot_hours * params.ed_price
+            total_slot_hours = row['total_slot_hours'] or 0.0
+            res_slot_hours = row['reservation_slot_hours'] or 0.0
+            od_slot_hours = row['od_slot_hours'] or 0.0
+            
+            # Estimated costs (hypothetical 100% on-demand vs 100% editions)
+            est_od_cost = (hypothetical_od_bytes / (1024**4)) * params.od_price
+            est_ed_cost = total_slot_hours * params.ed_price
+
+            # Actual costs (based on real query execution mode)
+            actual_od_cost = (od_bytes / (1024**4)) * params.od_price
+            actual_ed_cost = res_slot_hours * params.ed_price
+            total_actual_cost = actual_od_cost + actual_ed_cost
+
+            # ── Waste components ──
+            failed_query_count = row['failed_query_count'] or 0
+            failed_slot_hours = row['failed_slot_hours'] or 0.0
+            failed_res_slot_hours = row['failed_res_slot_hours'] or 0.0
+            failed_od_bytes = row['failed_od_bytes_billed'] or 0
+            sub_min_query_count = row['sub_min_query_count'] or 0
+            min_billing_overage_bytes = row['min_billing_overage_bytes'] or 0
+            cache_hit_count = row['cache_hit_count'] or 0
+
+            failed_cost = (failed_res_slot_hours * params.ed_price) \
+                        + (failed_od_bytes / (1024**4)) * params.od_price
+            min_billing_cost = (min_billing_overage_bytes / (1024**4)) * params.od_price
+            total_waste_cost = failed_cost + min_billing_cost
+
+            # Waste is a subset of actual spend -> clamp defensively against float drift
+            waste_pct = min(100.0, (total_waste_cost / total_actual_cost * 100.0)) \
+                        if total_actual_cost > 0 else 0.0
+            failure_rate = (failed_query_count / query_count * 100.0) if query_count else 0.0
+            cache_hit_rate = (cache_hit_count / query_count * 100.0) if query_count else 0.0
+
+            # Extract frequency-ranked top reservations
+            raw_reservations = row.get('primary_reservations') or []
+            primary_reservations = []
+            for r in raw_reservations:
+                if not r:
+                    continue
+                val = r.get('value') if isinstance(r, dict) else getattr(r, 'value', None)
+                if val:
+                    primary_reservations.append(str(val))
+                elif isinstance(r, str):
+                    primary_reservations.append(r)
+            primary_reservations = primary_reservations[:3]
             
             user_records.append({
                 "user_email": row['user_email'],
-                "query_count": row['query_count'],
+                "query_count": query_count,
+                "reservation_query_count": res_query_count,
+                "od_query_count": od_query_count,
+                "reservation_pct": res_pct,
                 "total_bytes_billed": bytes_billed,
-                "total_slot_hours": round(slot_hours, 2),
+                "od_bytes_billed": od_bytes,
+                "hypothetical_od_bytes": hypothetical_od_bytes,
+                "total_slot_hours": round(total_slot_hours, 2),
+                "reservation_slot_hours": round(res_slot_hours, 2),
+                "od_slot_hours": round(od_slot_hours, 2),
                 "est_on_demand_cost": round(est_od_cost, 2),
-                "est_editions_cost": round(est_ed_cost, 2)
+                "est_editions_cost": round(est_ed_cost, 2),
+                "actual_od_cost": round(actual_od_cost, 2),
+                "actual_ed_cost": round(actual_ed_cost, 2),
+                "total_actual_cost": round(total_actual_cost, 2),
+                "failed_query_count": failed_query_count,
+                "failed_slot_hours": round(failed_slot_hours, 2),
+                "failure_rate": round(failure_rate, 1),
+                "failed_cost": round(failed_cost, 2),
+                "sub_min_query_count": sub_min_query_count,
+                "min_billing_overage_bytes": min_billing_overage_bytes,
+                "min_billing_cost": round(min_billing_cost, 2),
+                "total_waste_cost": round(total_waste_cost, 2),
+                "waste_pct": round(waste_pct, 1),
+                "cache_hit_rate": round(cache_hit_rate, 1),
+                "primary_reservations": primary_reservations
             })
             
+        # Defensive sort to guarantee actual-cost ordering
+        user_records.sort(key=lambda r: r["total_actual_cost"], reverse=True)
+
         log_endpoint_end("Top Spenders", t0, _logger=logger)
         return user_records
         

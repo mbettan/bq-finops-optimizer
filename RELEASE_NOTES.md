@@ -6,6 +6,85 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 7, 2026 — v1.4.0
+
+**Feature (Top Spenders: Actual Billing Mode, Waste & Potential Savings Engine)**
+The **Top Spenders** profiler has been upgraded from hypothetical cost projections into an actionable, actual spend attribution and waste detection engine:
+- **Billing Mode Classification:** Queries are partitioned by their true execution mode using `reservation_id IS NOT NULL` (assigned slot reservation) vs. `reservation_id IS NULL` (multi-tenant on-demand). Spenders receive color-coded badges: **Reservation** ($\ge 80\%$), **On-Demand** ($\le 20\%$), or **Mixed** (displaying exact percentage and query count breakdown).
+- **Waste & Non-Productive Spend Detection:** Introduces exact dollarized waste tracking for capacity consumed with zero output — failed/cancelled query slot-hours & on-demand bytes plus the 10 MiB minimum-billing floor overage. Waste is bounded as a strict subset of actual spend ($W \le A$).
+- **Frequency-Ranked Primary Reservations:** Utilizes `APPROX_TOP_COUNT` to extract and rank primary reservation names, surfaced via rich tooltips on the billing mode badge.
+- **Actual Cost Attribution:** Computes true dollar spend by combining actual on-demand billed bytes (`total_bytes_billed` for OD jobs) and active slot duration (`total_slot_ms` for reservation jobs) without cross-contamination.
+- **Actionable Potential Savings:** Evaluates `actual_cost - min(est_on_demand, est_editions)` to highlight high-ROI optimization candidates (such as heavy on-demand pipelines that belong on a reservation). When a user is already operating on the optimal pricing model, savings cleanly display as zero/dash (`—`).
+- **Hypothetical Cost Accuracy (`hypothetical_od_bytes`):** Uses logical bytes scanned (`total_bytes_processed`) for reservation queries (which record `total_bytes_billed = 0`), preventing false-positive recommendations that previously suggested 100% reservation workloads could run for "$0" on-demand.
+- **Multi-Statement Script Attribution:** Filters on `(statement_type != 'SCRIPT' OR statement_type IS NULL)` instead of `parent_job_id IS NULL`. This ensures child statements executed by orchestrators (Airflow/Cloud Composer, dbt, Stored Procedures) inherit their real `reservation_id` rather than being misattributed as on-demand by the parent script wrapper.
+- **Data Transparency Tooltips:** When processed data exceeds billed data (due to reservation queries billing 0 bytes), hovering over the **Total Data Billed** cell explains the exact breakdown used for hypothetical on-demand cost calculations.
+- **Executive KPIs & Sorting:** Refreshed KPI cards now track **Active Users Analyzed**, **Actual Total Spend**, **Wasted Spend**, **Potential Savings**, and **Total Slot Hours**, with default DataTables ordering pinned to **Actual Cost DESC**.
+
+**Feature (Interactive vs. Batch Priority Engine)**
+The Batch Candidates scan is now workload-centric rather than job-centric. Executions are aggregated into logical workloads using lineage labels (`dbt_model`, `airflow_dag_id`/`dag_id`, `dataform`, `looker`/`tableau`/`dashboard_id`, `requestor`), the `scheduled_query_` job-ID prefix, and service-account identity, then classified as **UNDER_BATCHED** (automated pipelines and heavy service-account DML burning the 100-query INTERACTIVE concurrency limit that live dashboards depend on) or **OVER_BATCHED** (human and BI connections stuck behind a >30s BATCH queue). BATCH and INTERACTIVE bill identically — same hardware, same slot-hour and per-byte pricing — so every finding is a pure concurrency win, not a cost trade-off.
+
+Each row carries its detection reasons, a HIGH/LOW confidence grade derived from label provenance, and a copy-pasteable remediation snippet for the detected tooling: dbt `profiles.yml`, Airflow `BigQueryInsertJobOperator`, or the Python SDK / `bq` CLI. Dataform and Scheduled Queries expose no priority flag, so those rows show migration guidance instead of a snippet.
+
+The scan probes `JOBS_BY_ORGANIZATION` with a dry run and transparently falls back to `JOBS_BY_PROJECT` when org-level IAM is unavailable. Cache hits, script child jobs, and failed jobs are excluded so a workload's run count reflects real executions, and the lookback window is bound as `@start_time_period` / `@end_time_period` query parameters instead of being interpolated into the SQL text.
+
+**Feature (Universal CSV Export)**
+Every results table across the application now carries a **Download CSV** button, injected automatically at page load and after any table that renders dynamically. Exports the full DataTables result set matching the current search and filter state — not just the visible page — with a UTF-8 BOM for Excel, HTML entity decoding, and RFC 4180 quote escaping. Cell text is read from the rendered DOM, so badges, formatted byte sizes, and currency cells export exactly as displayed.
+
+**Feature (BigQuery Console Deep-Links)**
+Job IDs render in monospace with hover- and focus-revealed actions to copy the ID or open the job directly in the BigQuery Console. Dataset and table names link to their Console explorer pages. `MVResult`, `WarningResult`, `BIResult`, and `AIResult` now carry `project_id` — `JOBS_BY_ORGANIZATION` spans the whole organization, so without it every cross-project deep-link resolved to the wrong project.
+
+**Feature (Notification Center)**
+A bell icon in the header archives every toast into a dropdown history with relative timestamps, an unread badge, and clear-all. Messages render via `textContent` so notification bodies carrying query text or user emails cannot inject markup.
+
+**Feature (Anti-Pattern Linter: Filtering & Aggregation)**
+New toolbar filters the SQL Wall of Shame by identity type (humans vs. service accounts), user, project, and anti-pattern type, with a one-click reset. A **Summary** view toggle swaps the per-job detail table for an aggregated roll-up grouped by (user, project, anti-pattern) showing query counts, cumulative data billed, and total estimated waste — turning a list of individual offences into a ranked list of owners.
+
+**Feature (Storage Hygiene: Time Travel TTL)**
+The hygiene auditor now surfaces each dataset's `default_time_travel_days` alongside its time-travel physical bytes, so the tables where lowering the window actually pays are visible without a second lookup. Values are read from `INFORMATION_SCHEMA.SCHEMATA_OPTIONS` in a single batched `UNION ALL` across up to 50 projects rather than one query per project.
+
+**Feature (Settings & Cost Attribution Guidance)**
+The Execution Project and Admin Project fields are now labelled by what they scope, with the exact IAM roles each one needs stated inline. Waste Rule, Central IT Project, Borrowing Rule, billing window, SKU rate, and Total Bill each gained tooltips explaining the financial trade-off rather than restating the field name. Cost attribution auto-populates its reservation list from the last Slots Optimizer run when the table is empty.
+
+**Change (DML Abuse Detection: Per-Table Attribution)**
+The DML abuse auditor now aggregates by destination table rather than by user alone, adding **Active Days** and **Avg Inserts / Day** columns so a steady pipeline is distinguishable from a one-day backfill. The default threshold drops from 1000 to 100: it applies per (destination table, user, project), and BigQuery caps a table at 1500 table-modifying operations per day, so 100/day against a single table already warrants the Storage Write API. Large counts render through a new `formatCompact()` helper with numeric `data-order` attributes preserved for sorting.
+
+**Fixed (AI Doctor: Echo Suppression)**
+When the optimizer returned SQL byte-identical to the input, the UI presented it as a rewrite. The backend now suppresses the echoed SQL and clears `migration_applied_yaml` with it — a config that demonstrably changed nothing should not advertise "Migration API Config Applied". The frontend repeats the test so snapshots captured before this fix behave identically, and the Migration filter pill and its KPI count both honour it.
+
+**Fixed (Snapshot Redaction: value-level email scrubbing)**
+Redacted snapshot exports previously decided what to scrub from the *key name* — anything matching `email`. The workload engine reports an operator under `workload_name` (the address is used as the workload identity when a query carries no lineage label), which that rule does not match, so those addresses would have survived a redacted export. Redaction now also scrubs any email-shaped value regardless of the key it sits under, in both object fields and string arrays. This strictly widens coverage; nothing previously redacted is now exported.
+
+**Fixed (Anti-Pattern Filter State)**
+Rebuilding the filter dropdowns after a new scan dropped stale values from the `<select>` without clearing them from the filter state, leaving a filter silently active — the table emptied while the dropdown read "All users". Selections are now retained only when still present in the new data, and the state is updated in lockstep.
+
+**Fixed (Storage Hygiene TTL Robustness)**
+`SAFE_CAST` replaces `CAST` on `option_value`, so one unparseable setting no longer aborts the union and blanks every other project's TTL. A single unreadable project triggers a per-project retry so partial access still yields partial data, and the 50-project cap logs exactly how many datasets fall back to the 7-day default instead of truncating silently.
+
+**Fixed (Accessibility & Input)**
+Job ID row actions used `opacity: 0`, which still accepts keyboard focus — tabbing through a results table landed on invisible buttons. They now toggle `visibility`, reveal on `:focus-within`, and stay pinned visible under `@media (hover: none)` so touch devices can reach them at all.
+
+**Performance (BigQuery Client Pooling & ADC Caching)**
+Replaced per-request client construction with a thread-safe, process-wide BigQuery client pool (`get_bq_client`) with LRU eviction and single-discovery Application Default Credentials (ADC) caching. Eliminates two metadata-server HTTP round-trips and TLS handshakes per API request on Cloud Run, and prevents ~1,000 metadata queries during HBO multi-project fan-outs. Pooled connections cleanly drain during application shutdown.
+
+**Fixed (Cost Attribution: Idle Reservation Reconciliation)**
+The cost attribution engine now iterates across all configured reservations as the primary loop. 100% idle reservations (zero query slot-hours) are accurately attributed as unallocated waste under Rule A/B instead of disappearing from reports, maintaining strict invoice reconciliation. Date range validation now parses explicit `datetime.date` objects to eliminate unpadded string comparison bugs.
+
+**Fixed (Top Spenders: Minimum Billing Waste Isolation)**
+Added `error_result.reason IS NULL` to minimum-billing overage calculations, ensuring failed queries are counted exclusively under `failed_cost` and never double-counted in minimum-billing floor waste.
+
+**Fixed (Migration Optimizer: Diagnostic Guards & Timeout Resilience)**
+Excluded SQL file literal nodes from diagnostic extraction and stripped comments prior to transformation matching, preventing false auto-opt-in rules. Constrained scalar subquery detection strictly to projection clauses and added Pass 1 timeout resilience with graceful fallback to Pass 2 translation.
+
+**Fixed (Anti-Pattern Linter: Predicate Pushdown & Determinism)**
+Pushed `REGEXP_CONTAINS(query, r'(?i)SELECT\s+\*\s+FROM')` and `ORDER BY total_bytes_billed DESC` directly into the BigQuery query, ensuring the top offending queries are returned rather than an arbitrary slice. Cleaned snippet truncation formatting.
+
+**Fixed (Pricing Consistency & Unit Alignment)**
+Centralized `ON_DEMAND_USD_PER_TB` and `EDITIONS_SLOT_HR_RATE` as process-wide sources of truth across all simulation modules and BI Engine queries. Aligned Active Assist byte conversions to decimal TB ($10^{12}$) matching the Google Cloud Recommender API format.
+
+**Fixed (HBO Status: Dynamic Limits & Truncation Signaling)**
+Parameterized the active project discovery query with configurable `limit` (up to 5,000) and surfaced a `truncated: bool` response indicator when active project count exceeds the configured ceiling. Removed unreachable fallback dead code.
+
+---
 
 ## July 28, 2026 — v1.3.0
 

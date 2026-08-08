@@ -348,8 +348,8 @@ class TestResponseSchemas:
         data = response.json()
         assert response.status_code == 200
         assert "total_optimized_jobs" in data
-        assert "total_saved_slot_hours" in data
-        assert "total_estimated_savings_usd" in data
+        assert "monthly_saved_slot_hours" in data
+        assert "monthly_estimated_savings_usd" in data
 
     def test_governance_has_expiration_and_filter_issues(self, mock_bq_all):
         response = client.post("/api/governance/analyze", json=_BASE)
@@ -367,3 +367,48 @@ class TestResponseSchemas:
         assert "patterns" in data
         assert "disclaimer" in data
         assert isinstance(data["disclaimer"], str)
+
+    def test_top_spenders_min_billing_overage_excludes_failed_queries(self):
+        from unittest.mock import patch
+        with patch("src.main.run_query_and_log") as mock_run:
+            mock_run.return_value = []
+            response = client.post("/api/users/top_spenders", json={
+                "org_project_id": "valid-proj",
+                "region": "region-us",
+                "lookback_days": 7,
+            })
+            assert response.status_code == 200
+            called_sql = mock_run.call_args[0][1]
+            assert "reservation_id IS NULL AND error_result.reason IS NULL" in called_sql
+
+    def test_linter_sql_pushdown_and_snippet_formatting(self):
+        from unittest.mock import patch, MagicMock
+        with patch("src.main.run_query_and_log") as mock_run:
+            mock_row = MagicMock()
+            mock_row.job_id = "job1"
+            mock_row.user_email = "user@example.com"
+            mock_row.query = "SELECT * FROM short_table"
+            mock_row.billed_gb = 150.0
+
+            # Mock discovery and linter scan
+            mock_run.side_effect = [
+                [MagicMock(project_id="test-proj")],  # discovery
+                [mock_row],                           # scan
+            ]
+            response = client.post("/api/antipatterns/linter", json={
+                "org_project_id": "valid-proj",
+                "region": "region-us",
+                "lookback_days": 7,
+                "limit_per_project": 50,
+            })
+            assert response.status_code == 200
+            linter_sql = mock_run.call_args_list[1][0][1]
+            assert "REGEXP_CONTAINS(query, r'(?i)SELECT\\s+\\*\\s+FROM')" in linter_sql
+            assert "ORDER BY total_bytes_billed DESC" in linter_sql
+
+            data = response.json()
+            assert len(data) == 1
+            # Short snippet should not have trailing ...
+            assert data[0]["query_snippet"] == "SELECT * FROM short_table"
+
+
