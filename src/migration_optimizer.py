@@ -205,6 +205,7 @@ def regex_table_refs(sql: str) -> set[str]:
 @dataclass
 class SchemaFetcher:
     project: str
+    location: str = "us"
     _client: Any = field(default=None, init=False, repr=False)
 
     @property
@@ -216,7 +217,7 @@ class SchemaFetcher:
     def dry_run_refs(self, sql: str) -> list[str]:
         from google.cloud import bigquery
         cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-        job = self.client.query(sql, job_config=cfg)
+        job = self.client.query(sql, job_config=cfg, location=self.location)
         return [f"{t.project}.{t.dataset_id}.{t.table_id}" for t in (job.referenced_tables or [])]
 
     def discover(self, sql: str) -> list[str]:
@@ -253,7 +254,7 @@ class SchemaFetcher:
                 bigquery.ArrayQueryParameter("names", "STRING", names)
             ])
             try:
-                rows = list(self.client.query(q, job_config=cfg).result())
+                rows = list(self.client.query(q, job_config=cfg, location=self.location).result())
                 for r in rows:
                     key = f"{proj}.{ds}.{r.table_name}"
                     seen[key] = (r.table_type or "", r.ddl or "")
@@ -586,7 +587,7 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
         ddl_parts = []
         if params.auto_ddl:
             try:
-                fetcher = SchemaFetcher(project)
+                fetcher = SchemaFetcher(project, location=params.location)
                 refs = fetcher.discover(query_sql)
                 if refs:
                     ddl_parts = fetcher.fetch_ddl(refs)
