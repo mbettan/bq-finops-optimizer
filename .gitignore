@@ -33,3 +33,7 @@ Thumbs.db
 # Docker
 *.tar
 
+# Local PRD drafts
+roadmap.md
+
+
