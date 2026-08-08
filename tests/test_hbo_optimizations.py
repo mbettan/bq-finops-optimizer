@@ -181,7 +181,7 @@ class TestEnrichFromProjects:
         # Track call order
         call_count = {"n": 0}
 
-        def client_side_effect(project=None):
+        def client_side_effect(project=None, *args, **kwargs):
             cm = MagicMock()
             if project == "proj-a":
                 # This one fails

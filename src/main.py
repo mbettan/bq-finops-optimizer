@@ -46,6 +46,7 @@ from .utils import (
     RequestIdFilter,
     run_query_with_retry_limit,
     run_query_and_log,
+    close_bq_clients,
 )
 from .migration_optimizer import (
     TranslationParams,
@@ -60,6 +61,7 @@ __version__ = "1.4.0"
 
 # Centralized on-demand pricing — single source of truth [R-pricing]
 ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))
+EDITIONS_SLOT_HR_RATE = float(os.environ.get("BQ_EDITIONS_SLOT_HR_RATE", "0.06"))
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -74,6 +76,7 @@ THREAD_POOL_CAPACITY = 100
 async def lifespan(app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_POOL_CAPACITY
     yield
+    close_bq_clients()
 
 
 app = FastAPI(
@@ -717,19 +720,21 @@ def fetch_active_assist_recommendations(params: StorageParams):
                         cluster_cols = [cols]
                 
                 # Estimate savings if not provided in primary_impact
-                # On-Demand: $6.25 per TB
+                # On-Demand: $6.25 per TB (decimal TB = 10**12 bytes to match bytesSavedMonthlyTb)
                 tb_saved = overview.get('bytesSavedMonthlyTb')
-                if not tb_saved:
+                if tb_saved is None:
                     b_saved = overview.get('bytesSavedMonthly') or 0.0
-                    tb_saved = float(b_saved) / (1024**4)
+                    tb_saved = float(b_saved) / (10**12)  # Decimal TB matching bytesSavedMonthlyTb
+                else:
+                    tb_saved = float(tb_saved)
                 
                 if tb_saved and savings == 0.0:
-                    savings = float(tb_saved) * 6.25
+                    savings = float(tb_saved) * ON_DEMAND_USD_PER_TB
                 
                 # Editions: $0.06 per slot-hour (1 hr = 3600000 ms)
                 slot_ms_saved = overview.get('slotMsSavedMonthly') or 0.0
                 if slot_ms_saved:
-                    editions_savings = (float(slot_ms_saved) / 3600000.0) * 0.06
+                    editions_savings = (float(slot_ms_saved) / 3600000.0) * EDITIONS_SLOT_HR_RATE
 
             output.append(ActiveAssistResult(
                 project_id=row['project_id'] or resolved_project,
@@ -750,8 +755,8 @@ def fetch_active_assist_recommendations(params: StorageParams):
 
 
 class JobAnalysisParams(FocusMixin):
-    on_demand_rate_per_tb: float = 6.25
-    edition_slot_hr_rate: float = 0.06
+    on_demand_rate_per_tb: float = ON_DEMAND_USD_PER_TB
+    edition_slot_hr_rate: float = EDITIONS_SLOT_HR_RATE
     slot_step_size: int = Field(default=50, gt=0)
     lookback_days: int = Field(default=3, ge=1, le=90)
     region: str = "region-us"
@@ -1545,9 +1550,6 @@ def analyze_query_linter(params: AntiPatternParams):
             
         output = []
         
-        import re
-        select_star_regex = re.compile(r'SELECT\s+\*\s+FROM', re.IGNORECASE)
-        
         # 2. Loop through projects and lint queries
         for p in projects:
             safe_p = _safe_ident(p, "linter_project_id")
@@ -1563,6 +1565,8 @@ def analyze_query_linter(params: AntiPatternParams):
               AND state = 'DONE'
               AND query IS NOT NULL
               AND total_bytes_billed > 107374182400 -- > 100 GB
+              AND REGEXP_CONTAINS(query, r'(?i)SELECT\\s+\\*\\s+FROM')
+            ORDER BY total_bytes_billed DESC
             LIMIT {params.limit_per_project}
             """
             
@@ -1571,15 +1575,15 @@ def analyze_query_linter(params: AntiPatternParams):
                 results = run_query_and_log(scoped_client, sql, f"Linter Scan {p}", params=params)
                 for row in results:
                     query_text = row.query or ''
-                    if select_star_regex.search(query_text):
-                        output.append(LinterResult(
-                            project_id=p,
-                            job_id=row.job_id,
-                            user_email=row.user_email,
-                            query_snippet=query_text[:100] + "...",
-                            abuse_type="[SELECT * ABUSE]",
-                            billed_gb=row.billed_gb or 0.0
-                        ))
+                    snippet = query_text[:100] + "..." if len(query_text) > 100 else query_text
+                    output.append(LinterResult(
+                        project_id=p,
+                        job_id=row.job_id,
+                        user_email=row.user_email,
+                        query_snippet=snippet,
+                        abuse_type="[SELECT * ABUSE]",
+                        billed_gb=row.billed_gb or 0.0
+                    ))
             except Exception as e:
                 logger.warning(f"Failed to scan project {p} for linter: {e}")
                 
@@ -1982,10 +1986,9 @@ class AIParams(FocusMixin):
         description="composite | cumulative_cost | execution_frequency | memory_spill | slot_ms"
     )
 
-# Output safety guard: allow SELECT/WITH and CTAS/CVAS rewrites from Gemini [R3/R-security]
-# CTAS pattern: CREATE [OR REPLACE] TABLE|VIEW ... AS SELECT — common in scheduled queries.
+# Output safety guard: allow SELECT/WITH, DML (INSERT/UPDATE/DELETE/MERGE), and CTAS/CVAS rewrites from Gemini [R3/R-security]
 ALLOWED_QUERY_PREFIX_RE = re.compile(
-    r"^\s*(?:WITH|SELECT|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE)\b)",
+    r"^\s*(?:WITH|SELECT|INSERT(?:\s+INTO)?|UPDATE|DELETE(?:\s+FROM)?|MERGE(?:\s+INTO)?|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|TEMP\s+TABLE|TEMPORARY\s+TABLE|MATERIALIZED\s+VIEW)\b)",
     re.IGNORECASE,
 )
 
@@ -2596,6 +2599,7 @@ def analyze_ai_query(params: AIParams):
                         t_params = TranslationParams(
                             query=row.query or '',
                             project_id=target_project,
+                            location=params.region.replace("region-", ""),
                             auto_opt_in_yaml=True,
                             dry_run_compare=True,
                         )
@@ -2744,7 +2748,7 @@ def analyze_bi_engine(params: BIParams):
           project_id,
           total_bytes_processed / POW(1024, 3) AS processed_gb,
           total_bytes_billed / POW(1024, 3) AS billed_gb,
-          ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * 6.25 AS estimated_dollars_saved,
+          ((total_bytes_processed - total_bytes_billed) / POW(1024, 4)) * {ON_DEMAND_USD_PER_TB} AS estimated_dollars_saved,
           bi_engine_statistics.bi_engine_mode,
           ARRAY_TO_STRING(
             ARRAY(SELECT code FROM UNNEST(bi_engine_statistics.bi_engine_reasons)), ', '
@@ -3453,7 +3457,7 @@ class SlotSimulationParams(OrgParams):
     timezone: str = "America/New_York"
     max_baseline: int = Field(default=10000, ge=50, le=100000)
     step_size: int = Field(default=50, gt=0)
-    payg_price: float = 0.06
+    payg_price: float = EDITIONS_SLOT_HR_RATE
     commit_1yr_price: float = 0.048
     commit_3yr_price: float = 0.036
     max_bytes_billed_gb: Optional[int] = None
@@ -3610,7 +3614,7 @@ class FluidSimParams(OrgParams):
     org_project_id: Optional[str] = None
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
-    edition_slot_hr_rate: float = Field(default=0.06, gt=0)
+    edition_slot_hr_rate: float = Field(default=EDITIONS_SLOT_HR_RATE, gt=0)
     cooldown_window: int = Field(default=60, ge=1, le=300)
     max_bytes_billed_gb: Optional[int] = None
 
@@ -3968,20 +3972,8 @@ def simulate_fluid_scaling(params: FluidSimParams):
             patterns=patterns,
         )
 
-    except gax_exc.Forbidden:
-        logger.exception("Permission denied running fluid simulation")
-        raise HTTPException(403, "Insufficient permissions for JOBS_BY_ORGANIZATION")
-    except gax_exc.NotFound:
-        logger.exception("Project or region not found")
-        raise HTTPException(404, "Project or region not found")
-    except gax_exc.GoogleAPIError:
-        logger.exception("BigQuery error running fluid simulation")
-        raise HTTPException(500, "Query failed; check server logs")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Unexpected error in fluid simulation")
-        raise HTTPException(500, "Internal server error")
+    except Exception as e:
+        handle_endpoint_exception(e, "Fluid simulation")
 
 
 class SlotActualParams(OrgParams):
@@ -4551,8 +4543,8 @@ class UserProfilerParams(FocusMixin):
     region: str = "region-us"
     lookback_days: int = Field(default=7, ge=1, le=90)
     admin_project_id: Optional[str] = None
-    od_price: float = 6.25
-    ed_price: float = 0.06
+    od_price: float = ON_DEMAND_USD_PER_TB
+    ed_price: float = EDITIONS_SLOT_HR_RATE
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/users/top_spenders")
@@ -4589,10 +4581,10 @@ def get_top_spenders(params: UserProfilerParams):
         AS failed_res_slot_hours,
       SUM(IF(error_result.reason IS NOT NULL AND reservation_id IS NULL, total_bytes_billed, 0))
         AS failed_od_bytes_billed,
-      -- ── Waste: on-demand 10 MiB minimum-billing floor + per-MB rounding ──
-      COUNTIF(reservation_id IS NULL AND IFNULL(total_bytes_processed, 0) < 10 * 1024 * 1024)
+      -- ── Waste: on-demand 10 MiB minimum-billing floor + per-MB rounding (successful queries only) ──
+      COUNTIF(reservation_id IS NULL AND error_result.reason IS NULL AND IFNULL(total_bytes_processed, 0) < 10 * 1024 * 1024)
         AS sub_min_query_count,
-      SUM(IF(reservation_id IS NULL,
+      SUM(IF(reservation_id IS NULL AND error_result.reason IS NULL,
              GREATEST(0, IFNULL(total_bytes_billed, 0) - IFNULL(total_bytes_processed, 0)),
              0)) AS min_billing_overage_bytes,
       -- ── Diagnostic (not dollarized) ──

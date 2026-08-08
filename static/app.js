@@ -274,6 +274,8 @@ function buildConsoleUrl(type, opts = {}) {
             const jhParam = encodedFilter ? `;bqmon.jh=${encodedFilter}` : '';
             return `https://console.cloud.google.com/bigquery/admin/jobs-explorer;region=${loc}${jhParam}?project=${proj}&region=${loc}`;
         }
+        case 'interactive_translation':
+            return `https://console.cloud.google.com/bigquery?interactiveTranslation=true&project=${proj}`;
         default:
             return '#';
     }
@@ -6248,12 +6250,21 @@ write_client.append_rows(iter([request]))`;
                             padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
                             color: #fb7185; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
                             word-break: break-all; margin: 0;">${escapedOrigSqlPreview}</pre>
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
                             <button class="copy-orig-sql-btn" style="background: rgba(251,113,133,0.15); border: 1px solid rgba(251,113,133,0.3);
                                 color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
                                 cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                                 <i class="fa-solid fa-copy"></i> Copy SQL
                             </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-orig-translator-btn"
+                                style="background: rgba(251,113,133,0.12); border: 1px solid rgba(251,113,133,0.25);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
                         </div>
                     </div>`;
             }
@@ -6279,12 +6290,21 @@ write_client.append_rows(iter([request]))`;
                             color: #38bdf8; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
                             word-break: break-all; margin: 0;">${escapedSqlPreview}</pre>
                         ${approxBadge}
-                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
                             <button class="copy-sql-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3);
                                 color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
                                 cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
                                 <i class="fa-solid fa-copy"></i> Copy SQL
                             </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.optimized_query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-opt-translator-btn"
+                                style="background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.25);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
                         </div>
                         __YAML_BADGE_PLACEHOLDER__
                     </div>`;
@@ -6431,6 +6451,36 @@ write_client.append_rows(iter([request]))`;
                 return;
             }
 
+            // Open in Translator with Auto-Copy
+            const transBtn = e.target.closest('.open-orig-translator-btn, .open-opt-translator-btn');
+            if (transBtn) {
+                const tr = transBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const isOrig = transBtn.classList.contains('open-orig-translator-btn');
+                const sql = isOrig ? (rowData?.query || '') : (rowData?.optimized_query || '');
+
+                if (sql) {
+                    try {
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(sql);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = sql;
+                            ta.style.cssText = 'position:fixed;left:-9999px';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                        }
+                        showNotification('SQL copied to clipboard! Paste (Cmd+V / Ctrl+V) in the translator.', 'info');
+                    } catch (err) {
+                        console.warn('Auto-copy failed on translator button click', err);
+                    }
+                }
+                return;
+            }
+
             // YAML accordion toggle
             const yamlBtn = e.target.closest('.yaml-toggle-btn');
             if (yamlBtn) {
@@ -6497,6 +6547,18 @@ write_client.append_rows(iter([request]))`;
             const isHidden = aiScopeContent.style.display === 'none';
             aiScopeContent.style.display = isHidden ? 'block' : 'none';
             if (aiScopeChevron) aiScopeChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
+        });
+    }
+
+    // AI Dual-Engine Pipeline Architecture Toggle
+    const aiPipelineToggle = document.getElementById('ai-pipeline-toggle');
+    const aiPipelineContent = document.getElementById('ai-pipeline-content');
+    const aiPipelineChevron = document.getElementById('ai-pipeline-chevron');
+    if (aiPipelineToggle && aiPipelineContent) {
+        aiPipelineToggle.addEventListener('click', () => {
+            const isHidden = aiPipelineContent.style.display === 'none';
+            aiPipelineContent.style.display = isHidden ? 'block' : 'none';
+            if (aiPipelineChevron) aiPipelineChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
         });
     }
 

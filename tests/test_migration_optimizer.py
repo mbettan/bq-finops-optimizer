@@ -260,3 +260,149 @@ class TestC3EchoStripping:
         assert ok is True
         assert literals.get("input.sql") == real_translation
 
+
+class TestPass1TimeoutResilience:
+    """Pass 1 discovery timeout must not abort the workflow; Pass 2 should proceed."""
+
+    @patch("src.migration_optimizer.Auth")
+    @patch("src.migration_optimizer.MigrationClient")
+    @patch("src.migration_optimizer._execute_workflow_pass")
+    def test_pass1_timeout_falls_back_to_pass2(self, mock_exec, mock_client_cls, mock_auth_cls):
+        from src.migration_optimizer import run_migration_translation
+
+        mock_auth = MagicMock()
+        mock_auth.adc_project = "test-project"
+        mock_auth_cls.return_value = mock_auth
+
+        # Pass 1 raises TimeoutError; Pass 2 succeeds
+        mock_exec.side_effect = [
+            TimeoutError("Workflow timed out after 300s"),
+            ({"input.sql": "SELECT 1 AS x"}, [], True, None),
+        ]
+
+        params = TranslationParams(
+            query="SELECT 1 AS x",
+            auto_opt_in_yaml=True,
+            dry_run_compare=False,
+        )
+
+        res = run_migration_translation(params)
+
+        assert res.success is True
+        assert res.translated_sql == "SELECT 1 AS x"
+        assert mock_exec.call_count == 2
+
+
+class TestDiagnosticIssueExtraction:
+    """Test that extract_migration_issues ignores file literals and extracts genuine issues."""
+
+    def test_extract_migration_issues_ignores_literal_string(self):
+        from src.migration_optimizer import extract_migration_issues
+
+        payload = {
+            "tasks": {
+                "translation-task": {
+                    "targetReturnLiterals": [
+                        {"relativePath": "input.sql", "literalString": "SELECT * FROM my_table WHERE x = 'NUMERIC'"}
+                    ]
+                }
+            },
+            "subtasks": [
+                {
+                    "message": "Optimization available: consider MERGE_PRECOMPUTE_PRUNING_BOUNDARIES",
+                    "category": "OPTIMIZATION",
+                    "code": "OPT_001",
+                }
+            ]
+        }
+
+        issues = extract_migration_issues(payload)
+        assert len(issues) == 1
+        assert "MERGE_PRECOMPUTE_PRUNING_BOUNDARIES" in issues[0].message
+        assert all("SELECT * FROM" not in i.message for i in issues)
+
+
+class TestYamlSynthesisGuards:
+    """Verify synthesize_optimizer_yaml avoids false opt-ins and duplicate rules."""
+
+    def test_sql_comments_mentioning_numeric_do_not_trigger_zero_scale(self):
+        from src.migration_optimizer import synthesize_optimizer_yaml
+
+        sql = "SELECT id, name -- this column used to be a numeric string\nFROM users"
+        yaml_str = synthesize_optimizer_yaml(sql, [])
+        assert yaml_str is None
+
+    def test_where_subquery_does_not_trigger_projection_scope(self):
+        from src.migration_optimizer import synthesize_optimizer_yaml
+
+        sql = "SELECT a, b FROM table1 WHERE x IN (SELECT id FROM table2)"
+        yaml_str = synthesize_optimizer_yaml(sql, [])
+        assert yaml_str is not None
+        assert "scope: PREDICATE" in yaml_str
+        assert "scope: PROJECTION" not in yaml_str
+
+    def test_no_duplicate_transformations_when_diagnostics_repeat_pattern(self):
+        from src.migration_optimizer import synthesize_optimizer_yaml, MigrationIssue
+
+        sql = "WITH cte AS (SELECT 1) SELECT * FROM cte"
+        issues = [MigrationIssue(category="OPTIMIZATION", message="Consider REWRITE_CTE_TO_TEMP_TABLE")]
+        yaml_str = synthesize_optimizer_yaml(sql, issues)
+        assert yaml_str is not None
+        assert yaml_str.count("REWRITE_CTE_TO_TEMP_TABLE") == 1
+
+
+class TestEndToEndMigrationOptimizer:
+    """Test full 2-stage discovery and translation pipeline on anti-pattern queries."""
+
+    @patch("src.migration_optimizer._execute_workflow_pass")
+    @patch("src.migration_optimizer.SchemaFetcher.fetch_ddl", return_value=[])
+    def test_cte_and_regexp_to_like_rewrite_pipeline(self, mock_ddl, mock_pass):
+        from src.migration_optimizer import run_migration_translation, TranslationParams, MigrationIssue
+
+        query = (
+            "WITH expensive_cte AS (\n"
+            "  SELECT id, name, status, REGEXP_CONTAINS(name, r'^PROD_') AS is_prod\n"
+            "  FROM `my_project.my_dataset.orders`\n"
+            ")\n"
+            "SELECT * FROM expensive_cte WHERE is_prod = TRUE\n"
+            "UNION ALL\n"
+            "SELECT * FROM expensive_cte WHERE status = 'COMPLETED'"
+        )
+
+        optimized_sql = (
+            "CREATE TEMP TABLE expensive_cte AS\n"
+            "  SELECT id, name, status, name LIKE 'PROD_%' AS is_prod\n"
+            "  FROM `my_project.my_dataset.orders`;\n\n"
+            "SELECT * FROM expensive_cte WHERE is_prod = TRUE\n"
+            "UNION ALL\n"
+            "SELECT * FROM expensive_cte WHERE status = 'COMPLETED';"
+        )
+
+        # Pass 1: discovery diagnostics
+        # Pass 2: actual translation
+        mock_pass.side_effect = [
+            ({}, [
+                MigrationIssue(category="OPTIMIZATION", message="Common Table Expression has been rewritten: REWRITE_CTE_TO_TEMP_TABLE"),
+                MigrationIssue(category="OPTIMIZATION", message="REGEXP_CONTAINS has been rewritten: REGEXP_CONTAINS_TO_LIKE"),
+            ], True, None),
+            ({"input.sql": optimized_sql}, [], True, None),
+        ]
+
+        params = TranslationParams(
+            query=query,
+            project_id="test-project",
+            auto_opt_in_yaml=True,
+            dry_run_compare=False,
+        )
+
+        res = run_migration_translation(params)
+
+        assert res.success is True
+        assert res.translated_sql == optimized_sql
+        assert res.applied_config_yaml is not None
+        assert "REWRITE_CTE_TO_TEMP_TABLE" in res.applied_config_yaml
+        assert "REGEXP_CONTAINS_TO_LIKE" in res.applied_config_yaml
+
+
+
+

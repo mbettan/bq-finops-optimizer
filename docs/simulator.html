@@ -3100,6 +3100,102 @@
                                     </div>
                                 </div>
 
+                                <!-- Dual-Engine Architecture & Pipeline Diagram (collapsible) -->
+                                <div style="margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.75rem;">
+                                    <button id="ai-pipeline-toggle" style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.825rem; font-weight: 600; padding: 0; display: flex; align-items: center; gap: 5px;">
+                                        <i class="fa-solid fa-chevron-right" id="ai-pipeline-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i> Architecture — How SQL Rewrites &amp; Diagnostics Work (Dual-Engine Pipeline)
+                                    </button>
+                                    <div id="ai-pipeline-content" style="display: none; margin-top: 0.85rem;">
+                                        <!-- Visual Architecture Diagram -->
+                                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; padding: 1.25rem; margin-bottom: 1.25rem;">
+                                            <div style="text-align: center; margin-bottom: 1rem;">
+                                                <span style="font-size: 0.8rem; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.05em;">
+                                                    <i class="fa-solid fa-diagram-project"></i> Dual-Engine AI Doctor Orchestration Pipeline
+                                                </span>
+                                            </div>
+
+                                            <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.75rem; align-items: stretch;">
+                                                <!-- Top Input Node -->
+                                                <div style="grid-column: 1 / -1; background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 0.75rem; text-align: center;">
+                                                    <div style="color: #f8fafc; font-weight: 600; font-size: 0.85rem;"><i class="fa-solid fa-database" style="color: #38bdf8;"></i> Input: Top Offending BigQuery SQL + Grounded Table DDLs</div>
+                                                    <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 0.2rem;">Scans <code>INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION</code> and auto-resolves schema types from <code>INFORMATION_SCHEMA.TABLES</code></div>
+                                                </div>
+
+                                                <!-- Pipeline 1: Gemini -->
+                                                <div style="background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 0.85rem; display: flex; flex-direction: column;">
+                                                    <div style="color: #c084fc; font-weight: 700; font-size: 0.825rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 6px;">
+                                                        <i class="fa-solid fa-brain"></i> Pipeline 1: Gemini Semantic Model
+                                                    </div>
+                                                    <div style="color: #cbd5e1; font-size: 0.75rem; line-height: 1.45; flex-grow: 1;">
+                                                        Runs <code>AI.GENERATE</code> against schema context. Rewrites queries for column pruning, join order, and partition filters within <code>OPTIMIZED_SQL_START...END</code>.
+                                                    </div>
+                                                    <div style="margin-top: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.7rem; color: #a855f7;">
+                                                        Outputs severity score + semantic advice
+                                                    </div>
+                                                </div>
+
+                                                <!-- Connector / Fork -->
+                                                <div style="display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 1.25rem;">
+                                                    <i class="fa-solid fa-arrows-split-up-and-left" style="transform: rotate(90deg);"></i>
+                                                </div>
+
+                                                <!-- Pipeline 2: BigQuery Migration API -->
+                                                <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 0.85rem; display: flex; flex-direction: column;">
+                                                    <div style="color: #38bdf8; font-weight: 700; font-size: 0.825rem; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 6px;">
+                                                        <i class="fa-solid fa-wand-magic-sparkles"></i> Pipeline 2: Migration Service Compiler
+                                                    </div>
+                                                    <div style="color: #cbd5e1; font-size: 0.75rem; line-height: 1.45; flex-grow: 1;">
+                                                        Autonomous 2-Stage compiler pass. Synthesizes <code>optimizer.config.yaml</code> to perform AST rewrites (CTE materialization, REGEXP to LIKE).
+                                                    </div>
+                                                    <div style="margin-top: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.7rem; color: #38bdf8;">
+                                                        Deterministic AST optimization &amp; dry-run
+                                                    </div>
+                                                </div>
+
+                                                <!-- Merge / Final Result Node -->
+                                                <div style="grid-column: 1 / -1; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 0.75rem; text-align: center;">
+                                                    <div style="color: #4ade80; font-weight: 600; font-size: 0.825rem;"><i class="fa-solid fa-shield-halved"></i> Merge &amp; Echo Suppression Gate</div>
+                                                    <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 0.2rem;">If optimized SQL is identical to original, echo is cleanly suppressed (—). Validated rewrites display with interactive copy &amp; diff.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- Detailed Technical Explanations -->
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;">
+                                            <!-- PIPELINE 1 DETAILS -->
+                                            <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.2);">
+                                                <div style="color: #c084fc; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-brain"></i> Pipeline 1: Gemini Semantic Model (AI.GENERATE)
+                                                </div>
+                                                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 0.75rem;">
+                                                    Gemini evaluates the query against table partition keys and cluster fields. When a structural query rewrite is possible, it encloses the code in <code>OPTIMIZED_SQL_START ... OPTIMIZED_SQL_END</code>.
+                                                </p>
+                                                <div style="color: #e2e8f0; font-size: 0.775rem; font-weight: 600; margin-bottom: 0.35rem;">Why it may not produce SQL:</div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.775rem; line-height: 1.55; list-style: none;">
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #a855f7; margin-right: 4px;">•</span> <strong>Architectural / Operational Advice:</strong> Many queries cannot be rewritten without altering business logic (e.g. missing partition filters where Gemini cannot guess the intended date range, or queries needing table partitioning changes). In these cases, Gemini provides text recommendations without generating speculative SQL.</li>
+                                                    <li><span style="color: #a855f7; margin-right: 4px;">•</span> <strong>Token Truncation Guard:</strong> If a generated query exceeds token limits and the closing <code>OPTIMIZED_SQL_END</code> marker is missing, the backend discards the partial SQL to prevent invalid syntax.</li>
+                                                </ul>
+                                            </div>
+
+                                            <!-- PIPELINE 2 DETAILS -->
+                                            <div style="background: rgba(15, 23, 42, 0.5); padding: 1rem; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                                                <div style="color: #38bdf8; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;">
+                                                    <i class="fa-solid fa-wand-magic-sparkles"></i> Pipeline 2: BigQuery Migration Service API
+                                                </div>
+                                                <p style="color: var(--text-secondary); font-size: 0.8rem; line-height: 1.5; margin-bottom: 0.75rem;">
+                                                    Executes Google's official BigQuery-to-BigQuery compiler with an autonomous 2-pass workflow (Pass 1 diagnostic discovery $\rightarrow$ Pass 2 config synthesis &amp; execution).
+                                                </p>
+                                                <div style="color: #e2e8f0; font-size: 0.775rem; font-weight: 600; margin-bottom: 0.35rem;">Compiler Rewrites &amp; Safety Behaviors:</div>
+                                                <ul style="margin: 0; padding-left: 1.1rem; color: var(--text-secondary); font-size: 0.775rem; line-height: 1.55; list-style: none;">
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Supported Transformations:</strong> Materializes repeated CTEs (<code>REWRITE_CTE_TO_TEMP_TABLE</code>), converts regex to wildcards (<code>REGEXP_CONTAINS_TO_LIKE</code>), precomputes scalar subqueries (<code>PRECOMPUTE_INDEPENDENT_SUBSELECTS</code>), and prunes set joins (<code>ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON</code>).</li>
+                                                    <li style="margin-bottom: 0.35rem;"><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Echo Suppression:</strong> If the compiler finds no applicable rules (or returns the SQL unchanged), echoing is suppressed so identical queries aren't falsely advertised as optimizations.</li>
+                                                    <li><span style="color: #38bdf8; margin-right: 4px;">•</span> <strong>Fail-Open Resilience:</strong> If <code>bigquerymigration.googleapis.com</code> is not enabled on a project (404), the translation is skipped gracefully without interrupting Gemini's advice.</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div style="margin-top: 1.25rem; margin-bottom: 1.25rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 1rem;">
                                     <div style="color: #e2e8f0; font-weight: 600; font-size: 0.875rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 6px;">
                                         <i class="fa-solid fa-layer-group" style="color: #38bdf8;"></i> Discovery Priority Modes

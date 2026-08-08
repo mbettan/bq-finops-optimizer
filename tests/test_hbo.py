@@ -360,3 +360,34 @@ class TestSummaryTimeBase:
         rows = [_make_summary_row()]
         result = _run_summary(rows)
         assert result.time_base == "monthly_projected"
+
+
+class TestHBOStatusLimitAndTruncation:
+    """Verify limit parameter and truncated flag in check_hbo_status."""
+
+    @patch("src.hbo.init_bq_client_and_resolve_project")
+    @patch("src.hbo._run_and_log")
+    @patch("src.hbo.bigquery.Client")
+    @patch("src.hbo.run_query_with_retry_limit")
+    def test_hbo_status_truncated_flag(self, mock_run_retry, mock_bq_client, mock_run, mock_init):
+        from src.hbo import check_hbo_status, HBOStatusParams
+
+        mock_init.return_value = (MagicMock(), "admin-proj")
+        # 5 active projects discovered when limit=3 -> truncated
+        mock_run.return_value = [
+            MagicMock(project_id=f"proj-{i}") for i in range(1, 6)
+        ]
+        # Option row has adaptive=on (default)
+        mock_run_retry.return_value = (None, [MagicMock(option_value="")])
+
+        params = HBOStatusParams(org_project_id="admin-proj", limit=3)
+        res = check_hbo_status(params)
+
+        assert len(res) == 3
+        # First item should indicate truncated=True
+        assert res[0].truncated is True
+        # SQL should query limit + 1
+        called_sql = mock_run.call_args[0][1]
+        assert "LIMIT 4" in called_sql
+
+

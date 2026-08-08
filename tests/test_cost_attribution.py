@@ -482,3 +482,93 @@ class TestMutationDetection:
         assert total == 100.0
         for attr in result["attributions"]:
             assert attr["total_cost_attribution_usd"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# Idle reservation tests (Issue #2)
+# ---------------------------------------------------------------------------
+
+class TestIdleReservationAttribution:
+    """100% idle paid reservations must be attributed, not silently vanish."""
+
+    def test_idle_reservation_rule_a(self):
+        """Idle reservation with no jobs in billing month is attributed to target/admin project."""
+        config = CostAttributionConfig(
+            waste_rule="A",
+            reservations={
+                "res-idle": ReservationConfig(sku_rate=0.06, total_admin_bill=40000.0),
+            },
+        )
+        rows = []  # Zero jobs in billing month
+        result = _run_attribution(rows, config, admin_project_id="my-admin-proj")
+
+        assert result["is_complete"] is True
+        assert len(result["attributions"]) == 1
+        attr = result["attributions"][0]
+        assert attr["project_id"] == "my-admin-proj"
+        assert attr["reservation_id"] == "res-idle"
+        assert attr["direct_usage_cost_usd"] == 0.0
+        assert attr["allocated_waste_cost_usd"] == 40000.0
+        assert attr["total_cost_attribution_usd"] == 40000.0
+        assert attr["slot_hours"] == 0.0
+
+    def test_idle_reservation_rule_b(self):
+        """Idle reservation under Rule B is dumped to central cost center."""
+        config = CostAttributionConfig(
+            waste_rule="B",
+            central_cost_center_project="central-it",
+            reservations={
+                "res-idle": ReservationConfig(sku_rate=0.06, total_admin_bill=40000.0),
+            },
+        )
+        rows = []
+        result = _run_attribution(rows, config)
+
+        assert result["is_complete"] is True
+        assert len(result["attributions"]) == 1
+        attr = result["attributions"][0]
+        assert attr["project_id"] == "central-it"
+        assert attr["reservation_id"] == "res-idle"
+        assert attr["total_cost_attribution_usd"] == 40000.0
+
+    def test_mixed_active_and_idle_reservations(self):
+        """Active and idle reservations are both attributed; total equals sum of bills."""
+        config = CostAttributionConfig(
+            waste_rule="A",
+            reservations={
+                "res-active": ReservationConfig(sku_rate=0.04, total_admin_bill=100.0),
+                "res-idle": ReservationConfig(sku_rate=0.06, total_admin_bill=500.0),
+            },
+        )
+        rows = [_make_mock_row("proj-1", "res-active", 36_000_000)]  # 10 hrs
+        result = _run_attribution(rows, config, admin_project_id="admin-proj")
+
+        assert result["is_complete"] is True
+        assert len(result["attributions"]) == 2
+        total = sum(a["total_cost_attribution_usd"] for a in result["attributions"])
+        assert total == 600.0
+
+
+# ---------------------------------------------------------------------------
+# Date range validation tests (Issue #6)
+# ---------------------------------------------------------------------------
+
+class TestDateRangeValidation:
+    """Validate date parsing and comparison handles unpadded and invalid ranges."""
+
+    def test_unpadded_valid_range_accepted(self):
+        params = CostAttributionParams(
+            billing_month_start="2024-9-01",
+            billing_month_end="2024-10-01",
+        )
+        assert params.billing_month_start == "2024-09-01"
+        assert params.billing_month_end == "2024-10-01"
+
+    def test_unpadded_invalid_range_rejected(self):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            CostAttributionParams(
+                billing_month_start="2024-10-01",
+                billing_month_end="2024-9-30",
+            )
+

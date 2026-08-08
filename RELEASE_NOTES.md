@@ -63,6 +63,27 @@ Rebuilding the filter dropdowns after a new scan dropped stale values from the `
 **Fixed (Accessibility & Input)**
 Job ID row actions used `opacity: 0`, which still accepts keyboard focus — tabbing through a results table landed on invisible buttons. They now toggle `visibility`, reveal on `:focus-within`, and stay pinned visible under `@media (hover: none)` so touch devices can reach them at all.
 
+**Performance (BigQuery Client Pooling & ADC Caching)**
+Replaced per-request client construction with a thread-safe, process-wide BigQuery client pool (`get_bq_client`) with LRU eviction and single-discovery Application Default Credentials (ADC) caching. Eliminates two metadata-server HTTP round-trips and TLS handshakes per API request on Cloud Run, and prevents ~1,000 metadata queries during HBO multi-project fan-outs. Pooled connections cleanly drain during application shutdown.
+
+**Fixed (Cost Attribution: Idle Reservation Reconciliation)**
+The cost attribution engine now iterates across all configured reservations as the primary loop. 100% idle reservations (zero query slot-hours) are accurately attributed as unallocated waste under Rule A/B instead of disappearing from reports, maintaining strict invoice reconciliation. Date range validation now parses explicit `datetime.date` objects to eliminate unpadded string comparison bugs.
+
+**Fixed (Top Spenders: Minimum Billing Waste Isolation)**
+Added `error_result.reason IS NULL` to minimum-billing overage calculations, ensuring failed queries are counted exclusively under `failed_cost` and never double-counted in minimum-billing floor waste.
+
+**Fixed (Migration Optimizer: Diagnostic Guards & Timeout Resilience)**
+Excluded SQL file literal nodes from diagnostic extraction and stripped comments prior to transformation matching, preventing false auto-opt-in rules. Constrained scalar subquery detection strictly to projection clauses and added Pass 1 timeout resilience with graceful fallback to Pass 2 translation.
+
+**Fixed (Anti-Pattern Linter: Predicate Pushdown & Determinism)**
+Pushed `REGEXP_CONTAINS(query, r'(?i)SELECT\s+\*\s+FROM')` and `ORDER BY total_bytes_billed DESC` directly into the BigQuery query, ensuring the top offending queries are returned rather than an arbitrary slice. Cleaned snippet truncation formatting.
+
+**Fixed (Pricing Consistency & Unit Alignment)**
+Centralized `ON_DEMAND_USD_PER_TB` and `EDITIONS_SLOT_HR_RATE` as process-wide sources of truth across all simulation modules and BI Engine queries. Aligned Active Assist byte conversions to decimal TB ($10^{12}$) matching the Google Cloud Recommender API format.
+
+**Fixed (HBO Status: Dynamic Limits & Truncation Signaling)**
+Parameterized the active project discovery query with configurable `limit` (up to 5,000) and surfaced a `truncated: bool` response indicator when active project count exceeds the configured ceiling. Removed unreachable fallback dead code.
+
 ---
 
 ## July 28, 2026 — v1.3.0

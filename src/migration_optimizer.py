@@ -17,6 +17,7 @@ import requests
 import google.auth
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from pydantic import BaseModel, Field
+from .utils import get_bq_client
 
 logger = logging.getLogger("src.migration_optimizer")
 
@@ -209,8 +210,7 @@ class SchemaFetcher:
     @property
     def client(self):
         if self._client is None:
-            from google.cloud import bigquery
-            self._client = bigquery.Client(project=self.project)
+            self._client = get_bq_client(self.project)
         return self._client
 
     def dry_run_refs(self, sql: str) -> list[str]:
@@ -224,28 +224,23 @@ class SchemaFetcher:
             refs = self.dry_run_refs(sql)
             if refs:
                 return refs
-        except Exception:
-            pass
-        out = []
-        for ref in sorted(regex_table_refs(sql)):
-            parts = [p for p in ref.split(".") if p]
-            if len(parts) == 3:
-                out.append(".".join(parts))
-            elif len(parts) == 2:
-                out.append(f"{self.project}.{parts[0]}.{parts[1]}")
-        return out
+        except Exception as e:
+            logger.debug(f"Dry-run discovery failed, falling back to regex: {e}")
+        return list(regex_table_refs(sql))
 
-    def fetch_ddl(self, refs: list[str]) -> list[str]:
-        seen: dict[str, tuple[str, str]] = {}
+    def fetch_ddl(self, table_refs: list[str]) -> list[str]:
         by_dataset: dict[tuple[str, str], list[str]] = {}
-
-        for fqn in refs:
-            parts = fqn.split(".")
+        for ref in table_refs:
+            parts = ref.split(".")
             if len(parts) == 3:
-                proj, ds, table = parts[0], parts[1], parts[2]
-                # SQL Injection validation gate
-                if IDENT_RE.match(proj) and IDENT_RE.match(ds) and IDENT_RE.match(table):
-                    by_dataset.setdefault((proj, ds), []).append(table)
+                proj, ds, tbl = parts
+            elif len(parts) == 2:
+                proj, (ds, tbl) = self.project, parts
+            else:
+                continue
+            by_dataset.setdefault((proj, ds), []).append(tbl)
+
+        seen: dict[str, tuple[str, str]] = {}
 
         for (proj, ds), names in by_dataset.items():
             q = (
@@ -280,7 +275,8 @@ class MigrationClient:
         self.http, self.project, self.location = http, project, location
 
     def _base(self, version: str) -> str:
-        return f"{API_HOST}/{version}/projects/{self.project}/locations/{self.location}"
+        loc = self.location.lower().replace("region-", "")
+        return f"{API_HOST}/{version}/projects/{self.project}/locations/{loc}"
 
     def create_workflow(self, files: list[tuple[str, str]], default_db: str | None = None,
                         search_path: list[str] | None = None) -> HttpResult:
@@ -364,7 +360,6 @@ def extract_target_literals_from_subtasks(subtasks_body: Any) -> dict[str, str]:
 
     subtasks = subtasks_body.get("subtasks", [])
     for sub in subtasks:
-        details = sub.get("metrics", []) + [sub.get("resource", {})]
         # Recursively search for targetReturnLiterals in subtask output
         def _mine(node):
             if isinstance(node, dict):
@@ -390,12 +385,16 @@ def extract_migration_issues(body: Any) -> list[MigrationIssue]:
 
     def _search(node):
         if isinstance(node, dict):
-            # Check for log message or issue dicts
-            msg = node.get("message") or node.get("literalString") or node.get("details")
-            code = str(node.get("code") or node.get("type") or "")
-            cat = str(node.get("severity") or node.get("category") or "WARNING").upper()
-            if msg and isinstance(msg, str) and len(msg.strip()) > 5:
-                issues.append(MigrationIssue(category=cat, code=code if code else None, message=msg.strip()))
+            # Do not extract file literal contents as diagnostic issues
+            if "literalString" in node or "literal_string" in node:
+                pass
+            else:
+                # Check for log message or issue dicts
+                msg = node.get("message") or node.get("details")
+                code = str(node.get("code") or node.get("type") or "")
+                cat = str(node.get("severity") or node.get("category") or "WARNING").upper()
+                if msg and isinstance(msg, str) and len(msg.strip()) > 5:
+                    issues.append(MigrationIssue(category=cat, code=code if code else None, message=msg.strip()))
             for v in node.values():
                 _search(v)
         elif isinstance(node, list):
@@ -426,14 +425,18 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
       - APPROXIMATE_RANGE_PARTITIONS: never triggers on BQ inputs (BQ uses
         fixed range partitions), but safe to include when diagnostics recommend it."""
     transformations = []
-    seen_names: set[str] = set()
-    sql_upper = sql.upper()
+    seen_keys: set[str] = set()
+
+    # Strip comments to prevent matching keywords inside comments
+    sql_clean = re.sub(r"--.*", "", sql)
+    sql_clean = re.sub(r"/\*.*?\*/", "", sql_clean, flags=re.DOTALL)
+    sql_upper = sql_clean.upper()
     issue_text = " ".join(i.message for i in issues).upper() if issues else ""
 
     def _add(name: str, parameters: dict | None = None):
         key = f"{name}:{parameters}" if parameters else name
-        if key not in seen_names:
-            seen_names.add(key)
+        if key not in seen_keys:
+            seen_keys.add(key)
             entry: dict = {"name": name}
             if parameters:
                 entry["parameters"] = parameters
@@ -448,12 +451,14 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
 
     # 2. Scalar Subquery Precomputation
     #    PREDICATE scope: WHERE / JOIN ON subqueries → DECLARE variable
-    has_predicate_subselect = (
-        re.search(r"\bWHERE\b.*\(\s*SELECT\b", sql_upper, re.DOTALL)
-        or re.search(r"\bJOIN\b.*\bON\b.*\(\s*SELECT\b", sql_upper, re.DOTALL)
+    has_predicate_subselect = bool(
+        re.search(r"\bWHERE\b[\s\S]*?\(\s*SELECT\b", sql_upper)
+        or re.search(r"\bJOIN\b[\s\S]*?\bON\b[\s\S]*?\(\s*SELECT\b", sql_upper)
     )
-    #    PROJECTION scope: scalar subqueries in SELECT list
-    has_projection_subselect = re.search(r"\bSELECT\b[^;]*\(\s*SELECT\b", sql_upper, re.DOTALL)
+    #    PROJECTION scope: scalar subqueries in SELECT list (before FROM)
+    #    Match SELECT <items containing (SELECT ...)> FROM
+    select_clause_match = re.search(r"^\s*(?:WITH\b[\s\S]*?\)\s*)?SELECT\b([\s\S]*?)\bFROM\b", sql_upper)
+    has_projection_subselect = bool(select_clause_match and re.search(r"\(\s*SELECT\b", select_clause_match.group(1)))
 
     if has_predicate_subselect:
         _add("PRECOMPUTE_INDEPENDENT_SUBSELECTS", {"scope": "PREDICATE"})
@@ -461,7 +466,7 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
         _add("PRECOMPUTE_INDEPENDENT_SUBSELECTS", {"scope": "PROJECTION"})
 
     # 3. Zero-Scale Numeric → INT64
-    if re.search(r"\bNUMERIC\b|\bBIGNUMERIC\b|\bNUMBER\s*\(\s*\d+\s*,\s*0\s*\)", sql_upper) or "ZERO_SCALE" in issue_text or "NUMERIC" in issue_text:
+    if re.search(r"\bNUMERIC\b|\bBIGNUMERIC\b|\bNUMBER\s*\(\s*\d+\s*,\s*0\s*\)", sql_upper) or "ZERO_SCALE" in issue_text:
         _add("REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER", {"bigint": 18})
 
     # 4. Subquery Set Comparison Distinctness
@@ -474,15 +479,15 @@ def synthesize_optimizer_yaml(sql: str, issues: list[MigrationIssue]) -> str | N
 
     # 6. Pass 1 diagnostic-driven: auto-opt-in to any public transformations the API recommends.
     #    Per Tom Wall: ANTI_JOIN and MERGE are only meaningful when diagnostics detect an opportunity.
-    public_transformations = {
+    public_transformations = (
         "PRECOMPUTE_INDEPENDENT_SUBSELECTS", "REWRITE_CTE_TO_TEMP_TABLE",
         "REWRITE_ZERO_SCALE_NUMERIC_AS_INTEGER", "DROP_TEMP_TABLE",
         "REGEXP_CONTAINS_TO_LIKE", "ADD_DISTINCT_TO_SUBQUERY_IN_SET_COMPARISON",
         "APPROXIMATE_RANGE_PARTITIONS", "ANTI_JOIN_EXPLICIT_NOT_NULL",
         "MERGE_PRECOMPUTE_PRUNING_BOUNDARIES",
-    }
+    )
     for name in public_transformations:
-        if name in issue_text:
+        if name in issue_text and name not in {t["name"] for t in transformations}:
             _add(name)
 
     if not transformations:
@@ -605,12 +610,19 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
         if not applied_yaml and params.auto_opt_in_yaml:
             logger.info("[BQ Migration API] Pass 1 (Discovery): Executing workflow without YAML to harvest diagnostics...")
             disc_files = [("input.sql", combined_input)]
-            disc_literals, disc_issues, disc_ok, _ = _execute_workflow_pass(client, disc_files, params)
-            if disc_ok:
-                synthesized = synthesize_optimizer_yaml(query_sql, disc_issues)
-                if synthesized:
-                    applied_yaml = synthesized
-                    logger.info(f"[BQ Migration API] Pass 1 Completed. Synthesized optimizer.config.yaml:\n{applied_yaml}")
+            try:
+                disc_literals, disc_issues, disc_ok, _ = _execute_workflow_pass(client, disc_files, params)
+                if disc_ok:
+                    synthesized = synthesize_optimizer_yaml(query_sql, disc_issues)
+                    if synthesized:
+                        applied_yaml = synthesized
+                        logger.info(f"[BQ Migration API] Pass 1 Completed. Synthesized optimizer.config.yaml:\n{applied_yaml}")
+            except Exception as e:
+                logger.warning(
+                    f"[BQ Migration API] Pass 1 (Discovery) failed or timed out: {e}. "
+                    "Continuing to Pass 2 without synthesized YAML."
+                )
+                applied_yaml = None
 
         # Pass 2 / Execution Pass: Run with applied YAML (or direct)
         files = [("input.sql", combined_input)]
@@ -646,7 +658,7 @@ def run_migration_translation(params: TranslationParams, scoped_client: Any = No
         bytes_before, bytes_after, delta_pct = None, None, None
         if params.dry_run_compare:
             from google.cloud import bigquery
-            bq_client = scoped_client or bigquery.Client(project=project)
+            bq_client = scoped_client or get_bq_client(project)
             
             # Dry run original query
             cfg_orig = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)

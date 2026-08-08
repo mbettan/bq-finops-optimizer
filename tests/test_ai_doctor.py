@@ -343,6 +343,74 @@ def test_ai_doctor_rejects_destructive_optimized_sql():
         assert result["severity"] == "HIGH"
 
 
+@pytest.mark.parametrize("dml_prefix", ["UPDATE", "INSERT INTO", "DELETE FROM", "MERGE INTO"])
+def test_ai_doctor_accepts_dml_optimized_sql(dml_prefix):
+    """Output safety guard: verify DML optimizations (UPDATE, INSERT, DELETE, MERGE) are accepted."""
+    dml_sql = f"{dml_prefix} `acme-sandbox.dataset.table` SET x = 1 WHERE y = 2" if "UPDATE" in dml_prefix else f"{dml_prefix} `acme-sandbox.dataset.table`"
+    mock_ai_row = MagicMock(
+        job_id="job_dml",
+        user_email="u@test.com",
+        query="SELECT 1",
+        worst_job={
+            "job_id": "job_dml",
+            "project_id": "acme-sandbox",
+            "user_email": "u@test.com",
+            "query": "SELECT 1",
+            "total_bytes_billed": 0,
+            "total_slot_ms": 10000,
+            "creation_time": "2026-07-27T12:00:00Z"
+        },
+        execution_count=1,
+        annualized_cost_usd=0.0,
+        optimization_potential_score=1.0,
+        total_slot_ms=10000,
+        total_bytes_billed=0,
+        total_bytes_processed=0,
+        ai_struct={"result": (
+            f"[MEDIUM]\n- Optimize DML predicate\n"
+            f"OPTIMIZED_SQL_START\n"
+            f"{dml_sql}\n"
+            f"OPTIMIZED_SQL_END"
+        )},
+        tables_referenced_count=0,
+        tables_found_count=0,
+        table_schema=None,
+        table_name=None,
+        total_rows=0,
+        size_bytes=0,
+        partition_column=None,
+        require_partition_filter="false",
+        clustering_fields=None,
+        num_columns=0,
+        column_schema="",
+        ddl=""
+    )
+
+    with patch("src.main.init_bq_client_and_resolve_project") as mock_init, \
+         patch("src.main.run_migration_translation", return_value=None):
+        mock_bq_client = MagicMock()
+        mock_init.return_value = (mock_bq_client, "acme-sandbox")
+
+        mock_job = MagicMock()
+        mock_job.total_bytes_processed = 0
+        mock_job.total_bytes_billed = 0
+        mock_job.cache_hit = False
+        mock_job.job_id = "mock_job_dml"
+        mock_job.result.return_value = [mock_ai_row]
+        mock_bq_client.query.return_value = mock_job
+
+        response = client.post("/api/ai/analyze", json={
+            "org_project_id": "acme-sandbox", "region": "region-us", "limit": 5
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+
+        result = data[0]
+        assert result["optimized_query"] is not None
+        assert result["optimized_query"] == dml_sql
+
+
 
 
 def test_ai_doctor_discovery_strategies():
@@ -492,5 +560,116 @@ def test_ai_doctor_hybrid_editions_fallback():
         assert data[0]["bytes_scanned_original"] == 500000000000
         assert data[0]["bytes_billed_original"] == 0
         assert data[0]["annualized_cost_usd"] == 162.5
+
+
+def test_ai_doctor_end_to_end_with_migration_api_rewrite():
+    """Verify that when Gemini produces architectural advice and Migration API rewrites the query,
+    AI Doctor outputs the optimized SQL, applied YAML, and human-readable compiler badges."""
+    query = (
+        "WITH expensive_cte AS (\n"
+        "  SELECT id, name, status, REGEXP_CONTAINS(name, r'^PROD_') AS is_prod\n"
+        "  FROM `acme-sandbox.dataset.orders`\n"
+        ")\n"
+        "SELECT * FROM expensive_cte WHERE is_prod = TRUE\n"
+        "UNION ALL\n"
+        "SELECT * FROM expensive_cte WHERE status = 'COMPLETED'"
+    )
+
+    optimized_sql = (
+        "CREATE TEMP TABLE expensive_cte AS\n"
+        "  SELECT id, name, status, name LIKE 'PROD_%' AS is_prod\n"
+        "  FROM `acme-sandbox.dataset.orders`;\n\n"
+        "SELECT * FROM expensive_cte WHERE is_prod = TRUE\n"
+        "UNION ALL\n"
+        "SELECT * FROM expensive_cte WHERE status = 'COMPLETED';"
+    )
+
+    mock_ai_row = MagicMock(
+        job_id="job_repeated_cte_123",
+        user_email="data_eng@acme.com",
+        query=query,
+        total_slot_ms=300000,
+        total_bytes_billed=10737418240,
+        total_bytes_processed=10737418240,
+        worst_job={
+            "job_id": "job_repeated_cte_123",
+            "project_id": "acme-sandbox",
+            "user_email": "data_eng@acme.com",
+            "query": query,
+            "total_bytes_billed": 10737418240,
+            "total_slot_ms": 300000,
+            "creation_time": "2026-08-07T12:00:00Z"
+        },
+        execution_count=5,
+        annualized_cost_usd=250.0,
+        optimization_potential_score=9.2,
+        # Gemini provides architectural advice without OPTIMIZED_SQL_START markers
+        ai_struct={"result": (
+            "[HIGH]\n"
+            "- Repeated evaluation of expensive CTE across UNION ALL blocks.\n"
+            "- REGEXP_CONTAINS causes regex engine overhead on simple prefix matching."
+        )},
+        tables_referenced_count=1,
+        tables_found_count=1,
+        table_schema="dataset",
+        table_name="orders",
+        total_rows=5000000,
+        size_bytes=10737418240,
+        partition_column=None,
+        require_partition_filter="false",
+        clustering_fields=None,
+        num_columns=4,
+        column_schema="id (INT64), name (STRING), status (STRING)",
+        ddl=""
+    )
+
+    with patch("src.main.init_bq_client_and_resolve_project") as mock_init, \
+         patch("src.main.run_migration_translation") as mock_migration:
+
+        mock_bq_client = MagicMock()
+        mock_init.return_value = (mock_bq_client, "acme-sandbox")
+
+        mock_job = MagicMock()
+        mock_job.total_bytes_processed = 0
+        mock_job.total_bytes_billed = 0
+        mock_job.cache_hit = False
+        mock_job.job_id = "mock_discovery_job"
+        mock_job.result.return_value = [mock_ai_row]
+        mock_bq_client.query.return_value = mock_job
+
+        from src.migration_optimizer import TranslationResponse, MigrationIssue
+        mock_migration.return_value = TranslationResponse(
+            translated_sql=optimized_sql,
+            original_sql=query,
+            success=True,
+            applied_config_yaml="type: optimizer\ntransformations:\n  - name: REWRITE_CTE_TO_TEMP_TABLE\n  - name: REGEXP_CONTAINS_TO_LIKE\n",
+            issues=[
+                MigrationIssue(category="OPTIMIZATION", message="Common Table Expression has been rewritten: REWRITE_CTE_TO_TEMP_TABLE"),
+                MigrationIssue(category="OPTIMIZATION", message="REGEXP_CONTAINS has been rewritten: REGEXP_CONTAINS_TO_LIKE"),
+            ]
+        )
+
+        response = client.post("/api/ai/analyze", json={
+            "org_project_id": "acme-sandbox",
+            "region": "region-us",
+            "limit": 10,
+            "lookback_days": 7
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        res = data[0]
+
+        assert res["optimized_query"] == optimized_sql
+        assert res["optimized_query"] != res["query"]
+        assert "REWRITE_CTE_TO_TEMP_TABLE" in res["migration_applied_yaml"]
+        assert "REGEXP_CONTAINS_TO_LIKE" in res["migration_applied_yaml"]
+
+        # Advice should contain human-readable compiler bullet points prepended
+        assert "Automated Compiler Rewrite" in res["gemini_optimization_advice"]
+        assert "Converted heavy Common Table Expressions (CTEs)" in res["gemini_optimization_advice"]
+        assert "Replaced `REGEXP_CONTAINS()` with fast `LIKE`" in res["gemini_optimization_advice"]
+
 
 

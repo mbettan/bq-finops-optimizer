@@ -1,10 +1,14 @@
-import logging
-import re
-import time
 import contextvars
+import logging
+import os
+import re
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from fastapi import HTTPException
+import google.auth
 from google.cloud import bigquery
 from pydantic import BaseModel, ConfigDict
 
@@ -212,6 +216,86 @@ def reject_dummy_project(project_id: str):
             detail=f"The project ID '{project_id}' is a dummy placeholder. Please set a valid GCP Project ID."
         )
 
+# ---------------------------------------------------------------------------
+# BigQuery client pool
+# ---------------------------------------------------------------------------
+# google-cloud-bigquery Clients are meant to be long-lived. Each owns a urllib3
+# connection pool, and constructing one calls google.auth.default() — two
+# metadata-server round-trips on Cloud Run. Building one per request threw away
+# every keep-alive connection and re-resolved ADC each time. Clients also sit in
+# a reference cycle (Client._connection._client), so a discarded one is not
+# reclaimed until the cyclic collector runs.
+#
+# Sharing across threads is supported: AuthorizedSession guards credential
+# refresh with a lock, urllib3's pool is thread-safe, and nothing here mutates
+# client state — QueryJobConfig is per-call.
+
+_BQ_CLIENT_CACHE_SIZE = int(os.environ.get("BQ_CLIENT_CACHE_SIZE", "64"))
+_bq_clients: "OrderedDict[Optional[str], bigquery.Client]" = OrderedDict()
+_bq_clients_lock = threading.Lock()
+_adc: Optional[tuple] = None
+_adc_lock = threading.Lock()
+
+
+def get_adc_credentials() -> tuple:
+    """Resolve Application Default Credentials once per process.
+
+    Returns (credentials, default_project). Pass the credentials into any
+    bigquery.Client you construct directly so it skips metadata discovery.
+    """
+    global _adc
+    if _adc is None:
+        with _adc_lock:
+            if _adc is None:
+                _adc = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+    return _adc
+
+
+def get_bq_client(project: Optional[str] = None) -> bigquery.Client:
+    """Return a pooled, process-wide BigQuery client for `project`.
+
+    Do NOT close the returned client — it is shared. close_bq_clients() runs
+    once at application shutdown.
+    """
+    with _bq_clients_lock:
+        cached = _bq_clients.get(project)
+        if cached is not None:
+            _bq_clients.move_to_end(project)
+            return cached
+
+    credentials, default_project = get_adc_credentials()
+    client = bigquery.Client(
+        project=project or default_project, credentials=credentials
+    )
+
+    with _bq_clients_lock:
+        existing = _bq_clients.get(project)
+        if existing is not None:
+            # Lost the race — drop ours, use theirs.
+            return existing
+        _bq_clients[project] = client
+        # Evicted clients are dropped, not closed: an in-flight request may
+        # still hold a reference, and closing would yank its socket. The
+        # cyclic collector reclaims them, which is only the rare path now.
+        while len(_bq_clients) > _BQ_CLIENT_CACHE_SIZE:
+            _bq_clients.popitem(last=False)
+    return client
+
+
+def close_bq_clients() -> None:
+    """Close every pooled client. Call once from the lifespan shutdown."""
+    with _bq_clients_lock:
+        clients = list(_bq_clients.values())
+        _bq_clients.clear()
+    for c in clients:
+        try:
+            c.close()
+        except Exception:
+            logger.debug("Failed to close pooled BigQuery client", exc_info=True)
+
+
 def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
     """
     Initializes the BigQuery client and resolves the target project ID.
@@ -226,12 +310,13 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
         reject_dummy_project(project_override)
         
     try:
-        client = bigquery.Client(project=project_override) if project_override else bigquery.Client()
+        client = get_bq_client(project_override)
     except Exception as e:
-        logger.error(f"Failed to initialize BigQuery client: {e}")
+        logger.error("Failed to initialize BigQuery client: %s", e)
         raise HTTPException(
             status_code=400,
-            detail=f"Failed to initialize BigQuery client: {e}"
+            detail="Failed to initialize BigQuery client — check Application "
+                   "Default Credentials. See server logs for details.",
         )
         
     resolved_project = project_override if project_override else client.project
