@@ -1,0 +1,61 @@
+name: "🐛 Bug Report"
+description: "File an issue about something not working or unexpected behavior"
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please provide as much detail as possible to help us reproduce and fix it.
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the bug"
+      description: "A clear and concise description of what the bug is."
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Which area/module did this occur in?"
+      options:
+        - "Slots Optimizer & Capacity Simulation"
+        - "AI Doctor & SQL Rewriting"
+        - "Cost Attribution & Waste Distribution"
+        - "Interactive vs. Batch Prioritization"
+        - "Storage Hygiene & Time Travel"
+        - "Governance & Partition Guardrails"
+        - "Settings & Project Scoping"
+        - "General UI / UX"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to reproduce"
+      description: "How can we reproduce this behavior?"
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+      description: "What did you expect to happen?"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: "Environment details"
+      description: "Browser version, deployment mode (Local, Cloud Run), BigQuery region, etc."
+      placeholder: "e.g., Chrome 127, Local Python 3.11, region: us-east4"
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Logs or Error Output"
+      description: "Relevant snippets from `app.log` or browser console (make sure to omit sensitive project IDs if needed)."
+      render: shell

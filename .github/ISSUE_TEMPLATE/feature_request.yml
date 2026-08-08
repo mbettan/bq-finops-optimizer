@@ -1,0 +1,49 @@
+name: "🚀 Feature Request"
+description: "Suggest an idea or optimization feature for BigQuery FinOps Optimizer"
+title: "[Feature] "
+labels: ["feature-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature to make BigQuery FinOps Optimizer better!
+  - type: textarea
+    id: request
+    attributes:
+      label: "Tell us about your request"
+      description: "A clear and concise description of the feature or capability you'd like to see."
+      placeholder: "e.g., Add interactive slider to simulate slot queueing delay..."
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Tell us about the problem you're trying to solve. What are you trying to do, and why is it hard?"
+      description: "What pain point or operational challenge does this address?"
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Which area/module does this apply to?"
+      options:
+        - "Slots Optimizer & Capacity Simulation"
+        - "AI Doctor & SQL Rewriting"
+        - "Cost Attribution & Waste Distribution"
+        - "Interactive vs. Batch Prioritization"
+        - "Storage Hygiene & Time Travel"
+        - "Governance & Partition Guardrails"
+        - "Settings & Project Scoping"
+        - "General UI / UX"
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: "Are you currently working around this issue?"
+      description: "How are you currently handling this today (e.g., custom SQL queries, manual spreadsheets)?"
+  - type: textarea
+    id: context
+    attributes:
+      label: "Additional Context"
+      description: "Add any other context, screenshots, or SQL snippets about the feature request here."
