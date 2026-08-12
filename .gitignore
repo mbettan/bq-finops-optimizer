@@ -1,5 +1,6 @@
-# Logs
-*.log
+# Logs & EMLs
+*.log*
+*.eml
 
 # Environment / Secrets
 venv/
