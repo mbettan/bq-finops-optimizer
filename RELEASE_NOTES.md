@@ -6,6 +6,16 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 12, 2026 — v1.4.1
+
+**Feature (Interactive Runtime Economics & FinOps ROI Calculator — #60)**
+Added an interactive client-side **Diagnostic Cost & Savings Calculator** to GitHub Pages (`docs/static/calculator.js`, `docs/static/pricing.js`). FinOps practitioners and architects can simulate their exact monthly runtime economics before deployment:
+- **3-Way Runtime Modeling:** Calculates BigQuery `INFORMATION_SCHEMA` metadata scans ($6.25/TiB on-demand vs. $0 under BigQuery Editions reservations), Serverless Cloud Run container compute (2 vCPU / 4 GiB), and Gemini 3.5 Flash / 3.1 Flash-Lite AI Doctor token usage.
+- **Live Presets & Cadence Scaling:** Interactive sliders and quick-select presets (Small, Medium, Large, X-Large) with real-time monthly scaling across ad-hoc, weekly, daily, and continuous sweeps.
+- **Full-Width Product Roadmap:** Redesigned the public roadmap toolbar into a full-width filter bar with inline GitHub live synchronization and touch-scrolling snapping on mobile.
+
+---
+
 ## August 7, 2026 — v1.4.0
 
 **Feature (Top Spenders: Actual Billing Mode, Waste & Potential Savings Engine)**

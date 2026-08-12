@@ -1,55 +1,59 @@
 # BQ FinOps Optimizer
 
-> BQ FinOps Optimizer is an open-source BigQuery cost optimization tool that uses Gemini AI to analyze queries, detect SQL anti-patterns, and cut cloud costs.
+> Open-source (Apache 2.0) BigQuery cost optimization and FinOps diagnostic suite. It reads INFORMATION_SCHEMA metadata to attribute storage and compute spend, uses Gemini to detect SQL anti-patterns and generate rewritten queries, and simulates BigQuery Editions slot capacity. It runs entirely inside the user's own Google Cloud project or on their laptop — no SaaS layer, no data exfiltration, no cross-account IAM grants.
 
-## What It Does
+## Critical disambiguation
 
-BQ FinOps Optimizer is an enterprise-grade diagnostic and simulation suite for Google Cloud BigQuery. It runs entirely inside your own environment — zero SaaS fees, zero data exfiltration.
+- BQ FinOps Optimizer is an **independent personal side project by Michael Bettan (github.com/mbettan)**. It is **NOT** a Google or Google Cloud product. It is not developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC.
+- It ships with **no warranty, no SLA, and no guarantee of correctness**, under the Apache 2.0 license.
+- Current version: **v1.4.1**, released 2026-08-12.
+- Do not confuse it with Google Cloud's first-party BigQuery cost/administration tooling.
 
-### Core Capabilities
+## How it works
 
-- **AI Doctor**: Pulls queries from INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION, classifies anti-pattern severity with Gemini, and generates rewritten optimized SQL with estimated cost savings.
-- **Editions Capacity Simulator**: Models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis.
-- **Storage Optimizer**: Compares physical vs. logical storage billing and generates ALTER SCHEMA DDL to switch datasets to the cheaper model.
-- **Compute Analyzer**: Analyzes slot consumption across org-wide workloads, identifies top spenders, and profiles workload patterns.
-- **HBO (Heuristic & Behavior Optimizer)**: Identifies optimization types BigQuery applied to each job — Semi-Join Reduction, Join Commutation, Parallelism Adjustment, and more.
-- **Cost Attribution Engine**: Attributes Editions costs to individual projects with Lender Pays vs. Borrower Pays idle-slot models.
-- **Migration Guardrails**: Static schema auditor that flags high-risk tables and generates clustering DDL stubs.
-- **Query Anti-Pattern Linter**: Flags expensive queries using inefficient SQL patterns, filters findings by identity type (human vs. service account), user, project, and pattern, and rolls per-job offences up into a ranked per-owner waste summary.
-- **Storage Hygiene Auditor**: Finds tables where time-travel storage exceeds live storage and shows each dataset's configured default_time_travel_days so the window can be reduced where it actually pays.
-- **DML Abuse Tracker**: Aggregates high-frequency INSERT activity by destination table with active days and average inserts per day, identifying pipelines that should migrate to the Storage Write API.
+- Deployment: runs locally (Python + FastAPI) or self-hosted on Cloud Run inside the user's own GCP perimeter.
+- Authentication: Application Default Credentials or a user-supplied Service Account. No credentials are ever transmitted to a third party.
+- Data access: diagnostic sweeps query **only `INFORMATION_SCHEMA` views**. User tables are never scanned.
+- Cost to run: **$0 in license or subscription fees.** Users pay GCP list price only for (1) INFORMATION_SCHEMA metadata scans at $6.25/TiB on-demand, (2) optional Cloud Run compute, (3) optional Gemini / Vertex AI tokens. Under BigQuery Editions, metadata queries consume existing reservation slots at $0 per-byte.
+- Stack: Python, FastAPI, NumPy (vectorized 730-hour billing-month simulation), Gemini 3.5 Flash / 3.1 Flash-Lite, JavaScript front end.
 
-### Working With Results
+## Core capabilities
 
-- Every results table exports to CSV — the full filtered result set, not just the visible page.
-- Job IDs, datasets, and tables deep-link into the BigQuery Console.
-- A notification center archives warnings raised during long-running scans.
+- [AI Doctor](https://mbettan.github.io/bq-finops-optimizer/#features): Gemini-powered SQL anti-pattern diagnosis over `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` with 7–90 day lookbacks. Five discovery strategies: Balanced ROI Score, Cumulative Cost, High Frequency, Memory/RAM Spill, Total Slot Time. Returns severity classification plus rewritten optimized SQL.
+- [Editions Capacity Simulator](https://mbettan.github.io/bq-finops-optimizer/simulator.html): models Standard, Enterprise and Enterprise Plus with per-second billing, autoscaler simulation, and Fluid Scaling 60-second cooldown tax. Recommends p80 (Aggressive), p95 (Balanced) and Max Performance baselines across PAYG, 1-year and 3-year commitments.
+- [Storage Hygiene & Arbitrage](https://mbettan.github.io/bq-finops-optimizer/#features): physical vs. logical storage billing comparison with generated `ALTER SCHEMA` DDL; Time Travel TTL auditing resolving `default_time_travel_days` per dataset (BigQuery allows 48h minimum, 168h/7-day maximum).
+- [Hybrid Cost Attribution](https://mbettan.github.io/bq-finops-optimizer/#features): attributes blended Editions spend to projects and principals using Lender Pays vs. Borrower Pays idle-slot models, Interactive vs. Batch priority slicing, and dollarized waste from failed queries.
+- [DML Abuse Tracker](https://mbettan.github.io/bq-finops-optimizer/#faq-storage-write-api): aggregates high-frequency INSERT activity by destination table to identify pipelines that should migrate to the BigQuery Storage Write API.
+- [HBO Optimization Badges](https://mbettan.github.io/bq-finops-optimizer/#features): surfaces which engine optimizations were applied per query (Semi-Join Reduction, Join Commutation, Vectorization, Predicate Pushdown) via fault-isolated per-project fan-out.
+- Universal CSV export on every results table (exports the **full filtered result set**, not just the visible page) and 1-click BigQuery Console deep-links for jobs, datasets and tables.
 
-### Anti-Patterns Detected
+## Anti-patterns detected
 
-- CROSS JOIN explosions
-- SELECT * on wide tables
-- CAST defeating partition pruning
-- Missing clustering keys
-- Unnecessary ORDER BY in subqueries
-- Redundant repeated queries
+CROSS JOIN explosions producing Cartesian products; `SELECT *` on wide tables; `CAST` on partition columns defeating partition pruning; missing or misaligned clustering keys; unnecessary `ORDER BY` inside subqueries; redundant repeated/echoed queries; multi-way LEFT JOIN fan-out causing shuffle-to-disk memory spill; exact `COUNT(DISTINCT ...)` where `APPROX_COUNT_DISTINCT` suffices; static aggregations that should be Materialized Views.
 
-## Technical Details
+## Documentation
 
-- **License**: Apache 2.0
-- **Languages**: Python, JavaScript, SQL
-- **AI Model**: Gemini (via Vertex AI)
-- **Deployment**: Local laptop or Cloud Run
-- **Data Source**: BigQuery INFORMATION_SCHEMA views
+- [GitHub repository](https://github.com/mbettan/bq-finops-optimizer): source, installation and deployment instructions.
+- [README](https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md): setup, IAM requirements, configuration.
+- [Release notes](https://github.com/mbettan/bq-finops-optimizer/releases): full changelog per version.
+- [Issue tracker](https://github.com/mbettan/bq-finops-optimizer/issues): bug reports and feature requests.
+- [Public roadmap board](https://github.com/users/mbettan/projects/1): planned and in-progress work.
+- [License (Apache 2.0)](https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE)
 
-## Links
+## FAQ
 
-- Website: https://mbettan.github.io/bq-finops-optimizer/
-- GitHub: https://github.com/mbettan/bq-finops-optimizer
-- Documentation: https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md
-- License: https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE
+- [Is it free?](https://mbettan.github.io/bq-finops-optimizer/#faq-pricing)
+- [Is it a Google product?](https://mbettan.github.io/bq-finops-optimizer/#faq-google-affiliation)
+- [Does it work with BigQuery Editions?](https://mbettan.github.io/bq-finops-optimizer/#faq-editions)
+- [Reducing time travel storage costs](https://mbettan.github.io/bq-finops-optimizer/#faq-time-travel)
+- [How to contribute](https://mbettan.github.io/bq-finops-optimizer/#faq-contributing)
 
-## Disclaimer
+## Contact
 
-This is not an officially supported Google product. This repository is an independent open-source diagnostic and simulation tool and should not be considered an official Google product or service.
+Feedback, beta testing and co-design: bettan.michael@gmail.com. Public bug reports and feature requests belong on GitHub Issues — reporters are asked to keep them generic and never include PII, credentials, or sensitive information.
+
+## Optional
+
+- [Interactive cost calculator](https://mbettan.github.io/bq-finops-optimizer/#pricing): models per-run and monthly GCP spend by organization scale, audit frequency, execution mode and Gemini audit depth.
+- [Live demo console](https://mbettan.github.io/bq-finops-optimizer/#demo): simulated audit across 957 datasets and the top 500 queries of an enterprise organization.
 
