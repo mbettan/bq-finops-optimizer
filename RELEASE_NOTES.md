@@ -6,6 +6,22 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 13, 2026 — v1.4.2
+
+**Feature (Assessment Report Generator & Comprehensive Analysis Sweep)**
+Added an end-to-end **Assessment Report Generator** (`src/report_generator.py`, `static/report.css`) with automated sequential sweep execution:
+- **Comprehensive Analysis Sweep:** Automatically sweeps through BigQuery FinOps modules (Compute & Pricing, Slots, Simulation, Fluid Scaling, Top Spenders, Cost Attribution, Anti-Patterns, Storage, Hygiene, Governance, Active Assist, AI Doctor, BI Analyzer, HBO, Performance Warnings) with real-time stepper progress and error resilience.
+- **Standalone Assessment Document:** Generates a self-contained, executive-ready assessment report with synthesized findings, executive KPI scorecard, workload optimization rankings, and print/PDF optimization.
+
+**Documentation & Governance (IAM Least-Privilege Review)**
+Updated documentation and error guidance to reflect least-privilege IAM configurations:
+- Replaced `roles/bigquery.resourceAdmin` with read-only `roles/bigquery.resourceViewer` at the organization level.
+- Removed overprivileged role references (`roles/bigquery.admin`, `roles/bigquery.dataOwner`) from documentation and runtime error messages.
+- Downgraded org-level Data Viewer to optional `metadataViewer` with automated query fallback.
+- Added explicit custom role permission guidance for `bigquery.jobs.create`.
+
+---
+
 ## August 12, 2026 — v1.4.1
 
 **Feature (Interactive Runtime Economics & FinOps ROI Calculator — #60)**

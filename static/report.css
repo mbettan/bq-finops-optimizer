@@ -1,0 +1,1196 @@
+/* =========================================================
+   BQ FinOps Optimizer — Report Stylesheet
+   Dark/Light/Print themes for the assessment report.
+   ========================================================= */
+
+/* ─── CSS Custom Properties: Dark Theme (default on-screen) ─── */
+:root {
+  --report-bg: #0f172a;
+  --report-bg-card: rgba(15, 23, 42, 0.85);
+  --report-bg-glass: rgba(30, 41, 59, 0.65);
+  --report-cover-bg: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  --report-text: #e2e8f0;
+  --report-text-secondary: #94a3b8;
+  --report-text-muted: #64748b;
+  --report-accent: #38bdf8;
+  --report-accent-glow: rgba(56, 189, 248, 0.15);
+  --report-border: rgba(51, 65, 85, 0.6);
+  --report-border-subtle: rgba(51, 65, 85, 0.3);
+  --report-success: #34d399;
+  --report-warning: #fbbf24;
+  --report-danger: #f87171;
+  --report-badge-high-bg: rgba(248, 113, 113, 0.15);
+  --report-badge-high-text: #fca5a5;
+  --report-badge-medium-bg: rgba(251, 191, 36, 0.15);
+  --report-badge-medium-text: #fde68a;
+  --report-badge-low-bg: rgba(52, 211, 153, 0.15);
+  --report-badge-low-text: #6ee7b7;
+  --report-table-header-bg: rgba(30, 41, 59, 0.8);
+  --report-table-row-alt: rgba(30, 41, 59, 0.3);
+  --report-font: Inter, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ─── Light Theme (toggled via .light-mode on <html>) ─── */
+html.light-mode {
+  --report-bg: #ffffff;
+  --report-bg-card: #f8fafc;
+  --report-bg-glass: #f1f5f9;
+  --report-cover-bg: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
+  --report-text: #1e293b;
+  --report-text-secondary: #475569;
+  --report-text-muted: #94a3b8;
+  --report-accent: #2563eb;
+  --report-accent-glow: rgba(37, 99, 235, 0.08);
+  --report-border: #e2e8f0;
+  --report-border-subtle: #f1f5f9;
+  --report-badge-high-bg: rgba(239, 68, 68, 0.1);
+  --report-badge-high-text: #dc2626;
+  --report-badge-medium-bg: rgba(245, 158, 11, 0.1);
+  --report-badge-medium-text: #d97706;
+  --report-badge-low-bg: rgba(16, 185, 129, 0.1);
+  --report-badge-low-text: #059669;
+  --report-table-header-bg: #f1f5f9;
+  --report-table-row-alt: #f8fafc;
+}
+
+/* ─── Base ─── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--report-bg);
+  color: var(--report-text);
+  font-family: var(--report-font);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Cover Page ─── */
+.report-cover {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 3rem;
+  background: var(--report-cover-bg);
+  page-break-after: always;
+  break-after: page;
+}
+
+.cover-logo {
+  font-size: 5.5rem;
+  margin-bottom: 1.75rem;
+  animation: cover-pulse 2s ease-in-out infinite;
+}
+
+@keyframes cover-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); filter: drop-shadow(0 0 20px var(--report-accent-glow)); }
+}
+
+.cover-title {
+  font-size: 2.8rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  margin-bottom: 3rem;
+  background: linear-gradient(135deg, var(--report-text), var(--report-accent));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.cover-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem 4rem;
+  margin-bottom: 3rem;
+  max-width: 650px;
+  text-align: left;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.meta-label {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--report-text-muted);
+}
+
+.meta-value {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--report-text);
+}
+
+.cover-links a {
+  color: var(--report-accent);
+  text-decoration: none;
+  font-weight: 600;
+  transition: opacity 0.15s ease;
+}
+
+.cover-links a:hover {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+.cover-disclaimer {
+  margin-top: 2rem;
+  font-size: 0.85rem;
+  color: var(--report-text-muted);
+  max-width: 550px;
+}
+
+/* ─── Table of Contents ─── */
+/* WARNING: Do NOT add .report-section to .report-toc — breaks print page breaks */
+.report-toc {
+  padding: 3rem;
+  max-width: 800px;
+  margin: 0 auto;
+  page-break-after: always;
+  break-after: page;
+}
+
+.report-toc h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid var(--report-accent);
+}
+
+.toc-list {
+  list-style: none;
+  padding: 0;
+  counter-reset: none;
+}
+
+.toc-list li {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--report-border-subtle);
+}
+
+.toc-list li:last-child { border-bottom: none; }
+
+.toc-list a {
+  color: var(--report-text);
+  text-decoration: none;
+  font-size: 1.05rem;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.toc-list a:hover { color: var(--report-accent); }
+
+.toc-no-data {
+  color: var(--report-text-muted);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* ─── Report Sections ─── */
+.report-section {
+  padding: 3rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.report-section + .report-section {
+  break-before: page;
+  page-break-before: always;
+}
+
+.report-section h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid var(--report-accent);
+}
+
+.report-section h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 2rem 0 1rem;
+  color: var(--report-text);
+}
+
+/* ─── Summary Grid ─── */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.summary-card {
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  text-align: center;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.summary-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--report-accent);
+  margin-bottom: 0.25rem;
+}
+
+.summary-label {
+  font-size: 0.8rem;
+  color: var(--report-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Top Priorities ─── */
+.top-priorities {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 12px;
+}
+
+.top-priorities h3 { margin: 0 0 0.75rem; }
+
+.top-priorities ol {
+  list-style: none;
+  padding: 0;
+}
+
+.top-priorities li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--report-border-subtle);
+  font-size: 0.95rem;
+}
+
+.top-priorities li:last-child { border-bottom: none; }
+
+.savings-disclaimer {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--report-badge-medium-bg);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--report-badge-medium-text);
+}
+
+/* ─── Data Tables ─── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0 1.5rem;
+  font-size: 0.85rem;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.data-table thead th {
+  background: var(--report-table-header-bg);
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--report-text-secondary);
+  border-bottom: 2px solid var(--report-border);
+}
+
+.data-table tbody td {
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--report-border-subtle);
+  color: var(--report-text);
+  word-break: break-word;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: var(--report-table-row-alt);
+}
+
+.table-cap-footer {
+  font-size: 0.8rem;
+  color: var(--report-text-muted);
+  font-style: italic;
+  margin-top: -0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.table-footnote {
+  font-size: 0.8rem;
+  color: var(--report-text-muted);
+  margin-top: 0.25rem;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--report-border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ─── Console Links ─── */
+.console-link {
+  color: var(--report-text);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--report-text-muted);
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+.console-link:hover {
+  color: var(--report-accent);
+  text-decoration-color: var(--report-accent);
+  text-decoration-style: solid;
+}
+.finding-docs {
+  color: var(--report-accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+.finding-docs:hover {
+  text-decoration: underline;
+}
+
+/* ─── Section Placeholder ─── */
+.section-placeholder {
+  padding: 2rem;
+  text-align: center;
+  background: var(--report-bg-glass);
+  border: 1px dashed var(--report-border);
+  border-radius: 12px;
+  color: var(--report-text-muted);
+}
+
+/* ─── Methodology ─── */
+.methodology { margin: 1rem 0; }
+
+/* ─── Finding Cards ─── */
+.finding-card {
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.finding-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.finding-ref {
+  font-family: monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--report-accent);
+}
+
+.priority-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.priority-high {
+  background: var(--report-badge-high-bg);
+  color: var(--report-badge-high-text);
+}
+
+.priority-medium {
+  background: var(--report-badge-medium-bg);
+  color: var(--report-badge-medium-text);
+}
+
+.priority-low {
+  background: var(--report-badge-low-bg);
+  color: var(--report-badge-low-text);
+}
+
+.effort-badge {
+  font-size: 0.75rem;
+  color: var(--report-text-muted);
+}
+
+.finding-title {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.finding-desc,
+.finding-rec {
+  font-size: 0.9rem;
+  color: var(--report-text-secondary);
+  margin-bottom: 0.5rem;
+  line-height: 1.5;
+}
+
+.finding-impact {
+  font-size: 0.85rem;
+  color: var(--report-accent);
+  font-weight: 600;
+  margin: 0.5rem 0;
+}
+
+.finding-docs {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--report-accent);
+  text-decoration: none;
+  margin-top: 0.25rem;
+}
+
+.finding-docs:hover { text-decoration: underline; }
+
+/* ─── Debug Footer ─── */
+.debug-footer {
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 1rem;
+  font-size: 0.8rem;
+  color: var(--report-text-muted);
+  border: 1px solid var(--report-border-subtle);
+  border-radius: 8px;
+}
+
+.debug-footer summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.debug-footer ul {
+  margin-top: 0.5rem;
+  padding-left: 1.5rem;
+}
+
+/* ─── Floating Toolbar ─── */
+.report-toolbar {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 12px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+}
+
+.report-toolbar button {
+  background: none;
+  border: 1px solid var(--report-border);
+  color: var(--report-text);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.report-toolbar button:hover {
+  background: var(--report-accent-glow);
+  border-color: var(--report-accent);
+  color: var(--report-accent);
+}
+
+/* ─── Print Overrides ─── */
+@media print {
+  /* Force crisp background color rendering without browser header/footer clipping */
+  *, *::before, *::after {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  @page {
+    size: auto;
+    margin: 8mm 10mm;
+  }
+
+  /* Force light theme across all CSS variables */
+  :root, html, body {
+    --report-bg: #ffffff !important;
+    --report-bg-card: #ffffff !important;
+    --report-bg-glass: #f8fafc !important;
+    --report-cover-bg: #ffffff !important;
+    --report-text: #0f172a !important;
+    --report-text-secondary: #334155 !important;
+    --report-text-muted: #64748b !important;
+    --report-accent: #2563eb !important;
+    --report-accent-glow: #eff6ff !important;
+    --report-border: #e2e8f0 !important;
+    --report-border-subtle: #f1f5f9 !important;
+    --report-badge-high-bg: #fef2f2 !important;
+    --report-badge-high-text: #dc2626 !important;
+    --report-badge-medium-bg: #fffbeb !important;
+    --report-badge-medium-text: #d97706 !important;
+    --report-badge-low-bg: #f0fdf4 !important;
+    --report-badge-low-text: #16a34a !important;
+    --report-table-header-bg: #f1f5f9 !important;
+    --report-table-row-alt: #f8fafc !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  body {
+    font-size: 9pt;
+    line-height: 1.45;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .report-cover {
+    background: #ffffff !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    min-height: 86vh !important;
+    height: 86vh !important;
+    box-sizing: border-box !important;
+    padding: 0 10mm !important;
+    margin: 0 !important;
+    break-after: page !important;
+    page-break-after: always !important;
+  }
+
+  .cover-logo {
+    animation: none !important;
+    font-size: 6rem !important;
+    margin-bottom: 2rem !important;
+  }
+
+  .cover-title {
+    background: none !important;
+    -webkit-text-fill-color: #0f172a !important;
+    color: #0f172a !important;
+    font-size: 32pt !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.03em !important;
+    line-height: 1.2 !important;
+    margin-bottom: 3.5rem !important;
+    max-width: 720px !important;
+  }
+
+  .cover-meta {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 1.75rem 4.5rem !important;
+    max-width: 650px !important;
+    margin-bottom: 3.5rem !important;
+    text-align: left !important;
+  }
+
+  .meta-label {
+    color: #64748b !important;
+    font-size: 9pt !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.1em !important;
+    margin-bottom: 0.3rem !important;
+  }
+
+  .meta-value {
+    color: #0f172a !important;
+    font-size: 14.5pt !important;
+    font-weight: 700 !important;
+  }
+
+  .cover-links a {
+    color: #2563eb !important;
+    text-decoration: underline !important;
+    font-size: 13.5pt !important;
+    font-weight: 600 !important;
+  }
+
+  .cover-disclaimer {
+    color: #94a3b8 !important;
+    font-size: 8.5pt !important;
+    max-width: 550px !important;
+    margin-top: 2rem !important;
+    line-height: 1.5 !important;
+  }
+
+  .report-toc {
+    padding: 0 !important;
+    margin: 0 0 10mm 0 !important;
+    max-width: 100% !important;
+    break-after: page !important;
+    page-break-after: always !important;
+  }
+
+  .report-toc h2 {
+    font-size: 1.25rem !important;
+    margin-bottom: 0.75rem !important;
+    padding-bottom: 0.35rem !important;
+  }
+
+  .toc-list li {
+    padding: 0.35rem 0 !important;
+    font-size: 9pt !important;
+  }
+
+  .report-section {
+    padding: 0 !important;
+    margin: 0 0 8mm 0 !important;
+    max-width: 100% !important;
+  }
+
+  .report-section + .report-section {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+
+  .report-section h2 {
+    font-size: 1.2rem !important;
+    margin-bottom: 0.75rem !important;
+    padding-bottom: 0.35rem !important;
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  .report-section h3 {
+    font-size: 1rem !important;
+    margin: 1rem 0 0.4rem !important;
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  .report-toolbar {
+    display: none !important;
+  }
+
+  .summary-grid {
+    gap: 0.5rem !important;
+    margin: 0.75rem 0 !important;
+  }
+
+  .summary-card {
+    border: 1px solid #e2e8f0 !important;
+    background: #f8fafc !important;
+    padding: 0.6rem 0.8rem !important;
+    backdrop-filter: none !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .finding-card {
+    border: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+    padding: 0.75rem 1rem !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    margin-bottom: 8pt !important;
+  }
+
+  .finding-card, table, .dimension-card, .break-even-box, .roadmap-phase {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .data-table {
+    margin: 0.5rem 0 0.75rem !important;
+    font-size: 8pt !important;
+  }
+
+  .data-table thead th {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    padding: 0.35rem 0.5rem !important;
+    font-size: 7.5pt !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+  }
+
+  .data-table tbody td {
+    padding: 0.3rem 0.5rem !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    color: #1e293b !important;
+    font-size: 8pt !important;
+  }
+
+  .data-table tbody tr:nth-child(even) {
+    background: #f8fafc !important;
+  }
+
+  .table-footnote {
+    background: #f8fafc !important;
+    border-left: 3px solid #cbd5e1 !important;
+    color: #64748b !important;
+    padding: 0.35rem 0.5rem !important;
+    margin-bottom: 0.75rem !important;
+    font-size: 7.5pt !important;
+  }
+
+  .savings-disclaimer {
+    border: 1px solid #fde68a !important;
+    background: #fffbeb !important;
+    color: #92400e !important;
+    padding: 0.5rem 0.75rem !important;
+  }
+
+  .narrative-summary {
+    background: #f8fafc !important;
+    border-left: 4px solid #2563eb !important;
+    color: #1e293b !important;
+    padding: 0.6rem 0.85rem !important;
+    margin-bottom: 0.75rem !important;
+    font-size: 8.5pt !important;
+    line-height: 1.5 !important;
+  }
+
+  .temporal-note, .scope-box {
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #334155 !important;
+    padding: 0.6rem 0.85rem !important;
+    margin: 0.5rem 0 !important;
+  }
+
+  .dimension-breakdown {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.5rem !important;
+    margin: 0.5rem 0 !important;
+  }
+
+  .dimension-card {
+    padding: 0.6rem 0.75rem !important;
+    break-inside: avoid !important;
+  }
+
+  .break-even-box {
+    padding: 0.6rem 0.85rem !important;
+    margin: 0.5rem 0 !important;
+  }
+
+  .roadmap::before {
+    background: #2563eb !important;
+  }
+
+  .debug-footer {
+    display: none !important;
+  }
+}
+
+/* ─── Narrative Summary ─── */
+.narrative-summary {
+  background: var(--report-bg-glass);
+  border-left: 4px solid var(--report-accent);
+  border-radius: 0 8px 8px 0;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.95rem;
+  line-height: 1.75;
+}
+
+.narrative-summary p { margin: 0; }
+
+.narrative-summary code {
+  background: var(--report-accent-glow);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+/* ─── Temporal Note ─── */
+.temporal-note {
+  background: var(--report-accent-glow);
+  border: 1px solid var(--report-border);
+  border-radius: 8px;
+  padding: 0.75rem 1.25rem;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+  color: var(--report-text-secondary);
+}
+
+/* ─── Scope Box (Methodology) ─── */
+.scope-box {
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin: 1rem 0;
+}
+
+.scope-box ul {
+  margin: 0.5rem 0 0 1.5rem;
+}
+
+.scope-box li {
+  margin-bottom: 0.35rem;
+  color: var(--report-text-secondary);
+  font-size: 0.9rem;
+}
+
+.scope-box code {
+  background: var(--report-accent-glow);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+/* ─── Dimension Breakdown (Section 2) ─── */
+.dimension-breakdown {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+
+@media (max-width: 800px) {
+  .dimension-breakdown { grid-template-columns: 1fr; }
+}
+
+.dimension-card {
+  display: flex;
+  gap: 1rem;
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  transition: border-color 0.2s;
+}
+
+.dimension-card:hover {
+  border-color: var(--report-accent);
+}
+
+.dimension-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  min-width: 2.5rem;
+  border-radius: 50%;
+  background: var(--report-accent);
+  color: #0a0f1c;
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+
+.dimension-body h4 {
+  margin: 0 0 0.5rem;
+  color: var(--report-text-primary);
+  font-size: 0.95rem;
+}
+
+.dimension-body p {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  color: var(--report-text-secondary);
+  line-height: 1.55;
+}
+
+.scope-details {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.scope-details li {
+  position: relative;
+  padding-left: 1.25rem;
+  margin-bottom: 0.6rem;
+  color: var(--report-text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.scope-details li::before {
+  content: "›";
+  position: absolute;
+  left: 0;
+  color: var(--report-accent);
+  font-weight: 700;
+}
+
+@media print {
+  .dimension-breakdown { grid-template-columns: 1fr 1fr; }
+  .dimension-card { break-inside: avoid; }
+}
+
+/* ─── Break-Even Box ─── */
+.break-even-box {
+  background: var(--report-bg-glass);
+  border: 2px solid var(--report-accent);
+  border-radius: 10px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.break-even-box h3 {
+  margin-bottom: 0.75rem;
+  color: var(--report-accent);
+}
+
+.verdict {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+}
+
+.verdict-positive { color: var(--report-success); }
+.verdict-negative { color: var(--report-danger); }
+.verdict-neutral { color: var(--report-warning); }
+
+/* ─── Evidence & Affected Blocks (Finding Cards) ─── */
+.evidence-block,
+.affected-block,
+.remediation-block {
+  background: var(--report-accent-glow);
+  border-left: 3px solid var(--report-accent);
+  border-radius: 0 6px 6px 0;
+  padding: 0.6rem 1rem;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--report-text-secondary);
+}
+
+.affected-block code {
+  background: var(--report-bg-glass);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+/* ─── Checks Passed Table ─── */
+.check-passed td:last-child { color: var(--report-success); }
+.check-na td:last-child { color: var(--report-text-muted); }
+
+/* ─── Consolidated Savings Total Row ─── */
+.total-row {
+  background: var(--report-accent-glow) !important;
+  border-top: 2px solid var(--report-accent);
+}
+
+.total-row td { font-weight: 600; }
+
+/* ─── Phased Roadmap ─── */
+.roadmap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 1rem 0;
+  position: relative;
+}
+
+.roadmap::before {
+  content: "";
+  position: absolute;
+  left: 116px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(to bottom, var(--report-accent), var(--report-success));
+  border-radius: 2px;
+}
+
+.roadmap-phase {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.5rem;
+  padding: 1rem 0;
+  position: relative;
+}
+
+.phase-label {
+  min-width: 100px;
+  text-align: right;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--report-accent);
+  padding-top: 0.15rem;
+  flex-shrink: 0;
+  padding-right: 1.25rem;
+}
+
+.phase-label::after {
+  content: "";
+  position: absolute;
+  left: 110px;
+  top: 1.2rem;
+  width: 14px;
+  height: 14px;
+  background: var(--report-accent);
+  border: 3px solid var(--report-bg);
+  border-radius: 50%;
+  z-index: 1;
+}
+
+.phase-content {
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  flex: 1;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.phase-content code {
+  background: var(--report-accent-glow);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+/* ─── Callout Boxes (Template Spec §4.3) ─── */
+.callout {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  margin: 1.25rem 0;
+  border-left: 4px solid var(--report-accent);
+  background: var(--report-bg-glass);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.callout-glyph {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  margin-top: 0.1em;
+}
+
+.callout-body { flex: 1; }
+
+.callout-verdict { border-left-color: var(--report-accent); background: var(--report-accent-glow); }
+.callout-reconciliation { border-left-color: #a78bfa; background: rgba(167, 139, 250, 0.08); }
+.callout-assumption { border-left-color: #818cf8; background: rgba(129, 140, 248, 0.08); }
+.callout-do-not { border-left-color: var(--report-danger); background: rgba(248, 113, 113, 0.08); }
+.callout-caveat { border-left-color: var(--report-warning); background: rgba(251, 191, 36, 0.08); }
+.callout-temporal { border-left-color: #94a3b8; background: rgba(148, 163, 184, 0.06); }
+.callout-quick-win { border-left-color: var(--report-success); background: rgba(52, 211, 153, 0.08); }
+
+/* ─── Score Badge ─── */
+.score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--report-accent-glow);
+  color: var(--report-accent);
+  border: 1px solid var(--report-accent);
+}
+
+/* ─── Critical Priority Band ─── */
+.priority-critical {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+}
+
+/* ─── Findings Register Table ─── */
+.findings-register {
+  font-size: 0.82rem;
+}
+
+.findings-register th,
+.findings-register td {
+  padding: 0.5rem 0.6rem;
+  white-space: nowrap;
+}
+
+.findings-register td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.findings-register td.mono {
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+.findings-register a {
+  color: var(--report-accent);
+  text-decoration: none;
+}
+
+.findings-register a:hover {
+  text-decoration: underline;
+}
+
+.register-intro {
+  font-size: 0.8rem;
+  color: var(--report-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+/* ─── Baseline Reconciliation Table ─── */
+.baseline-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+/* ─── Finding Detail Card — 5 C's Fields ─── */
+.fc-field {
+  margin: 0.5rem 0;
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.fc-label {
+  display: inline-block;
+  min-width: 110px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--report-text-muted);
+  margin-right: 0.5rem;
+  vertical-align: top;
+}
+
+/* ─── Extra Header Badges ─── */
+.pillar-badge,
+.lever-badge,
+.conf-badge,
+.horizon-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--report-bg-glass);
+  border: 1px solid var(--report-border);
+  color: var(--report-text-secondary);
+}

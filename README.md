@@ -320,6 +320,7 @@ To query organization-wide metadata (`INFORMATION_SCHEMA` tables scoped with `*_
 
 ### 1. Project-level Permissions
 *   **BigQuery Job User** (`roles/bigquery.jobUser`): Permissions to submit query jobs in the project.
+    *   If using a **custom IAM role** instead of the predefined role, ensure `bigquery.jobs.create` is included — without it, the service account cannot execute any query.
 *   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Permissions to inspect table definitions and schemas.
 
 ### 2. Organization-level Permissions (Required for Organisation-scoped Views)

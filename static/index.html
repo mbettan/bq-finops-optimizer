@@ -186,6 +186,7 @@
                 <a href="#hbo" class="nav-link" id="nav-hbo">HBO Insights</a>
                 <a href="#bi-optimizer" class="nav-link" id="nav-bi-optimizer">BI Optimizer</a>
                 <a href="#ai-reviewer" class="nav-link" id="nav-ai-reviewer">AI Doctor</a>
+                <a href="#full-report" class="nav-link" id="nav-full-report" data-view="full-report">Assessment</a>
               </div>
             </details>
           </nav>
@@ -219,6 +220,7 @@
                         </label>
                         <span class="toggle-label" id="lbl-redact-snapshot" title="Scrub user emails and query SQL text from the exported snapshot">Redact sensitive info</span>
                     </div>
+
                     <input type="file" id="import-snapshot-input" accept="application/json,.json" hidden>
                 </div>
 
@@ -3224,6 +3226,36 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                </section>
+
+                <!-- Assessment Reports View -->
+                <section id="view-full-report" class="view" data-view="full-report">
+                    <div class="report-inline-header">
+                        <h1 class="view-title">
+                            <i class="fa-solid fa-file-lines" style="color: #38bdf8; margin-right: 0.5rem;"></i>Assessment Reports
+                            <span class="scope-indicator"></span>
+                        </h1>
+                        <div class="report-inline-actions">
+                            <button id="btn-report-generate" class="btn-primary" style="gap: 0.5rem;">
+                                <i class="fa-solid fa-bolt"></i> Generate Report
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="report-empty-state" class="glass-card" style="text-align: center; padding: 4rem 2rem;">
+                        <div style="font-size: 3rem; margin-bottom: 1.5rem; opacity: 0.3;">⚡</div>
+                        <h3 style="color: var(--text-primary); margin-bottom: 0.75rem;">No Assessments Yet</h3>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 480px; margin: 0 auto 1.5rem; line-height: 1.6;">
+                            Click <strong>Generate Report</strong> to run an analysis sweep and build a comprehensive FinOps assessment. Each report is saved here for reference.
+                        </p>
+                        <button id="btn-report-generate-empty" class="btn-primary" style="gap: 0.5rem;">
+                            <i class="fa-solid fa-bolt"></i> Generate Report
+                        </button>
+                    </div>
+
+                    <div id="report-history" style="display: none;">
+                        <div id="report-history-list"></div>
                     </div>
                 </section>
 

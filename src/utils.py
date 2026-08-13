@@ -91,6 +91,7 @@ class OrgParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     org_project_id: Optional[str] = None
+    admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
 

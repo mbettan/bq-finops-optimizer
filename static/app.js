@@ -6727,146 +6727,206 @@ write_client.append_rows(iter([request]))`;
         });
     }
 
-    const cachedAiResults = localStorage.getItem('bq_ai_results');
-    if (cachedAiResults) {
-        try {
-            renderAiResults(JSON.parse(cachedAiResults));
-        } catch (e) { console.warn("Failed to parse cached AI results", e); }
-    }
-
-    // Load cached top spenders data
-    const cachedSpenders = localStorage.getItem('bq_top_spenders');
-    if (cachedSpenders) {
-        try {
-            renderTopSpenders(JSON.parse(cachedSpenders));
-        } catch (e) { console.warn("Failed to parse cached top spenders", e); }
-    }
-
-    // Load cached storage data
-    const cachedStorage = localStorage.getItem('bq_storage_results');
-    if (cachedStorage) {
-        try {
-            const storageData = JSON.parse(cachedStorage);
-            state.storageData = storageData.datasets;
-            renderStorageResults(storageData);
-            renderOrgStatus(storageData.org_status);
-        } catch (e) { console.warn("Failed to parse cached storage results", e); }
-    }
-
-    // Load cached Active Assist recommendations
-    const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
-    if (cachedActiveAssist) {
-        try {
-            const activeAssistData = JSON.parse(cachedActiveAssist);
-            state.activeAssistData = activeAssistData;
-            renderActiveAssistResults(activeAssistData);
-        } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
-    }
-
-    // Load cached Static Schema Audit results
-    const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
-    if (cachedStaticAudit) {
-        try {
-            const staticAuditData = JSON.parse(cachedStaticAudit);
-            state.staticAuditData = staticAuditData;
-            renderStaticAuditResults(staticAuditData);
-        } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
-    }
-
-    // Load cached job data
-    const cachedJob = localStorage.getItem('bq_job_results');
-    if (cachedJob) {
-        try {
-            renderJobResults(JSON.parse(cachedJob));
-        } catch (e) { console.warn("Failed to parse cached job results", e); }
-    }
-
-    // Load cached slots data (recommendation + current reservations tables)
-    const cachedSlots = localStorage.getItem('bq_slots_results');
-    if (cachedSlots) {
-        try {
-            renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
-        } catch (e) { console.warn("Failed to parse cached slots results", e); }
-    }
-    
-    const cachedTiered = localStorage.getItem('bq_slots_tiered');
-    if (cachedTiered) {
-        try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
-    }
-
-    // Load cached simulation results (Edition Matrix Simulation)
-    const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
-    if (cachedSimulation) {
-        try {
-            const data = JSON.parse(cachedSimulation);
-            renderSimulationResults(data);
-            const panel = document.getElementById('simulation-results-panel');
-            if (panel) panel.style.display = 'block';
-        } catch (e) {
-            console.warn("Failed to parse cached simulation results", e);
+    function loadAllCachedData() {
+        const cachedAiResults = localStorage.getItem('bq_ai_results');
+        if (cachedAiResults) {
+            try {
+                renderAiResults(JSON.parse(cachedAiResults));
+            } catch (e) { console.warn("Failed to parse cached AI results", e); }
         }
-    }
 
-    // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
-    const cachedUtil = localStorage.getItem('bq_slots_utilization');
-    const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
-
-    let utilData = null;
-    let actualData = null;
-
-    if (cachedUtil) {
-        try {
-            utilData = JSON.parse(cachedUtil);
-        } catch (e) {
-            console.warn("Failed to parse cached slots utilization chart", e);
+        // Load cached top spenders data
+        const cachedSpenders = localStorage.getItem('bq_top_spenders');
+        if (cachedSpenders) {
+            try {
+                renderTopSpenders(JSON.parse(cachedSpenders));
+            } catch (e) { console.warn("Failed to parse cached top spenders", e); }
         }
-    }
 
-    if (cachedActualProv) {
-        try {
-            actualData = JSON.parse(cachedActualProv);
-            // Standalone timeline fallback if not embedded or to support legacy cache keys
-            if (actualData && !actualData.timeline) {
-                const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
-                if (cachedProv) {
-                    try {
-                        actualData.timeline = JSON.parse(cachedProv);
-                    } catch (_) {}
-                }
+        // Load cached storage data
+        const cachedStorage = localStorage.getItem('bq_storage_results');
+        if (cachedStorage) {
+            try {
+                const storageData = JSON.parse(cachedStorage);
+                state.storageData = storageData.datasets;
+                renderStorageResults(storageData);
+                renderOrgStatus(storageData.org_status);
+            } catch (e) { console.warn("Failed to parse cached storage results", e); }
+        }
+
+        // Load cached Active Assist recommendations
+        const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
+        if (cachedActiveAssist) {
+            try {
+                const activeAssistData = JSON.parse(cachedActiveAssist);
+                state.activeAssistData = activeAssistData;
+                renderActiveAssistResults(activeAssistData);
+            } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
+        }
+
+        // Load cached Static Schema Audit results
+        const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
+        if (cachedStaticAudit) {
+            try {
+                const staticAuditData = JSON.parse(cachedStaticAudit);
+                state.staticAuditData = staticAuditData;
+                renderStaticAuditResults(staticAuditData);
+            } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
+        }
+
+        // Load cached job data
+        const cachedJob = localStorage.getItem('bq_job_results');
+        if (cachedJob) {
+            try {
+                renderJobResults(JSON.parse(cachedJob));
+            } catch (e) { console.warn("Failed to parse cached job results", e); }
+        }
+
+        // Load cached slots data (recommendation + current reservations tables)
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (cachedSlots) {
+            try {
+                renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
+            } catch (e) { console.warn("Failed to parse cached slots results", e); }
+        }
+        
+        const cachedTiered = localStorage.getItem('bq_slots_tiered');
+        if (cachedTiered) {
+            try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
+        }
+
+        // Load cached simulation results (Edition Matrix Simulation)
+        const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
+        if (cachedSimulation) {
+            try {
+                const data = JSON.parse(cachedSimulation);
+                renderSimulationResults(data);
+                const panel = document.getElementById('simulation-results-panel');
+                if (panel) panel.style.display = 'block';
+            } catch (e) {
+                console.warn("Failed to parse cached simulation results", e);
             }
-        } catch (e) {
-            console.warn("Failed to parse cached actual provisioning", e);
+        }
+
+        // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
+        const cachedUtil = localStorage.getItem('bq_slots_utilization');
+        const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
+
+        let utilData = null;
+        let actualData = null;
+
+        if (cachedUtil) {
+            try {
+                utilData = JSON.parse(cachedUtil);
+            } catch (e) {
+                console.warn("Failed to parse cached slots utilization chart", e);
+            }
+        }
+
+        if (cachedActualProv) {
+            try {
+                actualData = JSON.parse(cachedActualProv);
+                // Standalone timeline fallback if not embedded or to support legacy cache keys
+                if (actualData && !actualData.timeline) {
+                    const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
+                    if (cachedProv) {
+                        try {
+                            actualData.timeline = JSON.parse(cachedProv);
+                        } catch (_) {}
+                    }
+                }
+            } catch (e) {
+                console.warn("Failed to parse cached actual provisioning", e);
+            }
+        }
+
+        if (utilData || actualData) {
+            try {
+                renderSlotsUtilizationAndProvisioning(utilData, actualData);
+            } catch (e) {
+                console.error("Failed to render cached slots timeline / provisioning data", e);
+            }
+        }
+
+        // Load cached profiler data
+        const cachedSummary = localStorage.getItem('bq_profiler_summary');
+        const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
+        const cachedQueries = localStorage.getItem('bq_profiler_queries');
+
+        if (cachedSummary) {
+            try {
+                renderProfilerResults(JSON.parse(cachedSummary));
+            } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
+        }
+        if (cachedTimeline) {
+            try {
+                renderHeatmap(JSON.parse(cachedTimeline));
+            } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
+        }
+        if (cachedQueries) {
+            try {
+                renderProfilerQueries(JSON.parse(cachedQueries));
+            } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
+        }
+
+        // Anti-patterns, Cost Attribution, Governance, MV, etc.
+        const cachedMv = localStorage.getItem('bq_mv_results');
+        if (cachedMv) {
+            try { renderMvResults(JSON.parse(cachedMv)); } catch (e) { console.warn("Failed to parse cached MV results", e); }
+        }
+        const cachedAnti = localStorage.getItem('bq_antipatterns_results');
+        if (cachedAnti) {
+            try { renderAntiPatternsResults(JSON.parse(cachedAnti)); } catch (e) { console.warn("Failed to parse cached anti-patterns results", e); }
+        }
+        const cachedSkew = localStorage.getItem('bq_skew_results');
+        if (cachedSkew) {
+            try { renderSkewResults(JSON.parse(cachedSkew)); } catch (e) { console.warn("Failed to parse cached skew results", e); }
+        }
+        const cachedBatch = localStorage.getItem('bq_batch_results');
+        if (cachedBatch) {
+            try { renderBatchCandidatesResults(JSON.parse(cachedBatch)); } catch (e) { console.warn("Failed to parse cached batch results", e); }
+        }
+        const cachedCostAttr = localStorage.getItem('bq_cost_attribution_results');
+        if (cachedCostAttr) {
+            try {
+                const parsedData = JSON.parse(cachedCostAttr);
+                renderCostAttributionResults(parsedData.attributions || parsedData);
+            } catch (e) { console.warn("Failed to parse cached cost attribution results", e); }
+        }
+        const cachedLinter = localStorage.getItem('bq_linter_results');
+        if (cachedLinter) {
+            try { renderLinterResults(JSON.parse(cachedLinter)); } catch (e) { console.warn("Failed to parse cached linter results", e); }
+        }
+        const cachedGov = localStorage.getItem('bq_gov_results');
+        if (cachedGov) {
+            try {
+                const govData = JSON.parse(cachedGov);
+                renderExpirationResults(govData.expiration_issues || []);
+                renderFilterResults(govData.filter_issues || []);
+            } catch (e) { console.warn("Failed to parse cached governance results", e); }
+        }
+        const cachedPerf = localStorage.getItem('bq_performance_results');
+        if (cachedPerf) {
+            try { renderPerformanceResults(JSON.parse(cachedPerf)); } catch (e) { console.warn("Failed to parse cached performance results", e); }
+        }
+        const cachedBi = localStorage.getItem('bq_bi_results');
+        if (cachedBi) {
+            try { renderBiResults(JSON.parse(cachedBi)); } catch (e) { console.warn("Failed to parse cached BI results", e); }
+        }
+        const cachedHbo = localStorage.getItem('bq_hbo_results');
+        if (cachedHbo) {
+            try { renderHboResults(JSON.parse(cachedHbo)); } catch (e) { console.warn("Failed to parse cached HBO results", e); }
+        }
+        const cachedHygiene = localStorage.getItem('bq_hygiene_results');
+        if (cachedHygiene) {
+            try { renderHygieneResults(JSON.parse(cachedHygiene)); } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
         }
     }
+    window.loadAllCachedData = loadAllCachedData;
 
-    if (utilData || actualData) {
-        try {
-            renderSlotsUtilizationAndProvisioning(utilData, actualData);
-        } catch (e) {
-            console.error("Failed to render cached slots timeline / provisioning data", e);
-        }
-    }
+    // Load all cached data on page startup
+    loadAllCachedData();
 
-    // Load cached profiler data
-    const cachedSummary = localStorage.getItem('bq_profiler_summary');
-    const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
-    const cachedQueries = localStorage.getItem('bq_profiler_queries');
-
-    if (cachedSummary) {
-        try {
-            renderProfilerResults(JSON.parse(cachedSummary));
-        } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
-    }
-    if (cachedTimeline) {
-        try {
-            renderHeatmap(JSON.parse(cachedTimeline));
-        } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
-    }
-    if (cachedQueries) {
-        try {
-            renderProfilerQueries(JSON.parse(cachedQueries));
-        } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
-    }
     // Snapshot export/import wiring
     const exportBtn = document.getElementById('btn-export-snapshot');
     if (exportBtn) {
@@ -6882,10 +6942,510 @@ write_client.append_rows(iter([request]))`;
             e.target.value = ''; // reset so re-selecting the same file fires change
         });
     }
+    // Report button wiring
+    const reportGenBtn = document.getElementById('btn-report-generate');
+    if (reportGenBtn) reportGenBtn.addEventListener('click', () => ReportModule.onClick());
+    const reportGenEmptyBtn = document.getElementById('btn-report-generate-empty');
+    if (reportGenEmptyBtn) reportGenEmptyBtn.addEventListener('click', () => ReportModule.onClick());
 
     // App Start
     initUI();
+    ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
 });
+
+/* ============================================================
+   ReportModule — One-Click Executive FinOps Report Generator
+   ============================================================
+   Fetches the canonical module registry from the server, checks
+   localStorage cache, shows a pre-flight popup if data is missing,
+   runs a sequential sweep, then opens the rendered report in a
+   new tab. Follows the Snapshot IIFE pattern.
+   ============================================================ */
+const ReportModule = (() => {
+  let MODULES = [];       // populated from GET /api/report/manifest
+  let REPORT_KEYS = [];   // derived from MODULES + settings keys
+  const SETTINGS_KEYS = ['bq_org_project', 'bq_region', 'bq_admin_project', 'bq_focus_projects'];
+  let _sweepAbort = null; // AbortController for cancelling a sweep
+  let _sweepRunning = false;
+  let _lastReportId = null; // Track the last generated report for open-in-tab
+
+  const TIPS = [
+    'Editions pricing can save 30–70% over on-demand for steady workloads.',
+    'Partitioned tables reduce bytes scanned — lower cost, faster queries.',
+    'SELECT * scans all columns. Explicit lists can cut costs dramatically.',
+    'Batch-priority jobs run at no extra slot cost during off-peak hours.',
+    'Materialized views can serve repeated aggregations at zero slot cost.',
+    'Custom quotas prevent a single runaway query from blowing your budget.',
+    'Physical storage billing can halve costs for heavily compressed data.',
+    'DML batching reduces the number of metadata operations significantly.',
+  ];
+
+  async function init() {
+    try {
+      const res = await fetch('/api/report/manifest');
+      if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+      MODULES = await res.json();
+      REPORT_KEYS = MODULES
+        .flatMap(m => m.keys)
+        .concat(SETTINGS_KEYS);
+    } catch (err) {
+      console.warn('[ReportModule] Could not load manifest:', err);
+    }
+  }
+
+  function checkModuleCache() {
+    const cached = MODULES.filter(m => m.keys.every(k => localStorage.getItem(k) !== null));
+    const missing = MODULES.filter(m => !m.keys.every(k => localStorage.getItem(k) !== null));
+    return { cached, missing };
+  }
+
+  function collectSnapshot() {
+    const out = {};
+    const allowed = new Set(REPORT_KEYS);
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && allowed.has(key)) {
+        out[key] = localStorage.getItem(key);
+      }
+    }
+    // Include sweep metadata if present
+    const meta = localStorage.getItem('bq_report_meta');
+    if (meta) out.bq_report_meta = meta;
+    return out;
+  }
+
+  // ── Pre-flight Popup ──────────────────────────────────────────────
+
+  async function onClick() {
+    if (_sweepRunning) return;
+    try {
+      await init();
+    } catch (_) {}
+    if (MODULES.length === 0) {
+      showNotification('Report module registry not loaded. Please refresh the page.', 'error');
+      return;
+    }
+    const { cached, missing } = checkModuleCache();
+    showPreFlight(cached, missing);
+  }
+
+  function showPreFlight(cached, missing) {
+    // Remove existing overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const allCached = missing.length === 0;
+    const card = document.createElement('div');
+    card.className = 'report-preflight';
+
+    let statusHtml = '';
+    if (allCached) {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> All ${cached.length} modules have cached data.</div>
+        </div>`;
+    } else {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> ${cached.length} module${cached.length !== 1 ? 's' : ''} cached</div>
+          <div class="report-preflight-item"><span class="status-icon">⚠️</span> ${missing.length} module${missing.length !== 1 ? 's' : ''} need to run: <em>${missing.slice(0, 5).map(m => m.label).join(', ')}${missing.length > 5 ? '…' : ''}</em></div>
+        </div>`;
+    }
+
+    // AI Doctor opt-in checkbox (only shown if AI module is in missing list)
+    const aiMissing = missing.some(m => m.keys.includes('bq_ai_results'));
+    const aiOptIn = aiMissing ? `
+      <div class="report-ai-opt-in">
+        <input type="checkbox" id="report-ai-optin">
+        <label for="report-ai-optin">Include AI Doctor (slow — cross-project scan, 15–60s)</label>
+      </div>` : '';
+
+    card.innerHTML = `
+      <h3>⚡ Generate Assessment Report</h3>
+      ${statusHtml}
+      ${aiOptIn}
+      <div class="report-preflight-actions">
+        <button class="report-btn-secondary" id="report-cancel-btn">Cancel</button>
+        ${!allCached ? `<button class="report-btn-secondary" id="report-skip-btn" title="Generate report with available data only">Skip Missing</button>` : ''}
+        <button class="report-btn-primary" id="report-go-btn">${allCached ? 'Generate Report' : 'Run & Generate'}</button>
+      </div>`;
+
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    // Wire buttons
+    document.getElementById('report-cancel-btn').addEventListener('click', () => dismissOverlay());
+    const skipBtn = document.getElementById('report-skip-btn');
+    if (skipBtn) skipBtn.addEventListener('click', () => { dismissOverlay(); generateNow(); });
+    document.getElementById('report-go-btn').addEventListener('click', () => {
+      dismissOverlay();
+      if (allCached) {
+        generateNow();
+      } else {
+        const excludeAi = !aiMissing || !document.getElementById('report-ai-optin')?.checked;
+        const toRun = excludeAi ? missing.filter(m => !m.keys.includes('bq_ai_results')) : missing;
+        runSweep(toRun);
+      }
+    });
+
+    // Close on backdrop click
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismissOverlay(); });
+  }
+
+  function dismissOverlay() {
+    const overlay = document.getElementById('report-overlay');
+    if (overlay) {
+      overlay.classList.remove('active');
+      setTimeout(() => overlay.remove(), 300);
+    }
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+  }
+
+  // ── Sequential Sweep ──────────────────────────────────────────────
+
+  async function runSweep(modules) {
+    if (_sweepRunning) return;
+    _sweepRunning = true;
+    _sweepAbort = new AbortController();
+
+    const btn = document.getElementById('btn-report-generate');
+    if (btn) btn.disabled = true;
+
+    // Build sweep overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'report-sweep-overlay';
+
+    const stepsHtml = modules.map((m, i) =>
+      `<div class="report-step" id="report-step-${i}">
+        <span class="report-step-icon" id="report-step-icon-${i}">⏳</span>
+        <span>${m.label}</span>
+        <span class="report-step-timing" id="report-step-time-${i}"></span>
+      </div>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div class="report-sweep-logo">⚡</div>
+      <div class="report-sweep-title">Running Analysis Sweep</div>
+      <div class="report-sweep-subtitle">Collecting data for your assessment report…</div>
+      <div class="report-progress-container">
+        <div class="report-progress-bar"><div class="report-progress-fill" id="report-progress-fill"></div></div>
+        <div class="report-progress-text"><span id="report-progress-count">0 / ${modules.length}</span><span id="report-elapsed">0s</span></div>
+      </div>
+      <div class="report-stepper">${stepsHtml}</div>
+      <div class="report-tips"><span id="report-tip-text">💡 ${TIPS[0]}</span></div>
+      <div class="report-sweep-actions" id="report-sweep-actions">
+        <button class="report-btn-secondary" id="report-sweep-cancel" title="Stops new queries. Queries already running in BigQuery will continue.">Cancel</button>
+      </div>`;
+
+    backdrop.appendChild(overlay);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    document.getElementById('report-sweep-cancel').addEventListener('click', () => {
+      if (_sweepAbort) _sweepAbort.abort();
+    });
+
+    // Tips carousel
+    let tipIdx = 0;
+    const tipInterval = setInterval(() => {
+      tipIdx = (tipIdx + 1) % TIPS.length;
+      const tipEl = document.getElementById('report-tip-text');
+      if (tipEl) tipEl.textContent = '\ud83d\udca1 ' + TIPS[tipIdx];
+    }, 8000);
+
+    // Elapsed timer
+    const startTime = Date.now();
+    const elapsedInterval = setInterval(() => {
+      const el = document.getElementById('report-elapsed');
+      if (el) el.textContent = formatElapsed(Date.now() - startTime);
+    }, 1000);
+
+    // Build request payload from state
+    const payload = buildSweepPayload();
+
+    // Sequential execution
+    const meta = {};
+    let completed = 0;
+    let anyFailed = false;
+
+    for (let i = 0; i < modules.length; i++) {
+      const mod = modules[i];
+      const stepEl = document.getElementById(`report-step-${i}`);
+      const iconEl = document.getElementById(`report-step-icon-${i}`);
+      const timeEl = document.getElementById(`report-step-time-${i}`);
+
+      if (_sweepAbort.signal.aborted) break;
+
+      if (stepEl) stepEl.classList.add('active');
+      if (iconEl) iconEl.textContent = '🔄';
+
+      const t0 = Date.now();
+      try {
+        const res = await fetch(mod.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildModulePayload(mod, payload)),
+          signal: _sweepAbort.signal,
+        });
+
+        const dt = Date.now() - t0;
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+
+        // Store result in localStorage (same pattern as existing modules)
+        for (const key of mod.keys) {
+          const val = extractKeyData(data, key, mod);
+          if (val !== undefined) {
+            safeSetLocalStorage(key, typeof val === 'string' ? val : JSON.stringify(val));
+          }
+        }
+
+        // Verify write (write failure = ⚠️)
+        const allWritten = mod.keys.every(k => localStorage.getItem(k) !== null);
+        if (iconEl) iconEl.textContent = allWritten ? '✅' : '⚠️';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add(allWritten ? 'done' : 'error'); }
+        if (timeEl) timeEl.textContent = formatMs(dt);
+
+        meta[mod.keys[0]] = { ran_at: new Date().toISOString(), lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'), duration_ms: dt };
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          if (iconEl) iconEl.textContent = '⏹️';
+          if (stepEl) { stepEl.classList.remove('active'); }
+          break;
+        }
+        anyFailed = true;
+        if (iconEl) iconEl.textContent = '❌';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add('error'); }
+        if (timeEl) timeEl.textContent = 'failed';
+        console.warn(`[ReportSweep] ${mod.label} failed:`, err);
+      }
+
+      completed++;
+      const fill = document.getElementById('report-progress-fill');
+      if (fill) fill.style.width = `${(completed / modules.length) * 100}%`;
+      const countEl = document.getElementById('report-progress-count');
+      if (countEl) countEl.textContent = `${completed} / ${modules.length}`;
+    }
+
+    clearInterval(tipInterval);
+    clearInterval(elapsedInterval);
+
+    // Store sweep metadata
+    safeSetLocalStorage('bq_report_meta', JSON.stringify(meta));
+
+    // Automatically populate all view tables from newly cached data
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+
+    // Show "Ready" state with View Report button
+    const actionsEl = document.getElementById('report-sweep-actions');
+    if (actionsEl) {
+      const aborted = _sweepAbort.signal.aborted;
+      const readyText = aborted ? '⏹️ Sweep Cancelled' : (anyFailed ? '⚠️ Sweep Complete (with errors)' : '✅ Ready');
+      actionsEl.innerHTML = `
+        <div class="report-sweep-ready">
+          <div class="ready-text">${readyText}</div>
+          <button class="report-btn-primary" id="report-view-btn">View Report</button>
+          <button class="report-btn-secondary" id="report-close-btn" style="margin-left: 0.5rem">Close</button>
+        </div>`;
+      document.getElementById('report-view-btn').addEventListener('click', () => {
+        dismissOverlay();
+        generateNow();
+      });
+      document.getElementById('report-close-btn').addEventListener('click', () => dismissOverlay());
+    }
+
+    _sweepRunning = false;
+    if (btn) btn.disabled = false;
+  }
+
+  // ── Report Generation ─────────────────────────────────────────────
+
+  async function generateNow() {
+    // Navigate to the Full Report view
+    if (typeof Router !== 'undefined') {
+      Router.navigate('full-report');
+    }
+
+    // Open tab SYNCHRONOUSLY within user gesture — before any await
+    const win = window.open('/report/pending', '_blank');
+    if (!win) {
+      showNotification('Popup blocked — please allow popups for this site.', 'error');
+      return;
+    }
+
+    // Update status UI
+    const emptyState = document.getElementById('report-empty-state');
+    const historyEl = document.getElementById('report-history');
+    if (emptyState) emptyState.style.display = 'none';
+    if (historyEl) historyEl.style.display = 'block';
+
+    try {
+      const snapshot = collectSnapshot();
+      const lookbackDays = parseInt(localStorage.getItem('bq_lookback_days') || '30');
+      const res = await fetch('/api/report/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshot, lookback_days: lookbackDays }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Server error' }));
+        throw new Error(err.detail || 'Failed to generate report');
+      }
+      const { report_id } = await res.json();
+      _lastReportId = report_id;
+      win.location.replace('/report/view/' + encodeURIComponent(report_id));
+
+      // Append to history list
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const projName = localStorage.getItem('bq_org_project') || 'unknown-project';
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row';
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-file-circle-check" style="color: #34d399; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">${escText(projName)}</div>
+              <div class="report-history-meta">${escText(ts)}</div>
+            </div>
+          </div>
+          <a href="/report/view/${encodeURIComponent(report_id)}" target="_blank" rel="noopener"
+             class="btn-secondary" style="text-decoration:none;font-size:0.85rem;padding:0.4rem 1rem;">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i> View Report
+          </a>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generated — check the new tab.', 'success');
+    } catch (err) {
+      win.location.replace('/report/error?reason=' + encodeURIComponent(err.message));
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row report-history-failed';
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-circle-xmark" style="color: #f87171; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">Generation Failed</div>
+              <div class="report-history-meta">${escText(ts)} — ${escText(err.message)}</div>
+            </div>
+          </div>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generation failed: ' + err.message, 'error');
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────
+
+  function buildSweepPayload() {
+    return {
+      org_project_id: localStorage.getItem('bq_org_project') || '',
+      admin_project_id: localStorage.getItem('bq_admin_project') || '',
+      region: localStorage.getItem('bq_region') || 'US',
+      lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'),
+      max_bytes_billed_gb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb') || '0'),
+      focus_projects: (localStorage.getItem('bq_focus_projects') || '').split(',').map(s => s.trim()).filter(Boolean),
+    };
+  }
+
+  function buildModulePayload(mod, basePayload) {
+    const p = buildPayload(mod.endpoint, basePayload);
+    if (mod.endpoint === '/api/cost-attribution/calculate') {
+      const lookback = p.lookback_days || 30;
+      const endD = new Date();
+      const startD = new Date();
+      startD.setDate(endD.getDate() - lookback);
+      const fmt = d => d.toISOString().slice(0, 10);
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id || p.org_project_id,
+        region: p.region,
+        billing_month_start: localStorage.getItem('cb_month_start') || fmt(startD),
+        billing_month_end: localStorage.getItem('cb_month_end') || fmt(endD),
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+      };
+    }
+    if (mod.endpoint === '/api/slots/simulate') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+      };
+    }
+    if (mod.endpoint === '/api/slots/tiered_recommendations') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+      };
+    }
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        edition_slot_hr_rate: 0.06,
+        cooldown_window: 60,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+      };
+    }
+    return p;
+  }
+
+  function extractKeyData(responseData, key, mod) {
+    if (key in responseData) return responseData[key];
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      if (key === 'bq_fluid_simulation_data' || key === 'bq_fluid_estimate_data') return responseData;
+    }
+    if (mod.endpoint === '/api/hbo/analyze') {
+      if (key === 'bq_hbo_results') return responseData;
+    }
+    if (mod.keys.length === 1) return responseData;
+    return responseData;
+  }
+
+  function formatElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  function formatMs(ms) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function escText(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  return { init, onClick };
+})();
 
 /**
  * Initialize a DataTable only after verifying the table's DOM is internally
@@ -8276,6 +8836,10 @@ const Router = (() => {
     document.title = `${capitalize(targetView)} · FinOps Optimizer`;
     updateScopeBadge(targetView);
 
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (e) { console.warn('[Router] loadAllCachedData error:', e); }
+    }
+
     const viewport = document.querySelector('.dashboard-viewport');
     if (viewport) viewport.scrollTop = 0;
   }
@@ -8320,6 +8884,13 @@ Router.register('dashboard', {
 Router.register('fluid-scaling', {
   show: () => {
     FluidScaling.init();
+  }
+});
+
+// Register Full Report (inline)
+Router.register('full-report', {
+  show: () => {
+    ReportModule.init().catch(() => {});
   }
 });
 

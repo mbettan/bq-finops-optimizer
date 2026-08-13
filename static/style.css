@@ -428,6 +428,13 @@ textarea {
     transform: translateY(0);
 }
 
+/* Report button — matches snapshot buttons but with distinct disabled state */
+.btn-report:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
 .redact-toggle-container {
     display: flex;
     align-items: center;
@@ -3235,4 +3242,354 @@ details[open] > summary .summary-hint::after { content: 'Click to collapse'; }
 .waste-low  { color: #94a3b8; }
 .waste-none { color: var(--text-secondary); font-weight: 500; }
 
+/* ─── Report Module: Pre-flight Popup & Sweep Overlay ─── */
 
+/* Shared overlay backdrop */
+.report-overlay-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: hsla(222, 47%, 5%, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+
+.report-overlay-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Pre-flight popup card */
+.report-preflight {
+    background: var(--glass-bg, hsla(222, 41%, 8%, 0.85));
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: var(--radius-lg, 16px);
+    padding: 2rem;
+    max-width: 520px;
+    width: 90vw;
+    box-shadow: var(--shadow-xl, 0 16px 48px rgba(0,0,0,0.5));
+}
+
+.report-preflight h3 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.report-preflight-status {
+    margin: 1rem 0;
+}
+
+.report-preflight-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    font-size: 0.9rem;
+}
+
+.report-preflight-item .status-icon {
+    font-size: 1rem;
+    width: 1.25rem;
+    text-align: center;
+}
+
+.report-preflight-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    justify-content: flex-end;
+}
+
+.report-preflight-actions button,
+.report-sweep-actions button {
+    padding: 0.5rem 1.25rem;
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    transition: all var(--transition-fast, 0.15s);
+}
+
+.report-btn-primary {
+    background: hsl(var(--primary, 217 91% 60%));
+    color: hsl(var(--primary-foreground, 222 47% 5%));
+    border-color: transparent !important;
+}
+
+.report-btn-primary:hover {
+    box-shadow: 0 0 16px hsla(217, 91%, 60%, 0.3);
+    transform: translateY(-1px);
+}
+
+.report-btn-secondary {
+    background: transparent;
+    color: var(--text-secondary, #94a3b8);
+}
+
+.report-btn-secondary:hover {
+    background: var(--glass-bg-hover, hsla(222, 41%, 10%, 0.75));
+    color: var(--text-primary, #e2e8f0);
+}
+
+.report-ai-opt-in {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    background: hsla(38, 92%, 50%, 0.12);
+    border: 1px solid hsla(38, 92%, 50%, 0.30);
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.8rem;
+    color: var(--text-primary, #e2e8f0);
+}
+
+.report-ai-opt-in label { cursor: pointer; }
+.report-ai-opt-in input[type="checkbox"] { cursor: pointer; }
+
+/* Sweep progress overlay */
+.report-sweep-overlay {
+    background: var(--glass-bg, hsla(222, 41%, 8%, 0.85));
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: var(--radius-lg, 16px);
+    padding: 2rem 2.5rem;
+    max-width: 560px;
+    width: 90vw;
+    box-shadow: var(--shadow-xl, 0 16px 48px rgba(0,0,0,0.5));
+    text-align: center;
+}
+
+.report-sweep-logo {
+    font-size: 3.5rem;
+    animation: report-pulse-glow 1.5s ease-in-out infinite;
+    margin-bottom: 1rem;
+}
+
+@keyframes report-pulse-glow {
+    0%, 100% { opacity: 0.6; filter: drop-shadow(0 0 0px transparent); }
+    50% { opacity: 1; filter: drop-shadow(0 0 12px hsla(217, 91%, 60%, 0.4)); }
+}
+
+.report-sweep-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.report-sweep-subtitle {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #94a3b8);
+    margin-bottom: 1.5rem;
+}
+
+/* Progress bar */
+.report-progress-container {
+    margin: 1.25rem 0;
+}
+
+.report-progress-bar {
+    height: 6px;
+    background: var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.report-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, hsl(var(--primary, 217 91% 60%)), hsl(var(--chart-2, 162 72% 46%)));
+    border-radius: 3px;
+    transition: width 0.5s ease;
+    width: 0%;
+}
+
+.report-progress-text {
+    font-size: 0.75rem;
+    color: var(--text-muted, #64748b);
+    display: flex;
+    justify-content: space-between;
+}
+
+/* Module stepper */
+.report-stepper {
+    text-align: left;
+    margin: 1rem 0;
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+}
+
+.report-step {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #94a3b8);
+    transition: color 0.2s;
+}
+
+.report-step.active { color: var(--text-primary, #e2e8f0); font-weight: 600; }
+.report-step.done { color: hsl(var(--chart-2, 162 72% 46%)); }
+.report-step.error { color: hsl(var(--destructive, 0 72% 51%)); }
+
+.report-step-icon {
+    width: 1.25rem;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.report-step-timing {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-muted, #64748b);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Tips carousel */
+.report-tips {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    background: hsla(217, 91%, 60%, 0.05);
+    border: 1px solid hsla(217, 91%, 60%, 0.1);
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.8rem;
+    color: var(--text-secondary, #94a3b8);
+    min-height: 2.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.report-tips .tip-icon { font-size: 0.9rem; }
+
+/* Cancel & View Report buttons */
+.report-sweep-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    justify-content: center;
+}
+
+.report-sweep-ready {
+    margin-top: 1.5rem;
+    text-align: center;
+}
+
+.report-sweep-ready .ready-text {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    color: hsl(var(--chart-2, 162 72% 46%));
+}
+
+/* ─── Full Report (Inline) ─── */
+
+.report-inline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.report-inline-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.report-inline-actions .btn-primary,
+.report-inline-actions .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+.report-inline-actions .btn-primary {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+.report-inline-actions .btn-primary:hover {
+    background: linear-gradient(135deg, #60a5fa, #3b82f6);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+    transform: translateY(-1px);
+}
+
+.report-inline-actions .btn-secondary {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.report-inline-actions .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Report History List ─── */
+#report-history {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.report-history-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem !important;
+    margin-bottom: 0.5rem;
+    border-radius: 10px;
+    transition: border-color 0.2s;
+}
+
+.report-history-row:hover {
+    border-color: rgba(56, 189, 248, 0.3);
+}
+
+.report-history-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.report-history-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.report-history-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.report-history-failed {
+    border-color: rgba(248, 113, 113, 0.25);
+}
+
+.report-history-failed:hover {
+    border-color: rgba(248, 113, 113, 0.4);
+}

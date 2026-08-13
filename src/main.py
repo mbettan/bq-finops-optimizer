@@ -28,6 +28,7 @@ from .fluid_scaling import (
     router as fluid_scaling_router,
     _strip_qualifier,
 )
+from .report_generator import router as report_router
 from .utils import (
     init_bq_client_and_resolve_project,
     reject_dummy_project,
@@ -56,12 +57,9 @@ from .migration_optimizer import (
 import time
 import uuid
 
-
-__version__ = "1.4.0"
-
-# Centralized on-demand pricing — single source of truth [R-pricing]
-ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))
-EDITIONS_SLOT_HR_RATE = float(os.environ.get("BQ_EDITIONS_SLOT_HR_RATE", "0.06"))
+# Re-export from the leaf module so all existing references in this file
+# (and in sub-routers like hbo.py, fluid_scaling.py) continue to work.
+from .constants import __version__, ON_DEMAND_USD_PER_TB, EDITIONS_SLOT_HR_RATE
 
 # Every route in this app is a synchronous `def` handler, so FastAPI dispatches
 # each request to Starlette/AnyIO's worker thread pool (default cap: 40).
@@ -89,6 +87,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(cost_attribution_router)
 app.include_router(hbo_router)
 app.include_router(fluid_scaling_router)
+app.include_router(report_router)
 
 @app.middleware("http")
 async def cache_static_assets(request: Request, call_next):
@@ -110,6 +109,18 @@ async def inject_request_id(request: Request, call_next):
     request_id_var.set(uuid.uuid4().hex[:8])
     response = await call_next(request)
     return response
+
+@app.middleware("http")
+async def reject_oversized_body(request: Request, call_next):
+    """Reject payloads > 10 MB before Starlette buffers them."""
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 10 * 1024 * 1024:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "Payload too large (max 10 MB)"},
+        )
+    return await call_next(request)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -552,7 +563,22 @@ def run_static_schema_audit(params: StaticAuditParams):
             
         sql = "\nUNION ALL\n".join(union_blocks) + "\nORDER BY size_bytes DESC LIMIT 50"
         
-        results = run_query_and_log(scoped_client, sql, "Static Schema Audit", params=params)
+        try:
+            results = run_query_and_log(scoped_client, sql, "Static Schema Audit", params=params)
+        except Exception as e:
+            logger.warning(f"Fast UNION ALL failed for Static Schema Audit: {e}. Falling back to querying projects individually.")
+            results = []
+            for block in union_blocks:
+                try:
+                    p_sql = block + "\nORDER BY size_bytes DESC LIMIT 50"
+                    p_res = run_query_and_log(scoped_client, p_sql, "Static Schema Audit (Fallback)", params=params)
+                    results.extend(p_res)
+                except Exception as p_err:
+                    logger.warning(f"Static Schema Audit skipped inaccessible project: {p_err}")
+            # Sort combined fallback results by size_bytes descending and limit to 50
+            results.sort(key=lambda r: int(r.get('size_bytes') or 0), reverse=True)
+            results = results[:50]
+
         output = []
         for row in results:
             output.append(StaticAuditResult(
@@ -2787,6 +2813,7 @@ def analyze_bi_engine(params: BIParams):
 
 class GovernanceParams(FocusMixin):
     org_project_id: Optional[str] = None
+    admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
     # F14: Honor audit_type discriminator — halves query cost when only one
