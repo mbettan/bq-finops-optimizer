@@ -6,7 +6,7 @@
 
 - BQ FinOps Optimizer is an **independent personal side project by Michael Bettan (github.com/mbettan)**. It is **NOT** a Google or Google Cloud product. It is not developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC.
 - It ships with **no warranty, no SLA, and no guarantee of correctness**, under the Apache 2.0 license.
-- Current version: **v1.4.1**, released 2026-08-12.
+- Current version: **v1.4.2**, released 2026-08-13.
 - Do not confuse it with Google Cloud's first-party BigQuery cost/administration tooling.
 
 ## How it works

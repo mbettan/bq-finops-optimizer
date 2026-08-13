@@ -56,7 +56,7 @@
         "operatingSystem": "Cross-platform",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "isAccessibleForFree": true,
-        "softwareVersion": "1.4.1",
+        "softwareVersion": "1.4.2",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
         "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
@@ -71,14 +71,16 @@
         },
         "publisher": { "@type": "Person", "name": "Michael Bettan", "url": "https://github.com/mbettan" },
         "datePublished": "2026-07-15",
-        "dateModified": "2026-08-12",
+        "dateModified": "2026-08-13",
         "inLanguage": "en",
         "mainEntityOfPage": "https://mbettan.github.io/bq-finops-optimizer/",
         "disambiguatingDescription": "Independent open-source project. Not a Google or Google Cloud product, and not endorsed or supported by Google.",
         "keywords": "BigQuery cost optimization, BigQuery FinOps, GCP cost management, BigQuery slot analysis, SQL anti-pattern detection, Gemini SQL optimization, BigQuery Editions simulator, INFORMATION_SCHEMA analysis, physical vs logical storage billing",
-        "releaseNotes": "v1.4.1 — GitHub Pages: Interactive Runtime Economics & Diagnostic Cost Calculator with BigQuery Editions modeling, Cloud Run compute pricing, and Gemini 3.5 Flash / 3.1 Flash-Lite token estimation.",
+        "releaseNotes": "v1.4.2 — Executive Assessment Report Generator & Comprehensive Analysis Sweep with automated sequential execution, standalone HTML document rendering, and IAM least-privilege review.",
         "featureList": [
+            "Executive Assessment Report Generator & Comprehensive Analysis Sweep",
             "AI Doctor — Gemini-powered SQL anti-pattern diagnosis and query rewriting",
+            "Interactive Runtime Economics & FinOps ROI Calculator",
             "Editions Capacity Simulator for Standard, Enterprise and Enterprise Plus",
             "Physical vs. logical storage billing arbitrage with ALTER SCHEMA DDL",
             "Slot utilization timeline and p80/p95/max baseline recommendations",
@@ -283,7 +285,7 @@
             <div class="hero-copy">
                 <div class="hero-badges">
                     <span class="chip chip-live"><span class="chip-dot"></span>Open Source · Apache 2.0</span>
-                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.4.1</span>
+                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.4.2</span>
                 </div>
 
                 <h1 class="hero-title">
@@ -1122,7 +1124,20 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     </div>
                 </article>
 
-                <!-- 4. Hybrid Cost Attribution & Spender Analytics (2-col) -->
+                <!-- 4. Executive Assessment Report Generator (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">✦ v1.4.2 Feature</span>
+                    <div class="card-icon icon-rose"><i class="fas fa-file-invoice-dollar"></i></div>
+                    <h3>Executive Assessment Report</h3>
+                    <p>Single-click automated sequential sweep across all diagnostic modules, generating a standalone executive HTML report with synthesized KPI scorecards, workload ROI rankings, prioritized roadmap, and print/PDF optimization.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Comprehensive Analysis Sweep</span>
+                        <span><i class="fas fa-check"></i>Executive KPI Scorecard</span>
+                        <span><i class="fas fa-check"></i>Print &amp; PDF Optimized</span>
+                    </div>
+                </article>
+
+                <!-- 5. Hybrid Cost Attribution & Spender Analytics (2-col) -->
                 <article class="card spotlight reveal">
                     <span class="pill pill-enhanced">Enhanced</span>
                     <div class="card-icon icon-amber"><i class="fas fa-calculator"></i></div>
@@ -1135,10 +1150,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                     </div>
                 </article>
 
-                <!-- 5. Autonomous FinOps & Action Workflow (2-col) -->
+                <!-- 6. Autonomous FinOps & Action Workflow (2-col) -->
                 <article class="card spotlight reveal">
-                    <span class="pill pill-new">✦ v1.4.1 Feature</span>
-                    <div class="card-icon icon-rose"><i class="fas fa-bolt"></i></div>
+                    <span class="pill pill-enhanced">Enhanced</span>
+                    <div class="card-icon icon-cyan"><i class="fas fa-bolt"></i></div>
                     <h3>From Findings to Action</h3>
                     <p>Move from diagnosis to action instantly. Universal CSV export preserving active search/filters, 1-click BigQuery Console deep-links, and dynamic <code>max_bytes_billed</code> budget caps.</p>
                     <div class="mini-tags">
@@ -1796,7 +1811,11 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
             <div class="releases-layout reveal">
                 <!-- Left Nav / Version Timeline -->
                 <div class="releases-nav" id="releases-nav" role="tablist" aria-label="Release versions">
-                    <button class="release-nav-btn is-active" data-version="v1.4.1" role="tab" aria-selected="true">
+                    <button class="release-nav-btn is-active" data-version="v1.4.2" role="tab" aria-selected="true">
+                        <span>v1.4.2</span>
+                        <span class="release-nav-date">Aug 13, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.1" role="tab" aria-selected="false">
                         <span>v1.4.1</span>
                         <span class="release-nav-date">Aug 12, 2026</span>
                     </button>
@@ -1830,12 +1849,12 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 <div class="release-detail-card" id="release-detail-card">
                     <div class="release-detail-header">
                         <div class="release-tag-pill" id="release-title-badge">
-                            <span id="release-version-text">v1.4.1</span>
+                            <span id="release-version-text">v1.4.2</span>
                             <span class="latest-pill" id="release-latest-pill">Latest Release</span>
                         </div>
                         <div class="release-meta">
-                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>August 12, 2026</span>
-                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.1" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
+                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>August 13, 2026</span>
+                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.2" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
                                 <i class="fab fa-github"></i>View on GitHub ↗
                             </a>
                         </div>
@@ -1845,8 +1864,8 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                         <div class="release-content" id="release-body-content">
                             <h3>🌟 Highlights &amp; Major Capabilities</h3>
                             <ul>
-                                <li><strong>Interactive Runtime Economics &amp; FinOps ROI Calculator (#60):</strong> Client-side cost calculator on GitHub Pages modeling BigQuery metadata scans ($0 under Editions reservations), Cloud Run compute, and Gemini 3.5 Flash / 3.1 Flash-Lite AI token footprints across custom project scales and frequencies.</li>
-                                <li><strong>Full-Width Public Product Roadmap:</strong> Edge-to-edge roadmap filter toolbar with inline GitHub live synchronization status and mobile touch-scrolling snapping.</li>
+                                <li><strong>Executive Assessment Report Generator &amp; Analysis Sweep (#40):</strong> Automated single-click sequential sweep across all diagnostic modules, generating a standalone executive HTML report with synthesized KPI scorecards, workload ROI rankings, prioritized roadmap, and print/PDF optimization.</li>
+                                <li><strong>IAM Least-Privilege Governance:</strong> Updated documentation and error guidance to reflect least-privilege IAM configurations (read-only <code>roles/bigquery.resourceViewer</code> and optional metadata viewer).</li>
                             </ul>
                         </div>
                         <div class="release-fade-overlay" id="release-fade-overlay"></div>

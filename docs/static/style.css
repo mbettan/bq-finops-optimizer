@@ -428,6 +428,13 @@ textarea {
     transform: translateY(0);
 }
 
+/* Report button — matches snapshot buttons but with distinct disabled state */
+.btn-report:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
 .redact-toggle-container {
     display: flex;
     align-items: center;
@@ -2783,6 +2790,319 @@ table.showcase-table:not(:has(tbody tr)) {
   display: inline-block;
   vertical-align: middle;
 }
+
+/* =========================================================
+   Notification Center (bell icon + history dropdown)
+   ========================================================= */
+#notification-center {
+    position: relative;
+    margin-left: auto;
+}
+
+.notif-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    min-width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    border-radius: 999px;
+    padding: 0 4px;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+    animation: notif-pulse 2s ease-in-out infinite;
+}
+
+@keyframes notif-pulse {
+    0%, 100% { box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+    50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); }
+}
+
+.notif-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 340px;
+    max-height: 420px;
+    background: hsla(222, 47%, 8%, 0.95);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid hsla(215, 28%, 20%, 0.6);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px hsla(222, 47%, 3%, 0.6);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.notif-dropdown__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid hsla(215, 28%, 18%, 0.5);
+}
+
+.notif-dropdown__title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.notif-dropdown__clear {
+    background: none;
+    border: none;
+    color: #60a5fa;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.notif-dropdown__clear:hover {
+    text-decoration: underline;
+}
+
+.notif-dropdown__list {
+    overflow-y: auto;
+    max-height: 350px;
+}
+
+.notif-dropdown__empty {
+    padding: 1.25rem 1rem;
+    text-align: center;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.notif-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid hsla(215, 28%, 16%, 0.3);
+}
+
+.notif-item:last-child { border-bottom: none; }
+
+.notif-item__icon {
+    font-size: 0.85rem;
+    margin-top: 0.1rem;
+    flex-shrink: 0;
+}
+.notif-item__icon.success { color: #22c55e; }
+.notif-item__icon.error   { color: #ef4444; }
+.notif-item__icon.warning { color: #fbbf24; }
+.notif-item__icon.info    { color: #60a5fa; }
+
+/* Ongoing task entries — purple to distinguish from info (blue) */
+.notif-item.ongoing { background: rgba(167, 139, 250, 0.06); }
+.notif-item__icon.ongoing { color: #a78bfa; }
+.notif-divider {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #475569;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.notif-item__body { min-width: 0; }
+
+.notif-item__message {
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.notif-item__time {
+    font-size: 0.7rem;
+    color: #64748b;
+    margin-top: 0.15rem;
+}
+
+/* =========================================================
+   Job ID cells — monospace with overflow ellipsis
+   ========================================================= */
+.job-id-cell {
+    max-width: 180px;
+    position: relative;
+    white-space: nowrap;
+}
+
+.job-id-text {
+    display: inline-block;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #94a3b8;
+}
+
+/* Hidden until hover/focus to keep dense tables readable. `visibility`, not
+   `opacity: 0` — an opacity-hidden control still takes keyboard focus and
+   still reports as clickable, so tabbing through the table used to land on
+   invisible buttons. */
+.job-id-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    vertical-align: middle;
+    margin-left: 4px;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease;
+}
+
+.job-id-cell:hover .job-id-actions,
+.job-id-cell:focus-within .job-id-actions {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Touch devices never fire :hover, so the actions would be permanently
+   unreachable. Pin them visible wherever hover isn't available. */
+@media (hover: none) {
+    .job-id-actions {
+        opacity: 1;
+        visibility: visible;
+    }
+}
+
+.job-id-link {
+    color: #60a5fa;
+    font-size: 0.75rem;
+    padding: 2px 4px;
+    text-decoration: none;
+}
+
+.job-id-link:hover { color: #93c5fd; }
+
+.job-id-actions .copy-job-id-btn {
+    padding: 2px 5px;
+    font-size: 0.75rem;
+}
+
+/* Console deep-links on dataset / table names */
+.console-link {
+    color: #93c5fd;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(147, 197, 253, 0.4);
+}
+.console-link:hover {
+    color: #bfdbfe;
+    border-bottom-style: solid;
+}
+
+/* =========================================================
+   CSV export bar
+   ========================================================= */
+.csv-export-bar {
+    display: none !important;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+}
+
+/* Show CSV export bar ONLY when there is actual data in the table */
+.glass-card:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+.results-panel:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+.tab-pane:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
+div:has(tbody tr td:not(.dataTables_empty)) > .csv-export-bar {
+    display: flex !important;
+}
+
+.btn-csv-export {
+    font-size: 0.78rem;
+    padding: 0.3rem 0.65rem;
+    white-space: nowrap;
+}
+
+.btn-csv-export i { margin-right: 0.3rem; }
+
+/* =========================================================
+   Anti-pattern filter toolbar
+   ========================================================= */
+.ap-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    background: hsla(217, 33%, 12%, 0.5);
+    border: 1px solid hsla(215, 28%, 20%, 0.5);
+    border-radius: 10px;
+}
+
+.ap-toolbar__field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 150px;
+}
+
+.ap-toolbar__label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary, #94a3b8);
+    font-weight: 600;
+}
+
+.ap-toolbar select,
+.ap-toolbar input {
+    background: rgba(0, 0, 0, 0.25);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.82rem;
+}
+
+.ap-view-toggle {
+    display: inline-flex;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.ap-view-toggle button {
+    background: rgba(0, 0, 0, 0.25);
+    color: #94a3b8;
+    border: none;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.ap-view-toggle button.active {
+    background: hsla(217, 91%, 60%, 0.2);
+    color: #93c5fd;
+    font-weight: 600;
+}
+
+.ap-filter-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #94a3b8);
+}
+
+.ap-stat-value {
+    color: #e2e8f0;
+    font-weight: 700;
+}
+
 /* ─── Batch Priority Badge Variants ─── */
 /* The batch-candidates table uses space-separated modifiers (`badge danger`)
    rather than the hyphenated `.badge-danger` family used elsewhere. */
@@ -2859,20 +3179,6 @@ table.showcase-table:not(:has(tbody tr)) {
     to { opacity: 1; transform: translateY(0); }
 }
 
-/* =========================================================
-   Console deep-links on project / dataset / table names
-   Keep in sync with static/style.css.
-   ========================================================= */
-.console-link {
-    color: #93c5fd;
-    text-decoration: none;
-    border-bottom: 1px dotted rgba(147, 197, 253, 0.4);
-}
-.console-link:hover {
-    color: #bfdbfe;
-    border-bottom-style: solid;
-}
-
 /* Disclosure hint on <details> summaries. Driven by [open] so it never tells
    the user to "expand" a panel that is already open. aria-hidden because the
    <summary> element already exposes its expanded state to assistive tech, and
@@ -2885,31 +3191,6 @@ table.showcase-table:not(:has(tbody tr)) {
 }
 .summary-hint::after { content: 'Click to expand'; }
 details[open] > summary .summary-hint::after { content: 'Click to collapse'; }
-
-/* =========================================================
-   CSV export bar
-   ========================================================= */
-.csv-export-bar {
-    display: none !important;
-    justify-content: flex-end;
-    margin-bottom: 0.5rem;
-}
-
-/* Show CSV export bar ONLY when there is actual data in the table */
-.glass-card:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
-.results-panel:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
-.tab-pane:has(tbody tr td:not(.dataTables_empty)) .csv-export-bar,
-div:has(tbody tr td:not(.dataTables_empty)) > .csv-export-bar {
-    display: flex !important;
-}
-
-.btn-csv-export {
-    font-size: 0.78rem;
-    padding: 0.3rem 0.65rem;
-    white-space: nowrap;
-}
-
-.btn-csv-export i { margin-right: 0.3rem; }
 
 /* ─── Billing Mode Badges (Top Spenders) ─── */
 .badge-billing {
@@ -2961,5 +3242,354 @@ div:has(tbody tr td:not(.dataTables_empty)) > .csv-export-bar {
 .waste-low  { color: #94a3b8; }
 .waste-none { color: var(--text-secondary); font-weight: 500; }
 
+/* ─── Report Module: Pre-flight Popup & Sweep Overlay ─── */
 
+/* Shared overlay backdrop */
+.report-overlay-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: hsla(222, 47%, 5%, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
 
+.report-overlay-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Pre-flight popup card */
+.report-preflight {
+    background: var(--glass-bg, hsla(222, 41%, 8%, 0.85));
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: var(--radius-lg, 16px);
+    padding: 2rem;
+    max-width: 520px;
+    width: 90vw;
+    box-shadow: var(--shadow-xl, 0 16px 48px rgba(0,0,0,0.5));
+}
+
+.report-preflight h3 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.report-preflight-status {
+    margin: 1rem 0;
+}
+
+.report-preflight-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    font-size: 0.9rem;
+}
+
+.report-preflight-item .status-icon {
+    font-size: 1rem;
+    width: 1.25rem;
+    text-align: center;
+}
+
+.report-preflight-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    justify-content: flex-end;
+}
+
+.report-preflight-actions button,
+.report-sweep-actions button {
+    padding: 0.5rem 1.25rem;
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    transition: all var(--transition-fast, 0.15s);
+}
+
+.report-btn-primary {
+    background: hsl(var(--primary, 217 91% 60%));
+    color: hsl(var(--primary-foreground, 222 47% 5%));
+    border-color: transparent !important;
+}
+
+.report-btn-primary:hover {
+    box-shadow: 0 0 16px hsla(217, 91%, 60%, 0.3);
+    transform: translateY(-1px);
+}
+
+.report-btn-secondary {
+    background: transparent;
+    color: var(--text-secondary, #94a3b8);
+}
+
+.report-btn-secondary:hover {
+    background: var(--glass-bg-hover, hsla(222, 41%, 10%, 0.75));
+    color: var(--text-primary, #e2e8f0);
+}
+
+.report-ai-opt-in {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    background: hsla(38, 92%, 50%, 0.12);
+    border: 1px solid hsla(38, 92%, 50%, 0.30);
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.8rem;
+    color: var(--text-primary, #e2e8f0);
+}
+
+.report-ai-opt-in label { cursor: pointer; }
+.report-ai-opt-in input[type="checkbox"] { cursor: pointer; }
+
+/* Sweep progress overlay */
+.report-sweep-overlay {
+    background: var(--glass-bg, hsla(222, 41%, 8%, 0.85));
+    border: 1px solid var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: var(--radius-lg, 16px);
+    padding: 2rem 2.5rem;
+    max-width: 560px;
+    width: 90vw;
+    box-shadow: var(--shadow-xl, 0 16px 48px rgba(0,0,0,0.5));
+    text-align: center;
+}
+
+.report-sweep-logo {
+    font-size: 3.5rem;
+    animation: report-pulse-glow 1.5s ease-in-out infinite;
+    margin-bottom: 1rem;
+}
+
+@keyframes report-pulse-glow {
+    0%, 100% { opacity: 0.6; filter: drop-shadow(0 0 0px transparent); }
+    50% { opacity: 1; filter: drop-shadow(0 0 12px hsla(217, 91%, 60%, 0.4)); }
+}
+
+.report-sweep-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.report-sweep-subtitle {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #94a3b8);
+    margin-bottom: 1.5rem;
+}
+
+/* Progress bar */
+.report-progress-container {
+    margin: 1.25rem 0;
+}
+
+.report-progress-bar {
+    height: 6px;
+    background: var(--glass-border, hsl(215, 28%, 14%));
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.report-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, hsl(var(--primary, 217 91% 60%)), hsl(var(--chart-2, 162 72% 46%)));
+    border-radius: 3px;
+    transition: width 0.5s ease;
+    width: 0%;
+}
+
+.report-progress-text {
+    font-size: 0.75rem;
+    color: var(--text-muted, #64748b);
+    display: flex;
+    justify-content: space-between;
+}
+
+/* Module stepper */
+.report-stepper {
+    text-align: left;
+    margin: 1rem 0;
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+}
+
+.report-step {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.4rem 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #94a3b8);
+    transition: color 0.2s;
+}
+
+.report-step.active { color: var(--text-primary, #e2e8f0); font-weight: 600; }
+.report-step.done { color: hsl(var(--chart-2, 162 72% 46%)); }
+.report-step.error { color: hsl(var(--destructive, 0 72% 51%)); }
+
+.report-step-icon {
+    width: 1.25rem;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+.report-step-timing {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-muted, #64748b);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Tips carousel */
+.report-tips {
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    background: hsla(217, 91%, 60%, 0.05);
+    border: 1px solid hsla(217, 91%, 60%, 0.1);
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.8rem;
+    color: var(--text-secondary, #94a3b8);
+    min-height: 2.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.report-tips .tip-icon { font-size: 0.9rem; }
+
+/* Cancel & View Report buttons */
+.report-sweep-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    justify-content: center;
+}
+
+.report-sweep-ready {
+    margin-top: 1.5rem;
+    text-align: center;
+}
+
+.report-sweep-ready .ready-text {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    color: hsl(var(--chart-2, 162 72% 46%));
+}
+
+/* ─── Full Report (Inline) ─── */
+
+.report-inline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.report-inline-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.report-inline-actions .btn-primary,
+.report-inline-actions .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+.report-inline-actions .btn-primary {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+.report-inline-actions .btn-primary:hover {
+    background: linear-gradient(135deg, #60a5fa, #3b82f6);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+    transform: translateY(-1px);
+}
+
+.report-inline-actions .btn-secondary {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.report-inline-actions .btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Report History List ─── */
+#report-history {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.report-history-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem !important;
+    margin-bottom: 0.5rem;
+    border-radius: 10px;
+    transition: border-color 0.2s;
+}
+
+.report-history-row:hover {
+    border-color: rgba(56, 189, 248, 0.3);
+}
+
+.report-history-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.report-history-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.report-history-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.report-history-failed {
+    border-color: rgba(248, 113, 113, 0.25);
+}
+
+.report-history-failed:hover {
+    border-color: rgba(248, 113, 113, 0.4);
+}

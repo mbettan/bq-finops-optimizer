@@ -7282,7 +7282,7 @@ const ReportModule = (() => {
     }
 
     // Open tab SYNCHRONOUSLY within user gesture — before any await
-    const win = window.open('/report/pending', '_blank');
+    const win = window.open(window.IS_SIMULATOR ? './sample_report.html' : '/report/pending', '_blank');
     if (!win) {
       showNotification('Popup blocked — please allow popups for this site.', 'error');
       return;
@@ -7308,7 +7308,11 @@ const ReportModule = (() => {
       }
       const { report_id } = await res.json();
       _lastReportId = report_id;
-      win.location.replace('/report/view/' + encodeURIComponent(report_id));
+      if (window.IS_SIMULATOR) {
+        win.location.replace('./sample_report.html');
+      } else {
+        win.location.replace('/report/view/' + encodeURIComponent(report_id));
+      }
 
       // Append to history list
       const listEl = document.getElementById('report-history-list');
@@ -7318,6 +7322,7 @@ const ReportModule = (() => {
         const projName = localStorage.getItem('bq_org_project') || 'unknown-project';
         const row = document.createElement('div');
         row.className = 'glass-card report-history-row';
+        const viewHref = window.IS_SIMULATOR ? './sample_report.html' : `/report/view/${encodeURIComponent(report_id)}`;
         row.innerHTML = `<div class="report-history-info">
             <i class="fa-solid fa-file-circle-check" style="color: #34d399; font-size: 1.1rem;"></i>
             <div>
@@ -7325,7 +7330,7 @@ const ReportModule = (() => {
               <div class="report-history-meta">${escText(ts)}</div>
             </div>
           </div>
-          <a href="/report/view/${encodeURIComponent(report_id)}" target="_blank" rel="noopener"
+          <a href="${viewHref}" target="_blank" rel="noopener"
              class="btn-secondary" style="text-decoration:none;font-size:0.85rem;padding:0.4rem 1rem;">
             <i class="fa-solid fa-arrow-up-right-from-square"></i> View Report
           </a>`;
@@ -7333,7 +7338,9 @@ const ReportModule = (() => {
       }
       showNotification('Report generated — check the new tab.', 'success');
     } catch (err) {
-      win.location.replace('/report/error?reason=' + encodeURIComponent(err.message));
+      if (!window.IS_SIMULATOR) {
+        win.location.replace('/report/error?reason=' + encodeURIComponent(err.message));
+      }
       const listEl = document.getElementById('report-history-list');
       if (listEl) {
         const now = new Date();

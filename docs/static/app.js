@@ -79,18 +79,123 @@
     window.sanitizeData = sanitizeData;
 })();
 
+// Guards against a corrupted/malicious localStorage value (e.g. from a bad
+// Snapshot import) breaking script execution for the rest of this file.
+function safeParseJSON(raw, fallback) {
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
+        return fallback;
+    }
+}
+
+// Extracts a human-readable message from FastAPI error details.
+// FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
+// renders as [object Object] if used directly. This handles string,
+// array-of-{loc,msg}, and absent cases.
+function detailToMessage(detail, fallback = 'Unknown error') {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map(d => {
+            if (typeof d === 'string') return d;
+            if (d && d.msg) {
+                const loc = Array.isArray(d.loc) ? d.loc.join(' → ') : '';
+                return loc ? `${loc}: ${d.msg}` : d.msg;
+            }
+            return String(d);
+        }).join('; ');
+    }
+    return String(detail);
+}
+
+// Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+    }
+    // Fallback: hidden textarea + execCommand
+    return new Promise((resolve, reject) => {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            resolve();
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
+// State
+const state = {
+    orgProject: localStorage.getItem('bq_org_project') || '',
+    adminProject: localStorage.getItem('bq_admin_project') || '',
+    region: localStorage.getItem('bq_region') || 'region-us',
+    maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
+    focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
+    storageData: [],
+    slotsData: [],
+    slotsChart: null,
+    actualProvisioningChart: null,
+    jobsScatterChart: null,
+    // Logs fetch params (project IDs, region, focus_projects) to the console
+    // when true. Keep this off by default — screenshots/screen-shares/HAR
+    // exports of the console can leak org topology otherwise.
+    debugMode: false
+};
+
+// Quota-safe localStorage helper available globally
+function safeSetLocalStorage(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (e) {
+        console.warn(`[localStorage] Failed to write key "${key}" (possibly quota exceeded):`, e);
+        try { localStorage.removeItem(key); } catch (_) {}
+        return false;
+    }
+}
+
+/* ============================================================
+   CORE UI UTILITIES
+   Shared table/formatting helpers used by every module. Defined at
+   top level (the script tag sits at the end of <body>, so the DOM is
+   already parsed) and exported on `window` so the DOMContentLoaded
+   block below and inline handlers can both reach them.
+   ============================================================ */
+
+/**
+ * Format numbers into compact k/m/b strings for table columns.
+ * E.g. 1900090541 -> "1.90b", 42500 -> "42.5k"
+ */
+function formatCompact(num) {
+    if (num == null || isNaN(num)) return '0';
+    const abs = Math.abs(num);
+    if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+    if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+    if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+    if (abs >= 1e3) return (num / 1e3).toFixed(2) + 'k';
+    return num.toLocaleString();
+}
+window.formatCompact = formatCompact;
+
 /**
  * DataTables column renderer that sorts on an embedded `data-order` value.
  *
  * DataTables only reads a `data-order` attribute off the <td> itself, and
  * only for DOM-sourced tables. Tables built with `row.add([...])` hand
  * DataTables an HTML string, so the attribute is invisible to the sorter and
- * "12.3k" ends up ordered lexically. This renderer digs the raw number back
- * out for the sort/type passes and leaves the display pass untouched.
+ * "$1,000.00" ends up ordered lexically. This renderer digs the raw number
+ * back out for the sort/type passes and leaves the display pass untouched.
  * The filter pass gets the tag-stripped text so a search for "span" or
  * "order" doesn't match the wrapper markup instead of the value.
- *
- * Keep in sync with static/app.js.
  */
 function orderByDataAttr(data, type) {
     if (type === 'filter') return String(data).replace(/<[^>]*>/g, '');
@@ -103,7 +208,7 @@ function orderByDataAttr(data, type) {
 window.orderByDataAttr = orderByDataAttr;
 
 /**
- * Format a dollar amount to whole dollars. Keep in sync with static/app.js.
+ * Format a dollar amount to whole dollars.
  *
  * Intl puts the sign ahead of the symbol ("-$1,234"), which hand-rolled
  * `'$' + Math.round(n).toLocaleString()` gets wrong ("$-1,234"). Amounts
@@ -139,8 +244,6 @@ window.escapeHtmlAttr = escapeHtmlAttr;
  * Build a Google Cloud Console deep-link URL.
  * `location` accepts either a metadata region ("region-us") or a plain
  * location ("us") — the "region-" prefix is stripped for the Console.
- *
- * Keep in sync with static/app.js — the simulator renders the same tables.
  */
 function buildConsoleUrl(type, opts = {}) {
     const proj = encodeURIComponent(opts.project || '');
@@ -229,6 +332,27 @@ function renderIdentityBadge(email) {
 }
 window.renderIdentityBadge = renderIdentityBadge;
 
+/**
+ * Render a Job ID cell with monospace ellipsis, copy button and Console
+ * deep-link. Returns a complete <td> so callers can drop it straight into
+ * a row template.
+ */
+function renderJobId(jobId, project, region) {
+    if (!jobId) return '<td class="job-id-cell">—</td>';
+    const proj = project || (typeof state !== 'undefined' ? state.orgProject : '');
+    const loc = region || (typeof state !== 'undefined' ? state.region : 'region-us');
+    const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId });
+    const safeJobId = escapeHtmlAttr(jobId);
+    return `<td class="job-id-cell" data-order="${safeJobId}" title="${safeJobId}">` +
+        `<span class="job-id-text">${safeJobId}</span>` +
+        `<span class="job-id-actions">` +
+        `<a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` +
+        `<button class="btn-action copy-job-id-btn" data-job-id="${safeJobId}" title="Copy Job ID"><i class="fa-solid fa-copy"></i></button>` +
+        `</span>` +
+        `</td>`;
+}
+window.renderJobId = renderJobId;
+
 /** Render a dataset name with a Console deep-link. */
 function renderDatasetLink(dataset, project, label) {
     if (!dataset) return '—';
@@ -246,6 +370,10 @@ function renderTableLink(table, dataset, project, label) {
 }
 window.renderTableLink = renderTableLink;
 
+/* ------------------------------------------------------------------
+   Empty-table marking
+   ------------------------------------------------------------------ */
+
 /**
  * Tag a DataTable's container with .dt-empty when it holds no data at all.
  *
@@ -256,7 +384,9 @@ window.renderTableLink = renderTableLink;
  * the AI Doctor panel, the #aidoc-filters pills — with it, leaving the user
  * no way to undo the filter short of a page reload.
  *
- * Keep in sync with static/app.js.
+ * Registered as a delegated document handler so it covers tables initialised
+ * directly via $().DataTable() as well as those going through
+ * safeInitDataTable().
  */
 function markEmptyTables(settings) {
     try {
@@ -275,89 +405,409 @@ if (window.jQuery && $.fn && $.fn.dataTable) {
     $(document).on('init.dt draw.dt', (e, settings) => markEmptyTables(settings));
 }
 
-// Guards against a corrupted/malicious localStorage value (e.g. from a bad
-// Snapshot import) breaking script execution for the rest of this file.
-function safeParseJSON(raw, fallback) {
-    try {
-        return JSON.parse(raw);
-    } catch (e) {
-        console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
-        return fallback;
-    }
-}
+/* ------------------------------------------------------------------
+   Universal CSV export engine
+   ------------------------------------------------------------------ */
 
-// Extracts a human-readable message from FastAPI error details.
-// FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
-// renders as [object Object] if used directly. This handles string,
-// array-of-{loc,msg}, and absent cases.
-function detailToMessage(detail, fallback = 'Unknown error') {
-    if (!detail) return fallback;
-    if (typeof detail === 'string') return detail;
-    if (Array.isArray(detail)) {
-        return detail.map(d => {
-            if (typeof d === 'string') return d;
-            if (d && d.msg) {
-                const loc = Array.isArray(d.loc) ? d.loc.join(' → ') : '';
-                return loc ? `${loc}: ${d.msg}` : d.msg;
-            }
-            return String(d);
-        }).join('; ');
-    }
-    return String(detail);
-}
-
-// Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
-function copyToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        return navigator.clipboard.writeText(text);
-    }
-    // Fallback: hidden textarea + execCommand
-    return new Promise((resolve, reject) => {
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            resolve();
-        } catch (err) {
-            reject(err);
+/**
+ * Download the visible/filtered rows of an HTML <table> as a CSV file.
+ * Exports ALL DataTables rows matching the current search/filter — not
+ * just the active page. Strips HTML, escapes per RFC 4180 and prefixes a
+ * UTF-8 BOM so Excel opens it with the right encoding.
+ */
+function downloadTableAsCSV(tableId, filename) {
+    const tableEl = document.getElementById(tableId);
+    if (!tableEl) {
+        if (typeof showNotification === 'function') {
+            showNotification('No table data to export.', 'warning');
         }
+        return;
+    }
+
+    const _decodeEntities = (() => {
+        const ta = document.createElement('textarea');
+        return (html) => { ta.innerHTML = html; return ta.value; };
+    })();
+
+    function cellText(cell) {
+        let raw = cell.textContent || '';
+        if (!raw.trim() && cell.innerHTML) {
+            raw = _decodeEntities(cell.innerHTML.replace(/<[^>]*>/g, ' '));
+        }
+        return raw.replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeCSV(val) {
+        if (val == null) return '';
+        const s = String(val);
+        if (/[",\n\r]/.test(s)) {
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+    }
+
+    const thead = tableEl.querySelector('thead');
+    if (!thead) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table has no header row — cannot export.', 'warning');
+        }
+        return;
+    }
+
+    const headerRows = thead.querySelectorAll('tr');
+    const lastHeaderRow = headerRows[headerRows.length - 1];
+    const headerCells = lastHeaderRow ? lastHeaderRow.querySelectorAll('th') : [];
+    const headers = Array.from(headerCells).map(th => escapeCSV(cellText(th)));
+
+    const rows = [];
+    if (typeof $ !== 'undefined' && $.fn && $.fn.DataTable && $.fn.DataTable.isDataTable('#' + tableId)) {
+        const dt = $('#' + tableId).DataTable();
+        dt.rows({ search: 'applied' }).every(function () {
+            const node = this.node();
+            if (node) {
+                const cells = node.querySelectorAll('td');
+                rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+            }
+        });
+    } else {
+        const tbody = tableEl.querySelector('tbody');
+        if (tbody) {
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length) {
+                    rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+                }
+            });
+        }
+    }
+
+    if (rows.length === 0) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table is empty — nothing to export.', 'warning');
+        }
+        return;
+    }
+
+    const csvLines = [headers.join(',')];
+    rows.forEach(r => csvLines.push(r.join(',')));
+    // Leading BOM so Excel detects UTF-8 instead of mangling non-ASCII.
+    const blob = new Blob(['﻿' + csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `${tableId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (typeof showNotification === 'function') {
+        showNotification(`Exported ${rows.length} rows to ${a.download}`, 'success');
+    }
+}
+window.downloadTableAsCSV = downloadTableAsCSV;
+
+// Global delegated handler for CSV export buttons
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-csv-export');
+    if (!btn) return;
+    const tableId = btn.getAttribute('data-table-id');
+    const filename = btn.getAttribute('data-filename') || `${tableId}.csv`;
+    downloadTableAsCSV(tableId, filename);
+});
+
+/**
+ * Attach an "Export CSV" button above every result table that doesn't
+ * already have one. Auto-injection keeps the button contract in one place
+ * instead of hand-editing 30+ markup blocks (and keeps new tables covered).
+ */
+function injectCsvExportButtons(root = document) {
+    root.querySelectorAll('table[id]').forEach(tableEl => {
+        const tableId = tableEl.id;
+        if (!tableEl.querySelector('thead')) return;
+        // Skip layout/helper tables and anything already wired up.
+        if (tableEl.closest('.no-csv-export')) return;
+        if (document.querySelector(`.btn-csv-export[data-table-id="${tableId}"]`)) return;
+
+        const anchor = tableEl.closest('.table-responsive') || tableEl;
+        const parent = anchor.parentElement;
+        if (!parent) return;
+
+        const bar = document.createElement('div');
+        bar.className = 'csv-export-bar';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-action btn-csv-export';
+        btn.setAttribute('data-table-id', tableId);
+        btn.setAttribute('data-filename', `${tableId.replace(/-table$/, '')}.csv`);
+        btn.title = 'Download the filtered rows of this table as CSV';
+        btn.innerHTML = '<i class="fa-solid fa-file-csv"></i> Export CSV';
+        bar.appendChild(btn);
+        parent.insertBefore(bar, anchor);
     });
 }
+window.injectCsvExportButtons = injectCsvExportButtons;
 
-// State
-const state = {
-    orgProject: localStorage.getItem('bq_org_project') || '',
-    adminProject: localStorage.getItem('bq_admin_project') || '',
-    region: localStorage.getItem('bq_region') || 'region-us',
-    maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
-    focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
-    storageData: [],
-    slotsData: [],
-    slotsChart: null,
-    actualProvisioningChart: null,
-    jobsScatterChart: null,
-    // Logs fetch params (project IDs, region, focus_projects) to the console
-    // when true. Keep this off by default — screenshots/screen-shares/HAR
-    // exports of the console can leak org topology otherwise.
-    debugMode: false
+/* ------------------------------------------------------------------
+   Persistent Notification Center (bell icon)
+   Toasts are ephemeral; this keeps the last N of them in a dropdown.
+   Ongoing tasks (from setLoading) appear with a spinner + elapsed time.
+   ------------------------------------------------------------------ */
+
+const MAX_NOTIFICATION_HISTORY = 50;
+const notificationHistory = [];
+let notifUnreadCount = 0;
+
+/** Human-readable labels keyed by button id. Nine buttons display generic
+ *  "Run scan" text — this map ensures ongoing entries are distinguishable. */
+const TASK_LABELS = {
+    'analyze-linter-btn':             'Query Optimization',
+    'analyze-dml-btn':                'DML Abuse Scan',
+    'analyze-batch-btn':              'Batch Candidates',
+    'analyze-expiration-btn':         'Expiration Policy',
+    'analyze-filter-btn':             'Partition Guardrail',
+    'analyze-mv-btn':                 'MV Candidates',
+    'analyze-mv-rejections-btn':      'MV Rejections',
+    'analyze-skew-btn':               'Data Skew',
+    'analyze-warnings-btn':           'Query Warnings',
+    'analyze-hygiene-btn':            'Storage Hygiene',
+    'analyze-storage-btn':            'Storage Analysis',
+    'analyze-bi-btn':                 'BI Engine Analysis',
+    'analyze-hbo-btn':                'HBO Insights',
+    'analyze-performance-btn':        'Performance Scan',
+    'analyze-profiler-btn':           'Workload Profiler',
+    'analyze-users-btn':              'Top Spenders',
+    'analyze-slots-btn':              'Slots Optimizer',
+    'analyze-jobs-btn':               'Job Analysis',
+    'calculate-cost-attribution-btn': 'Cost Attribution',
+    'run-ai-analysis-btn':            'AI Doctor',
+    'run-simulation-btn':             'Edition Simulation',
+    'run-active-assist-btn':          'Active Assist Sync',
+    'run-static-audit-btn':           'Schema Audit',
+    'analyze-fluid-btn':              'Fluid Scaling',
 };
 
-// Quota-safe localStorage helper available globally
-function safeSetLocalStorage(key, value) {
-    try {
-        localStorage.setItem(key, value);
-        return true;
-    } catch (e) {
-        console.warn(`[localStorage] Failed to write key "${key}" (possibly quota exceeded):`, e);
-        try { localStorage.removeItem(key); } catch (_) {}
-        return false;
+const NotificationCenter = (() => {
+    let notifBadge, notifDropdown, notifHistoryList, notifBellBtn, notifClearBtn;
+    let elapsedInterval = null;
+
+    /** Active in-flight tasks. button.id → { label, startTime } */
+    const activeTasks = new Map();
+    /** Auto-expire stuck tasks (e.g. throw between setLoading and try). */
+    let maxTaskAgeMs = 10 * 60 * 1000; // 10 minutes
+
+    function cacheEls() {
+        notifBadge = document.getElementById('notification-badge');
+        notifDropdown = document.getElementById('notification-dropdown');
+        notifHistoryList = document.getElementById('notification-history-list');
+        notifBellBtn = document.getElementById('btn-notification-bell');
+        notifClearBtn = document.getElementById('btn-clear-notifications');
     }
-}
+
+    /** Expire stale tasks AND recover their buttons (disabled + Processing). */
+    function sweepStaleTasks() {
+        const now = Date.now();
+        for (const [id, t] of activeTasks) {
+            if (now - t.startTime <= maxTaskAgeMs) continue;
+            activeTasks.delete(id);
+            const btn = document.getElementById(id);
+            if (btn && btn.disabled && btn.dataset.originalText) {
+                btn.disabled = false;
+                btn.innerHTML = btn.dataset.originalText;
+            }
+        }
+    }
+
+    function updateNotifBadge() {
+        sweepStaleTasks();
+        if (!notifBadge) return;
+        const totalBadge = notifUnreadCount + activeTasks.size;
+        if (totalBadge > 0) {
+            notifBadge.textContent = totalBadge > 99 ? '99+' : totalBadge;
+            notifBadge.style.display = '';
+        } else {
+            notifBadge.style.display = 'none';
+        }
+    }
+
+    function formatNotifTime(date) {
+        const diffSec = Math.floor((new Date() - date) / 1000);
+        if (diffSec < 60) return 'just now';
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin}m ago`;
+        const diffHr = Math.floor(diffMin / 60);
+        if (diffHr < 24) return `${diffHr}h ago`;
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatElapsed(startTime) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (elapsed < 60) return elapsed + 's';
+        return Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+    }
+
+    function renderNotifHistory() {
+        if (!notifHistoryList) return;
+        // Guard: show empty state only when there are no active tasks AND no history
+        if (!activeTasks.size && notificationHistory.length === 0) {
+            notifHistoryList.innerHTML = '<div class="notif-dropdown__empty">No notifications yet.</div>';
+            return;
+        }
+
+        // --- Ongoing tasks (newest-first, consistent with history) ---
+        const ongoingHtml = activeTasks.size ? Array.from(activeTasks.entries()).reverse().map(([, t]) => {
+            return '<div class="notif-item ongoing">' +
+                '<div class="notif-item__icon ongoing"><i class="fa-solid fa-spinner fa-spin"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(t.label) + '\u2026</div>' +
+                    '<div class="notif-item__time"><span data-task-start="' + t.startTime + '">' + formatElapsed(t.startTime) + '</span></div>' +
+                '</div>' +
+            '</div>';
+        }).join('') : '';
+
+        // Divider between ongoing and completed
+        const divider = (activeTasks.size && notificationHistory.length)
+            ? '<div class="notif-divider">RECENT</div>'
+            : '';
+
+        // --- Completed history (newest first) ---
+        const iconMap = {
+            success: 'fa-circle-check',
+            error: 'fa-circle-exclamation',
+            warning: 'fa-triangle-exclamation',
+            info: 'fa-circle-info'
+        };
+        // Messages can carry user-supplied text (project IDs,
+        // API error bodies) so they are escaped, never interpolated raw.
+        const historyHtml = notificationHistory.slice().reverse().map(n => {
+            const icon = iconMap[n.type] || iconMap.info;
+            const safeType = iconMap[n.type] ? n.type : 'info';
+            return '<div class="notif-item">' +
+                '<div class="notif-item__icon ' + safeType + '"><i class="fa-solid ' + icon + '"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(n.message) + '</div>' +
+                    '<div class="notif-item__time">' + formatNotifTime(n.time) + '</div>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+        notifHistoryList.innerHTML = ongoingHtml + divider + historyHtml;
+    }
+
+    /** Record a toast into the persistent history. */
+    function record(message, type) {
+        if (type === undefined) type = 'info';
+        notificationHistory.push({ message: message, type: type, time: new Date() });
+        if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
+        notifUnreadCount++;
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Register an in-flight task. Resets startTime if already tracked. */
+    function startTask(buttonId, label) {
+        activeTasks.set(buttonId, { label: label, startTime: Date.now() });
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Remove a completed task. Does NOT call record() — showNotification
+     *  already archives the result via record(). Tolerates unknown ids. */
+    function completeTask(buttonId) {
+        activeTasks.delete(buttonId);
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Open or close the dropdown. Consolidates both close paths
+     *  (bell toggle + click-outside) to manage the elapsed-time interval. */
+    function setDropdownOpen(open) {
+        if (!notifDropdown) return;
+        if (open) {
+            renderNotifHistory();
+            notifDropdown.style.display = '';
+            notifUnreadCount = 0;
+            updateNotifBadge();
+            // Start elapsed-time ticker — only updates [data-task-start]
+            // spans' textContent. Does NOT rebuild innerHTML (that would
+            // restart fa-spin animations). Accepted trade-off: completed
+            // entries' relative times ("2m ago") freeze while panel is open.
+            clearInterval(elapsedInterval);
+            elapsedInterval = setInterval(function() {
+                // cacheEls() can leave this null if the bell markup is absent
+                // (embedded/simulator layouts), and the ticker outlives the
+                // element on re-render.
+                if (!notifHistoryList) return;
+                var spans = notifHistoryList.querySelectorAll('[data-task-start]');
+                spans.forEach(function(span) {
+                    var elapsed = Math.floor((Date.now() - parseInt(span.dataset.taskStart, 10)) / 1000);
+                    span.textContent = elapsed < 60
+                        ? elapsed + 's'
+                        : Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+                });
+            }, 1000);
+        } else {
+            notifDropdown.style.display = 'none';
+            clearInterval(elapsedInterval);
+            elapsedInterval = null;
+        }
+    }
+
+    function init() {
+        cacheEls();
+        // sweepStaleTasks() only ran as a side effect of updateNotifBadge(),
+        // so a task that stalled with no further notifications kept its badge
+        // count and its button stuck on "Processing…" indefinitely. Poll at a
+        // fraction of maxTaskAgeMs so expiry happens on its own.
+        setInterval(updateNotifBadge, 30 * 1000);
+        if (notifBellBtn) {
+            notifBellBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var isOpen = notifDropdown && notifDropdown.style.display !== 'none';
+                setDropdownOpen(!isOpen);
+            });
+        }
+        if (notifClearBtn) {
+            notifClearBtn.addEventListener('click', function() {
+                // Clear history only — ongoing tasks remain visible
+                notificationHistory.length = 0;
+                notifUnreadCount = 0;
+                updateNotifBadge();
+                renderNotifHistory();
+            });
+        }
+        document.addEventListener('click', function(e) {
+            if (!notifDropdown || notifDropdown.style.display === 'none') return;
+            if (e.target.closest('#notification-center')) return;
+            setDropdownOpen(false);
+        });
+
+        // Replay any notification staged before a full-page reload (e.g. Snapshot Import)
+        try {
+            var pending = sessionStorage.getItem('pending_notification');
+            if (pending) {
+                var item = JSON.parse(pending);
+                if (item && item.message) {
+                    record(item.message, item.type || 'info');
+                }
+                sessionStorage.removeItem('pending_notification');
+            }
+        } catch (_) {}
+
+        updateNotifBadge();
+    }
+
+    return {
+        init: init,
+        record: record,
+        render: renderNotifHistory,
+        startTask: startTask,
+        completeTask: completeTask,
+        __setMaxAge: function(ms) { maxTaskAgeMs = ms; }
+    };
+})();
+window.NotificationCenter = NotificationCenter;
 
 // ---------------------------------------------------------------------------
 // Scope classification — derived from backend, not hand-maintained
@@ -662,6 +1112,13 @@ const Snapshot = (() => {
         }
       });
 
+      try {
+        sessionStorage.setItem('pending_notification', JSON.stringify({
+          message: `Imported ${written} result set(s) from snapshot.`,
+          type: 'success'
+        }));
+      } catch (_) {}
+
       showNotification(
         `Imported ${written} result set(s). Reloading to render…`, 'success'
       );
@@ -686,6 +1143,10 @@ const Snapshot = (() => {
 })();
 
 document.addEventListener('DOMContentLoaded', () => {
+
+    // Shared chrome: bell-icon notification history + per-table CSV buttons.
+    NotificationCenter.init();
+    injectCsvExportButtons();
 
     const debug_log = (...args) => {
         if (state.debugMode) {
@@ -1293,7 +1754,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 tr.innerHTML = `
                     <td>${renderProjectLink(row.project_id)}</td>
-                    <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
                     <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
                     <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
@@ -1565,8 +2026,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const formatNumber = (num) => {
             // Guard null/undefined/NaN from snapshot import
             if (num == null || isNaN(num)) return '0';
-            // Abbreviated above 10k. Cells using this MUST carry data-order —
-            // DataTables cannot sort "12.3k" numerically on its own.
             const abs = Math.abs(num);
             if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
             if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
@@ -1631,11 +2090,11 @@ document.addEventListener('DOMContentLoaded', () => {
             };
 
             tr.innerHTML = `
-                <td><span style="color: #cbd5e1;">${row.project_id}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${row.dataset_id}</span></td>
-                <td><strong style="color: #f1f5f9;">${row.table_id}</strong></td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
                 <td data-order="${Number(row.row_count) || 0}" title="${(Number(row.row_count) || 0).toLocaleString()} rows"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
-                <td><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
+                <td data-order="${Number(row.size_bytes) || 0}"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
                 <td>${getPartitionStatus(row.is_partitioned)}</td>
                 <td>${getClusterStatus(row.is_clustered)}</td>
                 <td><span style="color: #38bdf8; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${columnsToSuggest.join(', ')}</span></td>
@@ -2115,8 +2574,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td>${renderProjectLink(row.admin_project_id)}</td>
                         <td>${row.region || ''}</td>
                         <td>${row.edition}</td>
-                        <td data-order="${Number(row.current_baseline) || 0}">${formatNumber(row.current_baseline)}</td>
-                        <td data-order="${Number(row.current_max_slots) || 0}">${formatNumber(row.current_max_slots)}</td>
+                        <td data-order="${row.current_baseline || 0}">${formatNumber(row.current_baseline)}</td>
+                        <td data-order="${row.current_max_slots || 0}">${formatNumber(row.current_max_slots)}</td>
                         <td>${row.ignore_idle_slots ? 'No' : 'Yes'}</td>
                         <td>${row.scaling_mode || 'N/A'}</td>
                         <td>${row.target_job_concurrency || 'Auto'}</td>
@@ -2127,6 +2586,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             container.appendChild(table);
+            // This table is built at render time, so the page-load sweep
+            // never saw it — give it an export button of its own.
+            injectCsvExportButtons(container);
         }
 
 
@@ -2144,10 +2606,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 tr.innerHTML = `
                     <td>${displayResId === 'MERGED (Simulated)' ? displayResId : renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
-                    <td data-order="${Number(row.recommended_baseline) || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
-                    <td data-order="${Number(row.recommended_max_p90) || 0}">${formatNumber(row.recommended_max_p90)}</td>
-                    <td data-order="${Number(row.recommended_max_p99) || 0}">${formatNumber(row.recommended_max_p99)}</td>
-                    <td data-order="${Number(row.recommended_max_peak) || 0}">${formatNumber(row.recommended_max_peak)}</td>
+                    <td data-order="${row.recommended_baseline || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td data-order="${row.recommended_max_p90 || 0}">${formatNumber(row.recommended_max_p90)}</td>
+                    <td data-order="${row.recommended_max_p99 || 0}">${formatNumber(row.recommended_max_p99)}</td>
+                    <td data-order="${row.recommended_max_peak || 0}">${formatNumber(row.recommended_max_peak)}</td>
                 `;
                 
                 if (displayResId === 'MERGED (Simulated)') {
@@ -2744,8 +3206,6 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     const formatNumber = (num) => {
         // Guard null/undefined/NaN from snapshot import
         if (num == null || isNaN(num)) return '0';
-        // Abbreviated above 10k. Cells using this MUST carry data-order —
-        // DataTables cannot sort "12.3k" numerically on its own.
         const abs = Math.abs(num);
         if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
         if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
@@ -2769,6 +3229,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     };
 
     const showNotification = (message, type = 'info') => {
+        // Every toast is also archived in the bell-icon panel — the toast
+        // itself disappears after 3s and users kept missing scan results.
+        NotificationCenter.record(message, type);
+
         // If an identical notification is already showing, flash it to acknowledge the click without stacking duplicate popups
         if (elements.notificationContainer) {
             const activeNotifs = elements.notificationContainer.querySelectorAll('.notification');
@@ -2827,6 +3291,14 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
                 }
             }, 1000);
             button._timerInterval = timerInterval;
+
+            // --- Ongoing task tracking ---
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                const label = (typeof TASK_LABELS !== 'undefined' && TASK_LABELS[button.id])
+                    || button.dataset.originalText.replace(/<[^>]*>/g, '').trim()
+                    || 'Processing';
+                NotificationCenter.startTask(button.id, label);
+            }
         } else {
             if (button._timerInterval) {
                 clearInterval(button._timerInterval);
@@ -2834,6 +3306,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
             button.disabled = false;
             button.innerHTML = button.dataset.originalText;
+            // --- Complete task tracking ---
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                NotificationCenter.completeTask(button.id);
+            }
         }
     };
 
@@ -2910,6 +3386,35 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         });
     }
 
+    /**
+     * Seed the reservations form from the last Slots Optimizer run so users
+     * don't have to retype reservation IDs they already discovered. Only
+     * fills the ID — SKU rate and total bill come off the GCP invoice and
+     * cannot be inferred, so they stay blank on purpose.
+     */
+    const autoPopulateReservationsFromSlots = () => {
+        const existingRows = document.querySelectorAll('.reservation-row');
+        if (existingRows.length > 0) return;
+
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (!cachedSlots) return;
+
+        try {
+            const slotsData = JSON.parse(cachedSlots);
+            if (!slotsData.current_reservations || slotsData.current_reservations.length === 0) return;
+
+            slotsData.current_reservations.forEach(res => {
+                addReservationRow(res.reservation_id, '', '');
+            });
+            showNotification(
+                `Pre-filled ${slotsData.current_reservations.length} reservation(s) from Slots Optimizer. Please enter SKU Rate and Total Bill.`,
+                'info'
+            );
+        } catch (e) {
+            console.warn('Failed to auto-populate reservations from cached slots data:', e);
+        }
+    };
+
     const loadCostAttributionConfig = async () => {
         try {
             const response = await fetch('/api/cost-attribution/config');
@@ -2923,6 +3428,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         } catch (error) {
             console.error("Failed to load cost attribution config:", error);
         }
+        // Runs after the saved config renders — no-ops if any row exists.
+        autoPopulateReservationsFromSlots();
     };
 
     if (elements.btnCalculateCostAttribution) {
@@ -3994,13 +4501,26 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             const badgeColor = row.health_status === 'Healthy' ? '#22c55e' : '#ef4444';
             const churnPct = row.churn_ratio != null ? (row.churn_ratio * 100).toFixed(1) + '%' : 'N/A';
 
+            // Time travel TTL: under the 7-day default is a win, over it is a
+            // cost risk on a churny table. Older snapshots have no field → 7.
+            const ttlDays = row.time_travel_days ?? 7;
+            let ttlBadgeBg, ttlBadgeColor, ttlLabel;
+            if (ttlDays < 7) {
+                ttlBadgeBg = 'rgba(34, 197, 94, 0.15)'; ttlBadgeColor = '#22c55e'; ttlLabel = `${ttlDays}d ✓`;
+            } else if (ttlDays > 7) {
+                ttlBadgeBg = 'rgba(251, 191, 36, 0.15)'; ttlBadgeColor = '#fbbf24'; ttlLabel = `${ttlDays}d ⚠`;
+            } else {
+                ttlBadgeBg = 'rgba(148, 163, 184, 0.1)'; ttlBadgeColor = '#94a3b8'; ttlLabel = `${ttlDays}d`;
+            }
+
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_id)}</td>
                 <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
                 <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
-                <td>${(row.live_active_physical_gb || 0).toFixed(2)}</td>
-                <td>${(row.time_travel_gb || 0).toFixed(2)}</td>
-                <td>${churnPct}</td>
+                <td data-order="${row.live_active_physical_gb || 0}">${(row.live_active_physical_gb || 0).toFixed(2)}</td>
+                <td data-order="${row.time_travel_gb || 0}">${(row.time_travel_gb || 0).toFixed(2)}</td>
+                <td data-order="${ttlDays}"><span class="badge" style="background: ${ttlBadgeBg}; color: ${ttlBadgeColor}; font-weight: 600;">${ttlLabel}</span></td>
+                <td data-order="${row.churn_ratio || 0}">${churnPct}</td>
                 <td><span class="badge" style="background: ${badgeBg}; color: ${badgeColor}; font-weight: 600;">${row.health_status}</span></td>
             `;
             tbody.appendChild(tr);
@@ -4026,10 +4546,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         if (tableCountEl) tableCountEl.textContent = data.length;
         if (highChurnCountEl) highChurnCountEl.textContent = highChurnCount;
 
-        if ($.fn.DataTable.isDataTable('#hygiene-results-table')) {
-            $('#hygiene-results-table').DataTable().destroy();
-        }
-        $('#hygiene-results-table').DataTable({ pageLength: 10, order: [[6, 'desc']], responsive: true });
+        // Column 7 = Health Status (index shifted by the new TTL column).
+        safeInitDataTable('#hygiene-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
     };
 
     if (elements.btnAnalyzeHygiene) {
@@ -4414,55 +4932,248 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         safeInitDataTable('#skew-results-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
     };
 
+    /* --------------------------------------------------------------
+       Anti-pattern filtering & aggregation
+       The scan returns one row per offending job. Raw rows are cached in
+       `_linterRawData` so the toolbar can re-slice them client-side
+       without re-running the (expensive) INFORMATION_SCHEMA scan.
+       -------------------------------------------------------------- */
+    let _linterRawData = [];
+    const _linterFilterState = { userType: 'all', user: '', project: '', abuseType: '', view: 'detail' };
+
+    const isServiceAccount = (email) => {
+        if (!email) return false;
+        return email.endsWith('.gserviceaccount.com') || email.endsWith('.iam.gserviceaccount.com');
+    };
+
+    const formatDataSize = (gb) => {
+        // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+        if (gb >= 1024) {
+            return `${formatNumber(gb / 1024)} TiB`;
+        }
+        return `${formatNumber(gb)} GiB`;
+    };
+
+    /** Rebuild the User / Project / Anti-pattern dropdowns from the raw rows. */
+    const populateLinterFilterOptions = () => {
+        // `stateKey` matters: dropping a value from the <select> without also
+        // clearing it from _linterFilterState leaves the filter silently
+        // active — the table empties while the dropdown reads "All users".
+        const fill = (id, stateKey, values, allLabel) => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            const previous = sel.value;
+            sel.innerHTML = `<option value="">${allLabel}</option>` +
+                values.map(v => `<option value="${escapeHtmlAttr(v)}">${escapeHtmlAttr(v)}</option>`).join('');
+            // Keep the current selection if it still exists in the new data.
+            const retained = values.includes(previous) ? previous : '';
+            sel.value = retained;
+            _linterFilterState[stateKey] = retained;
+        };
+
+        const uniq = (key) => Array.from(new Set(
+            _linterRawData.map(r => r[key]).filter(Boolean)
+        )).sort();
+
+        fill('ap-filter-user', 'user', uniq('user_email'), 'All users');
+        fill('ap-filter-project', 'project', uniq('project_id'), 'All projects');
+        fill('ap-filter-abuse', 'abuseType', uniq('abuse_type'), 'All types');
+    };
+
+    /**
+     * Apply the toolbar filters to `_linterRawData`, refresh the stats
+     * strip, then render whichever view (detail / summary) is active.
+     */
+    const applyLinterFilters = () => {
+        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
+        let filtered = _linterRawData;
+
+        if (_linterFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_linterFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+
+        if (_linterFilterState.user) filtered = filtered.filter(r => r.user_email === _linterFilterState.user);
+        if (_linterFilterState.project) filtered = filtered.filter(r => r.project_id === _linterFilterState.project);
+        if (_linterFilterState.abuseType) filtered = filtered.filter(r => r.abuse_type === _linterFilterState.abuseType);
+
+        const totalGb = filtered.reduce((s, r) => s + (r.billed_gb || 0), 0);
+        const totalWaste = totalGb * odRate / 1024;
+
+        const statsEl = document.getElementById('ap-filter-stats');
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${filtered.length}</span> of ${_linterRawData.length} queries</span>
+                <span class="ap-stat">Total Data Billed: <span class="ap-stat-value">${formatNumber(totalGb)} GiB</span></span>
+                <span class="ap-stat">Total Est. Waste: <span class="ap-stat-value" style="color: #f87171;">${formatCurrency(totalWaste)}</span></span>
+            `;
+        }
+
+        const detailView = document.getElementById('linter-detail-view');
+        const summaryView = document.getElementById('linter-summary-view');
+        if (_linterFilterState.view === 'summary') {
+            if (detailView) detailView.style.display = 'none';
+            if (summaryView) summaryView.style.display = '';
+            renderLinterSummary(filtered, odRate);
+        } else {
+            if (detailView) detailView.style.display = '';
+            if (summaryView) summaryView.style.display = 'none';
+            renderLinterDetail(filtered, odRate);
+        }
+    };
+
+    /** Wire the toolbar once; the handlers just mutate state and re-apply. */
+    const initLinterToolbar = () => {
+        const bind = (id, key) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', () => {
+                _linterFilterState[key] = el.value;
+                applyLinterFilters();
+            });
+        };
+        bind('ap-filter-user-type', 'userType');
+        bind('ap-filter-user', 'user');
+        bind('ap-filter-project', 'project');
+        bind('ap-filter-abuse', 'abuseType');
+
+        const toggle = document.getElementById('ap-view-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-view]');
+                if (!btn) return;
+                _linterFilterState.view = btn.getAttribute('data-view');
+                toggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+                applyLinterFilters();
+            });
+        }
+
+        const resetBtn = document.getElementById('ap-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                Object.assign(_linterFilterState, { userType: 'all', user: '', project: '', abuseType: '' });
+                ['ap-filter-user', 'ap-filter-project', 'ap-filter-abuse'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = '';
+                });
+                const typeEl = document.getElementById('ap-filter-user-type');
+                if (typeEl) typeEl.value = 'all';
+                applyLinterFilters();
+            });
+        }
+    };
+    initLinterToolbar();
+
     const renderLinterResults = (data) => {
+        _linterRawData = Array.isArray(data) ? data : [];
+        populateLinterFilterOptions();
+        applyLinterFilters();
+    };
+
+    /** Roll the filtered jobs up to (user × project × anti-pattern). */
+    const renderLinterSummary = (rows, odRate) => {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-summary-table')) {
+            $('#linter-summary-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#linter-summary-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const groups = new Map();
+        rows.forEach(r => {
+            const key = JSON.stringify([r.user_email, r.project_id, r.abuse_type]);
+            let g = groups.get(key);
+            if (!g) {
+                g = {
+                    user_email: r.user_email,
+                    project_id: r.project_id,
+                    abuse_type: r.abuse_type,
+                    count: 0,
+                    billed_gb: 0
+                };
+                groups.set(key, g);
+            }
+            g.count += 1;
+            g.billed_gb += r.billed_gb || 0;
+        });
+
+        Array.from(groups.values())
+            .sort((a, b) => b.billed_gb - a.billed_gb)
+            .forEach(g => {
+                const waste = g.billed_gb * odRate / 1024;
+                const sa = isServiceAccount(g.user_email);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><span style="color: #e2e8f0; font-weight: 500;">${escapeHtmlAttr(g.user_email)}</span></td>
+                    <td><span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600;">${sa ? 'Service Account' : 'Human'}</span></td>
+                    <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${escapeHtmlAttr(g.project_id)}</span></td>
+                    <td>${getAbuseBadge(g.abuse_type)}</td>
+                    <td data-order="${g.count}">${formatCompact(g.count)}</td>
+                    <td data-order="${g.billed_gb}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatDataSize(g.billed_gb)}</strong></td>
+                    <td data-order="${waste}">${getWasteCell(waste)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+        safeInitDataTable('#linter-summary-table', {
+            pageLength: 10,
+            order: [[6, 'desc']],
+            autoWidth: false
+        });
+    };
+
+    function getAbuseBadge(type) {
+        type = type || 'UNKNOWN';
+        let bg, color, border;
+        if (type.includes('LIMIT TRAP')) {
+            bg = 'rgba(139, 92, 246, 0.15)'; // Purple
+            color = '#c084fc';
+            border = 'rgba(139, 92, 246, 0.3)';
+        } else if (type.includes('DML SCAN')) {
+            bg = 'rgba(239, 68, 68, 0.15)'; // Red
+            color = '#f87171';
+            border = 'rgba(239, 68, 68, 0.3)';
+        } else {
+            bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
+            color = '#fbbf24';
+            border = 'rgba(245, 158, 11, 0.3)';
+        }
+        return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${escapeHtmlAttr(type)}</span>`;
+    }
+
+    function getWasteCell(waste) {
+        if (waste > 0) {
+            return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
+        }
+        return `<span style="color: #64748b;">$0.00</span>`;
+    }
+
+    /** One row per offending job — the default (unaggregated) view. */
+    function renderLinterDetail(rows, odRate) {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-results-table')) {
+            $('#linter-results-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#linter-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        const formatDataSize = (gb) => {
-            // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
-            if (gb >= 1024) {
-                return `${formatNumber(gb / 1024)} TiB`;
-            }
-            return `${formatNumber(gb)} GiB`;
-        };
-
-        const getAbuseBadge = (type) => {
-            let bg, color, border;
-            if (type.includes('LIMIT TRAP')) {
-                bg = 'rgba(139, 92, 246, 0.15)'; // Purple
-                color = '#c084fc';
-                border = 'rgba(139, 92, 246, 0.3)';
-            } else if (type.includes('DML SCAN')) {
-                bg = 'rgba(239, 68, 68, 0.15)'; // Red
-                color = '#f87171';
-                border = 'rgba(239, 68, 68, 0.3)';
-            } else {
-                bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
-                color = '#fbbf24';
-                border = 'rgba(245, 158, 11, 0.3)';
-            }
-            return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${type}</span>`;
-        };
-
-        const getWasteCell = (waste) => {
-            if (waste > 0) {
-                return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
-            }
-            return `<span style="color: #64748b;">$0.00</span>`;
-        };
-
-        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
-        data.forEach(row => {
-            const estimated_waste_usd = row.billed_gb * odRate / 1024;
+        rows.forEach(row => {
+            const estimated_waste_usd = (row.billed_gb || 0) * odRate / 1024;
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
-                <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${renderProjectLink(row.project_id)}</span></td>
-                <td><span style="color: #64748b; font-family: monospace; font-size: 0.85rem;">${row.job_id}</span></td>
-                <td><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem;">${renderProjectLink(row.project_id)}</span></td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td data-order="${row.billed_gb || 0}"><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
                 <td>${getAbuseBadge(row.abuse_type)}</td>
-                <td>${getWasteCell(estimated_waste_usd)}</td>
+                <td data-order="${estimated_waste_usd}">${getWasteCell(estimated_waste_usd)}</td>
                 <td><div style="font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.8rem; background: rgba(0,0,0,0.4); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-width: 350px; overflow-x: auto; white-space: nowrap; color: #cbd5e1;">${row.query_snippet}</div></td>
                 <td>
                     <div style="display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.85rem; color: #94a3b8; line-height: 1.3; min-width: 250px;">
@@ -4488,24 +5199,197 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
 
         const edRate = parseFloat(document.getElementById('jb-ed-rate')?.value) || 0.06;
         data.forEach(row => {
-            const wasteUsd = row.wasted_slot_hours * edRate;
+            const slotHours = row.wasted_slot_hours || 0;
+            const wasteUsd = slotHours * edRate;
+            const insertCount = row.insert_job_count || 0;
+            const activeDays = row.active_days || 1;
+            const perDay = row.avg_inserts_per_day != null
+                ? row.avg_inserts_per_day
+                : insertCount / Math.max(activeDays, 1);
+
+            // Destination table is the migration unit. Pre-table-centric
+            // snapshots have no dest_* fields — fall back to a dash.
+            const destProject = row.dest_project_id || row.project_id;
+            const destLabel = row.dest_table_id
+                ? `${row.dest_dataset_id || '?'}.${row.dest_table_id}`
+                : '—';
+            const destCell = row.dest_table_id
+                ? `<span style="font-family: monospace; font-size: 0.82rem;" title="${escapeHtmlAttr(`${destProject}.${destLabel}`)}">${renderTableLink(row.dest_table_id, row.dest_dataset_id, destProject, destLabel)}</span>`
+                : '<span style="color: #64748b;">—</span>';
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
+                <td data-order="${escapeHtmlAttr(destLabel)}">${destCell}</td>
                 <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td>${renderProjectLink(row.project_id)}</td>
-                <td>${row.insert_job_count.toLocaleString()}</td>
-                <td>${row.wasted_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
-                <td><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
-                <td><span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">Migrate to Storage Write API</span></td>
+                <td data-order="${insertCount}">${formatCompact(insertCount)}</td>
+                <td data-order="${activeDays}">${activeDays}</td>
+                <td data-order="${perDay}">${formatCompact(Math.round(perDay))}</td>
+                <td data-order="${slotHours}">${slotHours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td data-order="${wasteUsd}"><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
+                <td><button class="btn-secondary btn-sm btn-storage-write-api" style="white-space: nowrap; min-width: 180px;"><i class="fa-solid fa-bolt" style="margin-right: 0.35rem;"></i>Migrate to Storage Write API</button></td>
             `;
             tbody.appendChild(tr);
         });
 
-        if ($.fn.DataTable.isDataTable('#antipatterns-results-table')) {
-            $('#antipatterns-results-table').DataTable().destroy();
+        // Delegated click handler for the Storage Write API guidance button.
+        const dmlTable = document.getElementById('antipatterns-results-table');
+        if (dmlTable && !dmlTable._dmlDelegateAttached) {
+            dmlTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-storage-write-api');
+                if (btn) showStorageWriteApiModal();
+            });
+            dmlTable._dmlDelegateAttached = true;
         }
-        $('#antipatterns-results-table').DataTable({ pageLength: 10, order: [[4, 'desc']], responsive: true });
+
+        safeInitDataTable('#antipatterns-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
     };
+
+    /**
+     * Educational modal explaining the Storage Write API and why it replaces
+     * high-frequency legacy DML. Same overlay pattern as showRemediationModal.
+     */
+    function showStorageWriteApiModal() {
+        const existing = document.getElementById('storage-write-api-modal-overlay');
+        if (existing) {
+            // Run the previous instance's teardown rather than a bare remove():
+            // its keydown handler is bound to document, so dropping the node
+            // alone would leave a listener pointing at a detached overlay.
+            if (typeof existing.__close === 'function') existing.__close();
+            else existing.remove();
+        }
+
+        const snippet = `from google.cloud import bigquery_storage_v1
+from google.cloud.bigquery_storage_v1 import types, writer
+from google.protobuf import descriptor_pb2
+import sample_data_pb2  # Your protobuf-compiled schema
+
+# 1. Create a write client
+write_client = bigquery_storage_v1.BigQueryWriteClient()
+
+# 2. Target table reference
+parent = write_client.table_path(
+    "your-project", "your_dataset", "your_table"
+)
+
+# 3. Open a default (committed) write stream
+write_stream = types.WriteStream(type_=types.WriteStream.Type.COMMITTED)
+write_stream = write_client.create_write_stream(
+    parent=parent, write_stream=write_stream
+)
+
+# 4. Build a batch of rows and append
+request = types.AppendRowsRequest(
+    write_stream=write_stream.name,
+)
+proto_rows = types.ProtoRows()
+row = sample_data_pb2.SampleRow()
+row.column_a = "value"
+row.column_b = 42
+proto_rows.serialized_rows.append(row.SerializeToString())
+request.proto_rows = types.AppendRowsRequest.ProtoData(
+    rows=proto_rows,
+    writer_schema=types.ProtoSchema(
+        proto_descriptor=descriptor_pb2.DescriptorProto()
+    ),
+)
+write_client.append_rows(iter([request]))`;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'storage-write-api-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div role="dialog" aria-modal="true" aria-labelledby="swa-modal-title" style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 700px; max-width: 92%; max-height: 85vh; overflow-y: auto; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 id="swa-modal-title" style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-bolt" style="margin-right: 0.5rem;" aria-hidden="true"></i>Migrate to Storage Write API</h3>
+                    <button id="close-swa-modal-btn" aria-label="Close dialog" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+
+                <div style="background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #60a5fa; font-size: 0.95rem;"><i class="fa-solid fa-circle-info" style="margin-right: 0.4rem;"></i>What is the Storage Write API?</h4>
+                    <p style="margin: 0; font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;">
+                        The <strong style="color: #f8fafc;">BigQuery Storage Write API</strong> is a high-throughput ingestion API that streams data directly into BigQuery managed storage, bypassing the query engine entirely.
+                        Unlike legacy <code style="background: rgba(255,255,255,0.08); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.8rem;">INSERT</code> DML statements — which compile a full SQL query, reserve slots, and count against the <strong style="color: #f8fafc;">1,500 table-modification operations/day</strong> quota — the Storage Write API writes directly to the storage layer with no slot consumption and no daily operation cap.
+                    </p>
+                </div>
+
+                <div style="background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #34d399; font-size: 0.95rem;"><i class="fa-solid fa-arrow-trend-up" style="margin-right: 0.4rem;"></i>Why migrate?</h4>
+                    <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: #cbd5e1; line-height: 1.7;">
+                        <li><strong style="color: #f8fafc;">No slot consumption</strong> — writes go to managed storage, freeing slot capacity for queries</li>
+                        <li><strong style="color: #f8fafc;">No 1,500 ops/day cap</strong> — legacy DML is throttled per table per day; the Write API has no such limit</li>
+                        <li><strong style="color: #f8fafc;">Higher throughput</strong> — batched binary protocol vs. parsing SQL text for every row</li>
+                        <li><strong style="color: #f8fafc;">Exactly-once semantics</strong> — committed streams guarantee no duplicates, unlike retry-prone DML</li>
+                        <li><strong style="color: #f8fafc;">Lower cost</strong> — eliminates wasted slot-hours from thousands of tiny INSERT jobs</li>
+                    </ul>
+                </div>
+
+                <h4 style="margin: 0 0 0.5rem 0; color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">Python SDK Example</h4>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.78rem; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; margin: 0; max-height: 280px; overflow-y: auto;">${escapeHtmlAttr(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                    <a href="https://cloud.google.com/bigquery/docs/write-api" target="_blank" rel="noopener noreferrer" style="font-size: 0.82rem; color: #60a5fa; text-decoration: none;"><i class="fa-solid fa-arrow-up-right-from-square" style="margin-right: 0.3rem;"></i>BigQuery Storage Write API Docs</a>
+                    <button id="copy-swa-snippet-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        // Keyboard contract for the dialog: Escape closes, Tab cycles inside it,
+        // and focus returns to whatever opened it. Without this, tabbing walks
+        // straight out of the modal into the page behind the scrim.
+        const previouslyFocused = document.activeElement;
+        const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
+        function closeModal() {
+            document.removeEventListener('keydown', onKeydown, true);
+            overlay.remove();
+            if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+                previouslyFocused.focus();
+            }
+        }
+
+        function onKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeModal();
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            const items = Array.from(overlay.querySelectorAll(FOCUSABLE))
+                .filter(el => el.offsetParent !== null);
+            if (!items.length) return;
+            const first = items[0];
+            const last = items[items.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+
+        document.addEventListener('keydown', onKeydown, true);
+        overlay.__close = closeModal;
+
+        const closeBtn = document.getElementById('close-swa-modal-btn');
+        closeBtn.addEventListener('click', closeModal);
+        closeBtn.focus();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+        document.getElementById('copy-swa-snippet-btn').addEventListener('click', function () {
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    }
+    window.showStorageWriteApiModal = showStorageWriteApiModal;
 
     const renderExpirationResults = (data) => {
         const tbody = document.querySelector('#expiration-results-table tbody');
@@ -4516,7 +5400,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_id)}</td>
-                <td>${row.dataset_id}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
                 <td><span class="badge secondary">Missing Expiration</span></td>
             `;
             tbody.appendChild(tr);
@@ -4537,8 +5421,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_id)}</td>
-                <td>${row.dataset_id}</td>
-                <td>${row.table_name}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset_id, row.project_id, row.table_name)}</td>
                 <td>${row.partition_type}</td>
             `;
             tbody.appendChild(tr);
@@ -4559,10 +5443,10 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${renderProjectLink(row.project_id)}</td>
-                <td>${row.dataset}</td>
-                <td>${row.table_name}</td>
-                <td>${row.refresh_count.toLocaleString()}</td>
-                <td>${row.total_slot_hours.toFixed(2)}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
+                <td data-order="${row.refresh_count || 0}">${formatCompact(row.refresh_count)}</td>
+                <td data-order="${row.total_slot_hours || 0}">${(row.total_slot_hours || 0).toFixed(2)} hrs</td>
             `;
             tbody.appendChild(tr);
         });
@@ -4582,7 +5466,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${renderUserLink(row.user_email, row.project_id)}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.mv_name}</td>
                 <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.rejected_reason}</td>
             `;
@@ -4604,12 +5488,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${renderUserLink(row.user_email, row.project_id)}</td>
-                <td>
-                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                        <span style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</span>
-                        <button class="btn-action copy-job-id-btn" data-job-id="${row.job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>
-                    </div>
-                </td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td style="font-size: 0.85rem; color: #f59e0b;">${row.resource_warning}</td>
             `;
             tbody.appendChild(tr);
@@ -4678,7 +5557,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 region: state.region,
                 focus_projects: state.focusProjects,
                 lookback_days: 1,
-                threshold: 1000
+                // Per destination table, not per user — see DMLAbuseParams.
+                threshold: 100
             };
             try {
                 const response = await fetch('/api/antipatterns/dml', {
@@ -5057,7 +5937,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             const modeClass = row.bi_engine_mode === 'FULL' ? 'physical' : (row.bi_engine_mode === 'PARTIAL' ? 'logical' : 'error');
             tr.innerHTML = `
                 <td>${renderUserLink(row.user_email, row.project_id)}</td>
-                <td style="font-family: monospace; font-size: 0.85rem;">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${row.processed_gb.toFixed(2)}</td>
                 <td>${row.billed_gb.toFixed(2)}</td>
                 <td><span class="badge ${modeClass}">${row.bi_engine_mode}</span></td>
@@ -5170,7 +6050,12 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 else if (r.severity === 'LOW') nLow++;
                 totalReferenced += (r.tables_referenced_count || 0);
                 totalFound += (r.tables_found_count || 0);
-                if (r.migration_applied_yaml) nMigration++;
+                // Same echo test the row loop applies — counting rows the
+                // "Migration" pill then filters out would show a KPI of N
+                // that expands to fewer than N rows.
+                const rHasRewrite = !!r.optimized_query
+                    && (r.optimized_query || '').trim() !== (r.query || '').trim();
+                if (r.migration_applied_yaml && rHasRewrite) nMigration++;
                 if ((r.tables_referenced_count || 0) > (r.tables_found_count || 0)) nSchemaGap++;
                 if (r.execution_count && r.execution_count > 1) nRepeat++;
             });
@@ -5216,13 +6101,23 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         };
 
         data.forEach(row => {
+            // The backend suppresses SQL it merely echoed back; repeat the test
+            // here so snapshots taken before that fix behave the same. An echo
+            // means the Migration API config changed nothing, so the YAML badge
+            // and the "Migration" filter pill must be suppressed with it —
+            // otherwise the pill surfaces rows whose Optimized SQL cell is "—".
+            const isEcho = !!row.optimized_query
+                && (row.optimized_query || '').trim() === (row.query || '').trim();
+            const hasRewrite = !!row.optimized_query && !isEcho;
+            const migrationYaml = hasRewrite ? row.migration_applied_yaml : null;
+
             const tr = document.createElement('tr');
             // Severity-based row stripe + filter data attributes
             if (row.severity) {
                 tr.className = `severity-${row.severity.toLowerCase()}`;
             }
             tr.dataset.severity = (row.severity || '').toUpperCase();
-            tr.dataset.migration = row.migration_applied_yaml ? '1' : '0';
+            tr.dataset.migration = migrationYaml ? '1' : '0';
             tr.dataset.schemagap = (row.tables_referenced_count || 0) > (row.tables_found_count || 0) ? '1' : '0';
             tr.dataset.repeat = (row.execution_count && row.execution_count > 1) ? '1' : '0';
             
@@ -5376,7 +6271,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
 
             // --- Optimized Query Cell [R3] ---
             let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
-            if (row.optimized_query) {
+            if (hasRewrite) {
                 const escapedSqlPreview = escHtml(
                     row.optimized_query.length > 200
                         ? row.optimized_query.substring(0, 200) + '...'
@@ -5416,8 +6311,8 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             }
 
             let yamlBadge = '';
-            if (row.migration_applied_yaml) {
-                const escapedYaml = escHtml(row.migration_applied_yaml.trim());
+            if (migrationYaml) {
+                const escapedYaml = escHtml(migrationYaml.trim());
                 yamlBadge = `
                     <div style="margin-top: 0.5rem; border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8; overflow: hidden;">
                         <div class="yaml-toggle-btn" style="padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none;">
@@ -5437,7 +6332,7 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
                 : (slotHours >= 1 ? `${slotHours.toFixed(1)} hrs` : `${slotHours.toFixed(2)} hrs`);
 
             tr.innerHTML = `
-                <td style="font-family: monospace; font-size: 0.85rem;" title="${row.job_id}">${row.job_id.substring(0, 12)}...</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
                 <td>${renderUserLink(row.user_email, row.project_id)}</td>
                 <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
                 <td data-order="${severityOrder}">${severityBadge}</td>
@@ -5832,146 +6727,206 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
         });
     }
 
-    const cachedAiResults = localStorage.getItem('bq_ai_results');
-    if (cachedAiResults) {
-        try {
-            renderAiResults(JSON.parse(cachedAiResults));
-        } catch (e) { console.warn("Failed to parse cached AI results", e); }
-    }
-
-    // Load cached top spenders data
-    const cachedSpenders = localStorage.getItem('bq_top_spenders');
-    if (cachedSpenders) {
-        try {
-            renderTopSpenders(JSON.parse(cachedSpenders));
-        } catch (e) { console.warn("Failed to parse cached top spenders", e); }
-    }
-
-    // Load cached storage data
-    const cachedStorage = localStorage.getItem('bq_storage_results');
-    if (cachedStorage) {
-        try {
-            const storageData = JSON.parse(cachedStorage);
-            state.storageData = storageData.datasets;
-            renderStorageResults(storageData);
-            renderOrgStatus(storageData.org_status);
-        } catch (e) { console.warn("Failed to parse cached storage results", e); }
-    }
-
-    // Load cached Active Assist recommendations
-    const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
-    if (cachedActiveAssist) {
-        try {
-            const activeAssistData = JSON.parse(cachedActiveAssist);
-            state.activeAssistData = activeAssistData;
-            renderActiveAssistResults(activeAssistData);
-        } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
-    }
-
-    // Load cached Static Schema Audit results
-    const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
-    if (cachedStaticAudit) {
-        try {
-            const staticAuditData = JSON.parse(cachedStaticAudit);
-            state.staticAuditData = staticAuditData;
-            renderStaticAuditResults(staticAuditData);
-        } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
-    }
-
-    // Load cached job data
-    const cachedJob = localStorage.getItem('bq_job_results');
-    if (cachedJob) {
-        try {
-            renderJobResults(JSON.parse(cachedJob));
-        } catch (e) { console.warn("Failed to parse cached job results", e); }
-    }
-
-    // Load cached slots data (recommendation + current reservations tables)
-    const cachedSlots = localStorage.getItem('bq_slots_results');
-    if (cachedSlots) {
-        try {
-            renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
-        } catch (e) { console.warn("Failed to parse cached slots results", e); }
-    }
-    
-    const cachedTiered = localStorage.getItem('bq_slots_tiered');
-    if (cachedTiered) {
-        try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
-    }
-
-    // Load cached simulation results (Edition Matrix Simulation)
-    const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
-    if (cachedSimulation) {
-        try {
-            const data = JSON.parse(cachedSimulation);
-            renderSimulationResults(data);
-            const panel = document.getElementById('simulation-results-panel');
-            if (panel) panel.style.display = 'block';
-        } catch (e) {
-            console.warn("Failed to parse cached simulation results", e);
+    function loadAllCachedData() {
+        const cachedAiResults = localStorage.getItem('bq_ai_results');
+        if (cachedAiResults) {
+            try {
+                renderAiResults(JSON.parse(cachedAiResults));
+            } catch (e) { console.warn("Failed to parse cached AI results", e); }
         }
-    }
 
-    // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
-    const cachedUtil = localStorage.getItem('bq_slots_utilization');
-    const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
-
-    let utilData = null;
-    let actualData = null;
-
-    if (cachedUtil) {
-        try {
-            utilData = JSON.parse(cachedUtil);
-        } catch (e) {
-            console.warn("Failed to parse cached slots utilization chart", e);
+        // Load cached top spenders data
+        const cachedSpenders = localStorage.getItem('bq_top_spenders');
+        if (cachedSpenders) {
+            try {
+                renderTopSpenders(JSON.parse(cachedSpenders));
+            } catch (e) { console.warn("Failed to parse cached top spenders", e); }
         }
-    }
 
-    if (cachedActualProv) {
-        try {
-            actualData = JSON.parse(cachedActualProv);
-            // Standalone timeline fallback if not embedded or to support legacy cache keys
-            if (actualData && !actualData.timeline) {
-                const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
-                if (cachedProv) {
-                    try {
-                        actualData.timeline = JSON.parse(cachedProv);
-                    } catch (_) {}
-                }
+        // Load cached storage data
+        const cachedStorage = localStorage.getItem('bq_storage_results');
+        if (cachedStorage) {
+            try {
+                const storageData = JSON.parse(cachedStorage);
+                state.storageData = storageData.datasets;
+                renderStorageResults(storageData);
+                renderOrgStatus(storageData.org_status);
+            } catch (e) { console.warn("Failed to parse cached storage results", e); }
+        }
+
+        // Load cached Active Assist recommendations
+        const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
+        if (cachedActiveAssist) {
+            try {
+                const activeAssistData = JSON.parse(cachedActiveAssist);
+                state.activeAssistData = activeAssistData;
+                renderActiveAssistResults(activeAssistData);
+            } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
+        }
+
+        // Load cached Static Schema Audit results
+        const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
+        if (cachedStaticAudit) {
+            try {
+                const staticAuditData = JSON.parse(cachedStaticAudit);
+                state.staticAuditData = staticAuditData;
+                renderStaticAuditResults(staticAuditData);
+            } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
+        }
+
+        // Load cached job data
+        const cachedJob = localStorage.getItem('bq_job_results');
+        if (cachedJob) {
+            try {
+                renderJobResults(JSON.parse(cachedJob));
+            } catch (e) { console.warn("Failed to parse cached job results", e); }
+        }
+
+        // Load cached slots data (recommendation + current reservations tables)
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (cachedSlots) {
+            try {
+                renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
+            } catch (e) { console.warn("Failed to parse cached slots results", e); }
+        }
+        
+        const cachedTiered = localStorage.getItem('bq_slots_tiered');
+        if (cachedTiered) {
+            try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
+        }
+
+        // Load cached simulation results (Edition Matrix Simulation)
+        const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
+        if (cachedSimulation) {
+            try {
+                const data = JSON.parse(cachedSimulation);
+                renderSimulationResults(data);
+                const panel = document.getElementById('simulation-results-panel');
+                if (panel) panel.style.display = 'block';
+            } catch (e) {
+                console.warn("Failed to parse cached simulation results", e);
             }
-        } catch (e) {
-            console.warn("Failed to parse cached actual provisioning", e);
+        }
+
+        // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
+        const cachedUtil = localStorage.getItem('bq_slots_utilization');
+        const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
+
+        let utilData = null;
+        let actualData = null;
+
+        if (cachedUtil) {
+            try {
+                utilData = JSON.parse(cachedUtil);
+            } catch (e) {
+                console.warn("Failed to parse cached slots utilization chart", e);
+            }
+        }
+
+        if (cachedActualProv) {
+            try {
+                actualData = JSON.parse(cachedActualProv);
+                // Standalone timeline fallback if not embedded or to support legacy cache keys
+                if (actualData && !actualData.timeline) {
+                    const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
+                    if (cachedProv) {
+                        try {
+                            actualData.timeline = JSON.parse(cachedProv);
+                        } catch (_) {}
+                    }
+                }
+            } catch (e) {
+                console.warn("Failed to parse cached actual provisioning", e);
+            }
+        }
+
+        if (utilData || actualData) {
+            try {
+                renderSlotsUtilizationAndProvisioning(utilData, actualData);
+            } catch (e) {
+                console.error("Failed to render cached slots timeline / provisioning data", e);
+            }
+        }
+
+        // Load cached profiler data
+        const cachedSummary = localStorage.getItem('bq_profiler_summary');
+        const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
+        const cachedQueries = localStorage.getItem('bq_profiler_queries');
+
+        if (cachedSummary) {
+            try {
+                renderProfilerResults(JSON.parse(cachedSummary));
+            } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
+        }
+        if (cachedTimeline) {
+            try {
+                renderHeatmap(JSON.parse(cachedTimeline));
+            } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
+        }
+        if (cachedQueries) {
+            try {
+                renderProfilerQueries(JSON.parse(cachedQueries));
+            } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
+        }
+
+        // Anti-patterns, Cost Attribution, Governance, MV, etc.
+        const cachedMv = localStorage.getItem('bq_mv_results');
+        if (cachedMv) {
+            try { renderMvResults(JSON.parse(cachedMv)); } catch (e) { console.warn("Failed to parse cached MV results", e); }
+        }
+        const cachedAnti = localStorage.getItem('bq_antipatterns_results');
+        if (cachedAnti) {
+            try { renderAntiPatternsResults(JSON.parse(cachedAnti)); } catch (e) { console.warn("Failed to parse cached anti-patterns results", e); }
+        }
+        const cachedSkew = localStorage.getItem('bq_skew_results');
+        if (cachedSkew) {
+            try { renderSkewResults(JSON.parse(cachedSkew)); } catch (e) { console.warn("Failed to parse cached skew results", e); }
+        }
+        const cachedBatch = localStorage.getItem('bq_batch_results');
+        if (cachedBatch) {
+            try { renderBatchCandidatesResults(JSON.parse(cachedBatch)); } catch (e) { console.warn("Failed to parse cached batch results", e); }
+        }
+        const cachedCostAttr = localStorage.getItem('bq_cost_attribution_results');
+        if (cachedCostAttr) {
+            try {
+                const parsedData = JSON.parse(cachedCostAttr);
+                renderCostAttributionResults(parsedData.attributions || parsedData);
+            } catch (e) { console.warn("Failed to parse cached cost attribution results", e); }
+        }
+        const cachedLinter = localStorage.getItem('bq_linter_results');
+        if (cachedLinter) {
+            try { renderLinterResults(JSON.parse(cachedLinter)); } catch (e) { console.warn("Failed to parse cached linter results", e); }
+        }
+        const cachedGov = localStorage.getItem('bq_gov_results');
+        if (cachedGov) {
+            try {
+                const govData = JSON.parse(cachedGov);
+                renderExpirationResults(govData.expiration_issues || []);
+                renderFilterResults(govData.filter_issues || []);
+            } catch (e) { console.warn("Failed to parse cached governance results", e); }
+        }
+        const cachedPerf = localStorage.getItem('bq_performance_results');
+        if (cachedPerf) {
+            try { renderPerformanceResults(JSON.parse(cachedPerf)); } catch (e) { console.warn("Failed to parse cached performance results", e); }
+        }
+        const cachedBi = localStorage.getItem('bq_bi_results');
+        if (cachedBi) {
+            try { renderBiResults(JSON.parse(cachedBi)); } catch (e) { console.warn("Failed to parse cached BI results", e); }
+        }
+        const cachedHbo = localStorage.getItem('bq_hbo_results');
+        if (cachedHbo) {
+            try { renderHboResults(JSON.parse(cachedHbo)); } catch (e) { console.warn("Failed to parse cached HBO results", e); }
+        }
+        const cachedHygiene = localStorage.getItem('bq_hygiene_results');
+        if (cachedHygiene) {
+            try { renderHygieneResults(JSON.parse(cachedHygiene)); } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
         }
     }
+    window.loadAllCachedData = loadAllCachedData;
 
-    if (utilData || actualData) {
-        try {
-            renderSlotsUtilizationAndProvisioning(utilData, actualData);
-        } catch (e) {
-            console.error("Failed to render cached slots timeline / provisioning data", e);
-        }
-    }
+    // Load all cached data on page startup
+    loadAllCachedData();
 
-    // Load cached profiler data
-    const cachedSummary = localStorage.getItem('bq_profiler_summary');
-    const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
-    const cachedQueries = localStorage.getItem('bq_profiler_queries');
-
-    if (cachedSummary) {
-        try {
-            renderProfilerResults(JSON.parse(cachedSummary));
-        } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
-    }
-    if (cachedTimeline) {
-        try {
-            renderHeatmap(JSON.parse(cachedTimeline));
-        } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
-    }
-    if (cachedQueries) {
-        try {
-            renderProfilerQueries(JSON.parse(cachedQueries));
-        } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
-    }
     // Snapshot export/import wiring
     const exportBtn = document.getElementById('btn-export-snapshot');
     if (exportBtn) {
@@ -5987,10 +6942,517 @@ ${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq que
             e.target.value = ''; // reset so re-selecting the same file fires change
         });
     }
+    // Report button wiring
+    const reportGenBtn = document.getElementById('btn-report-generate');
+    if (reportGenBtn) reportGenBtn.addEventListener('click', () => ReportModule.onClick());
+    const reportGenEmptyBtn = document.getElementById('btn-report-generate-empty');
+    if (reportGenEmptyBtn) reportGenEmptyBtn.addEventListener('click', () => ReportModule.onClick());
 
     // App Start
     initUI();
+    ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
 });
+
+/* ============================================================
+   ReportModule — One-Click Executive FinOps Report Generator
+   ============================================================
+   Fetches the canonical module registry from the server, checks
+   localStorage cache, shows a pre-flight popup if data is missing,
+   runs a sequential sweep, then opens the rendered report in a
+   new tab. Follows the Snapshot IIFE pattern.
+   ============================================================ */
+const ReportModule = (() => {
+  let MODULES = [];       // populated from GET /api/report/manifest
+  let REPORT_KEYS = [];   // derived from MODULES + settings keys
+  const SETTINGS_KEYS = ['bq_org_project', 'bq_region', 'bq_admin_project', 'bq_focus_projects'];
+  let _sweepAbort = null; // AbortController for cancelling a sweep
+  let _sweepRunning = false;
+  let _lastReportId = null; // Track the last generated report for open-in-tab
+
+  const TIPS = [
+    'Editions pricing can save 30–70% over on-demand for steady workloads.',
+    'Partitioned tables reduce bytes scanned — lower cost, faster queries.',
+    'SELECT * scans all columns. Explicit lists can cut costs dramatically.',
+    'Batch-priority jobs run at no extra slot cost during off-peak hours.',
+    'Materialized views can serve repeated aggregations at zero slot cost.',
+    'Custom quotas prevent a single runaway query from blowing your budget.',
+    'Physical storage billing can halve costs for heavily compressed data.',
+    'DML batching reduces the number of metadata operations significantly.',
+  ];
+
+  async function init() {
+    try {
+      const res = await fetch('/api/report/manifest');
+      if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+      MODULES = await res.json();
+      REPORT_KEYS = MODULES
+        .flatMap(m => m.keys)
+        .concat(SETTINGS_KEYS);
+    } catch (err) {
+      console.warn('[ReportModule] Could not load manifest:', err);
+    }
+  }
+
+  function checkModuleCache() {
+    const cached = MODULES.filter(m => m.keys.every(k => localStorage.getItem(k) !== null));
+    const missing = MODULES.filter(m => !m.keys.every(k => localStorage.getItem(k) !== null));
+    return { cached, missing };
+  }
+
+  function collectSnapshot() {
+    const out = {};
+    const allowed = new Set(REPORT_KEYS);
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && allowed.has(key)) {
+        out[key] = localStorage.getItem(key);
+      }
+    }
+    // Include sweep metadata if present
+    const meta = localStorage.getItem('bq_report_meta');
+    if (meta) out.bq_report_meta = meta;
+    return out;
+  }
+
+  // ── Pre-flight Popup ──────────────────────────────────────────────
+
+  async function onClick() {
+    if (_sweepRunning) return;
+    try {
+      await init();
+    } catch (_) {}
+    if (MODULES.length === 0) {
+      showNotification('Report module registry not loaded. Please refresh the page.', 'error');
+      return;
+    }
+    const { cached, missing } = checkModuleCache();
+    showPreFlight(cached, missing);
+  }
+
+  function showPreFlight(cached, missing) {
+    // Remove existing overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const allCached = missing.length === 0;
+    const card = document.createElement('div');
+    card.className = 'report-preflight';
+
+    let statusHtml = '';
+    if (allCached) {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> All ${cached.length} modules have cached data.</div>
+        </div>`;
+    } else {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> ${cached.length} module${cached.length !== 1 ? 's' : ''} cached</div>
+          <div class="report-preflight-item"><span class="status-icon">⚠️</span> ${missing.length} module${missing.length !== 1 ? 's' : ''} need to run: <em>${missing.slice(0, 5).map(m => m.label).join(', ')}${missing.length > 5 ? '…' : ''}</em></div>
+        </div>`;
+    }
+
+    // AI Doctor opt-in checkbox (only shown if AI module is in missing list)
+    const aiMissing = missing.some(m => m.keys.includes('bq_ai_results'));
+    const aiOptIn = aiMissing ? `
+      <div class="report-ai-opt-in">
+        <input type="checkbox" id="report-ai-optin">
+        <label for="report-ai-optin">Include AI Doctor (slow — cross-project scan, 15–60s)</label>
+      </div>` : '';
+
+    card.innerHTML = `
+      <h3>⚡ Generate Assessment Report</h3>
+      ${statusHtml}
+      ${aiOptIn}
+      <div class="report-preflight-actions">
+        <button class="report-btn-secondary" id="report-cancel-btn">Cancel</button>
+        ${!allCached ? `<button class="report-btn-secondary" id="report-skip-btn" title="Generate report with available data only">Skip Missing</button>` : ''}
+        <button class="report-btn-primary" id="report-go-btn">${allCached ? 'Generate Report' : 'Run & Generate'}</button>
+      </div>`;
+
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    // Wire buttons
+    document.getElementById('report-cancel-btn').addEventListener('click', () => dismissOverlay());
+    const skipBtn = document.getElementById('report-skip-btn');
+    if (skipBtn) skipBtn.addEventListener('click', () => { dismissOverlay(); generateNow(); });
+    document.getElementById('report-go-btn').addEventListener('click', () => {
+      dismissOverlay();
+      if (allCached) {
+        generateNow();
+      } else {
+        const excludeAi = !aiMissing || !document.getElementById('report-ai-optin')?.checked;
+        const toRun = excludeAi ? missing.filter(m => !m.keys.includes('bq_ai_results')) : missing;
+        runSweep(toRun);
+      }
+    });
+
+    // Close on backdrop click
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismissOverlay(); });
+  }
+
+  function dismissOverlay() {
+    const overlay = document.getElementById('report-overlay');
+    if (overlay) {
+      overlay.classList.remove('active');
+      setTimeout(() => overlay.remove(), 300);
+    }
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+  }
+
+  // ── Sequential Sweep ──────────────────────────────────────────────
+
+  async function runSweep(modules) {
+    if (_sweepRunning) return;
+    _sweepRunning = true;
+    _sweepAbort = new AbortController();
+
+    const btn = document.getElementById('btn-report-generate');
+    if (btn) btn.disabled = true;
+
+    // Build sweep overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'report-sweep-overlay';
+
+    const stepsHtml = modules.map((m, i) =>
+      `<div class="report-step" id="report-step-${i}">
+        <span class="report-step-icon" id="report-step-icon-${i}">⏳</span>
+        <span>${m.label}</span>
+        <span class="report-step-timing" id="report-step-time-${i}"></span>
+      </div>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div class="report-sweep-logo">⚡</div>
+      <div class="report-sweep-title">Running Analysis Sweep</div>
+      <div class="report-sweep-subtitle">Collecting data for your assessment report…</div>
+      <div class="report-progress-container">
+        <div class="report-progress-bar"><div class="report-progress-fill" id="report-progress-fill"></div></div>
+        <div class="report-progress-text"><span id="report-progress-count">0 / ${modules.length}</span><span id="report-elapsed">0s</span></div>
+      </div>
+      <div class="report-stepper">${stepsHtml}</div>
+      <div class="report-tips"><span id="report-tip-text">💡 ${TIPS[0]}</span></div>
+      <div class="report-sweep-actions" id="report-sweep-actions">
+        <button class="report-btn-secondary" id="report-sweep-cancel" title="Stops new queries. Queries already running in BigQuery will continue.">Cancel</button>
+      </div>`;
+
+    backdrop.appendChild(overlay);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    document.getElementById('report-sweep-cancel').addEventListener('click', () => {
+      if (_sweepAbort) _sweepAbort.abort();
+    });
+
+    // Tips carousel
+    let tipIdx = 0;
+    const tipInterval = setInterval(() => {
+      tipIdx = (tipIdx + 1) % TIPS.length;
+      const tipEl = document.getElementById('report-tip-text');
+      if (tipEl) tipEl.textContent = '\ud83d\udca1 ' + TIPS[tipIdx];
+    }, 8000);
+
+    // Elapsed timer
+    const startTime = Date.now();
+    const elapsedInterval = setInterval(() => {
+      const el = document.getElementById('report-elapsed');
+      if (el) el.textContent = formatElapsed(Date.now() - startTime);
+    }, 1000);
+
+    // Build request payload from state
+    const payload = buildSweepPayload();
+
+    // Sequential execution
+    const meta = {};
+    let completed = 0;
+    let anyFailed = false;
+
+    for (let i = 0; i < modules.length; i++) {
+      const mod = modules[i];
+      const stepEl = document.getElementById(`report-step-${i}`);
+      const iconEl = document.getElementById(`report-step-icon-${i}`);
+      const timeEl = document.getElementById(`report-step-time-${i}`);
+
+      if (_sweepAbort.signal.aborted) break;
+
+      if (stepEl) stepEl.classList.add('active');
+      if (iconEl) iconEl.textContent = '🔄';
+
+      const t0 = Date.now();
+      try {
+        const res = await fetch(mod.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildModulePayload(mod, payload)),
+          signal: _sweepAbort.signal,
+        });
+
+        const dt = Date.now() - t0;
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+
+        // Store result in localStorage (same pattern as existing modules)
+        for (const key of mod.keys) {
+          const val = extractKeyData(data, key, mod);
+          if (val !== undefined) {
+            safeSetLocalStorage(key, typeof val === 'string' ? val : JSON.stringify(val));
+          }
+        }
+
+        // Verify write (write failure = ⚠️)
+        const allWritten = mod.keys.every(k => localStorage.getItem(k) !== null);
+        if (iconEl) iconEl.textContent = allWritten ? '✅' : '⚠️';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add(allWritten ? 'done' : 'error'); }
+        if (timeEl) timeEl.textContent = formatMs(dt);
+
+        meta[mod.keys[0]] = { ran_at: new Date().toISOString(), lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'), duration_ms: dt };
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          if (iconEl) iconEl.textContent = '⏹️';
+          if (stepEl) { stepEl.classList.remove('active'); }
+          break;
+        }
+        anyFailed = true;
+        if (iconEl) iconEl.textContent = '❌';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add('error'); }
+        if (timeEl) timeEl.textContent = 'failed';
+        console.warn(`[ReportSweep] ${mod.label} failed:`, err);
+      }
+
+      completed++;
+      const fill = document.getElementById('report-progress-fill');
+      if (fill) fill.style.width = `${(completed / modules.length) * 100}%`;
+      const countEl = document.getElementById('report-progress-count');
+      if (countEl) countEl.textContent = `${completed} / ${modules.length}`;
+    }
+
+    clearInterval(tipInterval);
+    clearInterval(elapsedInterval);
+
+    // Store sweep metadata
+    safeSetLocalStorage('bq_report_meta', JSON.stringify(meta));
+
+    // Automatically populate all view tables from newly cached data
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+
+    // Show "Ready" state with View Report button
+    const actionsEl = document.getElementById('report-sweep-actions');
+    if (actionsEl) {
+      const aborted = _sweepAbort.signal.aborted;
+      const readyText = aborted ? '⏹️ Sweep Cancelled' : (anyFailed ? '⚠️ Sweep Complete (with errors)' : '✅ Ready');
+      actionsEl.innerHTML = `
+        <div class="report-sweep-ready">
+          <div class="ready-text">${readyText}</div>
+          <button class="report-btn-primary" id="report-view-btn">View Report</button>
+          <button class="report-btn-secondary" id="report-close-btn" style="margin-left: 0.5rem">Close</button>
+        </div>`;
+      document.getElementById('report-view-btn').addEventListener('click', () => {
+        dismissOverlay();
+        generateNow();
+      });
+      document.getElementById('report-close-btn').addEventListener('click', () => dismissOverlay());
+    }
+
+    _sweepRunning = false;
+    if (btn) btn.disabled = false;
+  }
+
+  // ── Report Generation ─────────────────────────────────────────────
+
+  async function generateNow() {
+    // Navigate to the Full Report view
+    if (typeof Router !== 'undefined') {
+      Router.navigate('full-report');
+    }
+
+    // Open tab SYNCHRONOUSLY within user gesture — before any await
+    const win = window.open(window.IS_SIMULATOR ? './sample_report.html' : '/report/pending', '_blank');
+    if (!win) {
+      showNotification('Popup blocked — please allow popups for this site.', 'error');
+      return;
+    }
+
+    // Update status UI
+    const emptyState = document.getElementById('report-empty-state');
+    const historyEl = document.getElementById('report-history');
+    if (emptyState) emptyState.style.display = 'none';
+    if (historyEl) historyEl.style.display = 'block';
+
+    try {
+      const snapshot = collectSnapshot();
+      const lookbackDays = parseInt(localStorage.getItem('bq_lookback_days') || '30');
+      const res = await fetch('/api/report/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshot, lookback_days: lookbackDays }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Server error' }));
+        throw new Error(err.detail || 'Failed to generate report');
+      }
+      const { report_id } = await res.json();
+      _lastReportId = report_id;
+      if (window.IS_SIMULATOR) {
+        win.location.replace('./sample_report.html');
+      } else {
+        win.location.replace('/report/view/' + encodeURIComponent(report_id));
+      }
+
+      // Append to history list
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const projName = localStorage.getItem('bq_org_project') || 'unknown-project';
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row';
+        const viewHref = window.IS_SIMULATOR ? './sample_report.html' : `/report/view/${encodeURIComponent(report_id)}`;
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-file-circle-check" style="color: #34d399; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">${escText(projName)}</div>
+              <div class="report-history-meta">${escText(ts)}</div>
+            </div>
+          </div>
+          <a href="${viewHref}" target="_blank" rel="noopener"
+             class="btn-secondary" style="text-decoration:none;font-size:0.85rem;padding:0.4rem 1rem;">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i> View Report
+          </a>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generated — check the new tab.', 'success');
+    } catch (err) {
+      if (!window.IS_SIMULATOR) {
+        win.location.replace('/report/error?reason=' + encodeURIComponent(err.message));
+      }
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row report-history-failed';
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-circle-xmark" style="color: #f87171; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">Generation Failed</div>
+              <div class="report-history-meta">${escText(ts)} — ${escText(err.message)}</div>
+            </div>
+          </div>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generation failed: ' + err.message, 'error');
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────
+
+  function buildSweepPayload() {
+    return {
+      org_project_id: localStorage.getItem('bq_org_project') || '',
+      admin_project_id: localStorage.getItem('bq_admin_project') || '',
+      region: localStorage.getItem('bq_region') || 'US',
+      lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'),
+      max_bytes_billed_gb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb') || '0'),
+      focus_projects: (localStorage.getItem('bq_focus_projects') || '').split(',').map(s => s.trim()).filter(Boolean),
+    };
+  }
+
+  function buildModulePayload(mod, basePayload) {
+    const p = buildPayload(mod.endpoint, basePayload);
+    if (mod.endpoint === '/api/cost-attribution/calculate') {
+      const lookback = p.lookback_days || 30;
+      const endD = new Date();
+      const startD = new Date();
+      startD.setDate(endD.getDate() - lookback);
+      const fmt = d => d.toISOString().slice(0, 10);
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id || p.org_project_id,
+        region: p.region,
+        billing_month_start: localStorage.getItem('cb_month_start') || fmt(startD),
+        billing_month_end: localStorage.getItem('cb_month_end') || fmt(endD),
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+      };
+    }
+    if (mod.endpoint === '/api/slots/simulate') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+      };
+    }
+    if (mod.endpoint === '/api/slots/tiered_recommendations') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+      };
+    }
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        edition_slot_hr_rate: 0.06,
+        cooldown_window: 60,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+      };
+    }
+    return p;
+  }
+
+  function extractKeyData(responseData, key, mod) {
+    if (key in responseData) return responseData[key];
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      if (key === 'bq_fluid_simulation_data' || key === 'bq_fluid_estimate_data') return responseData;
+    }
+    if (mod.endpoint === '/api/hbo/analyze') {
+      if (key === 'bq_hbo_results') return responseData;
+    }
+    if (mod.keys.length === 1) return responseData;
+    return responseData;
+  }
+
+  function formatElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  function formatMs(ms) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function escText(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  return { init, onClick };
+})();
 
 /**
  * Initialize a DataTable only after verifying the table's DOM is internally
@@ -6749,6 +8211,15 @@ const FluidScaling = (() => {
     btn.disabled  = isLoading;
     if (label)   label.textContent = isLoading ? 'Running…' : 'Run Estimation';
     if (spinner) spinner.hidden    = !isLoading;
+    // --- Ongoing task tracking (mirrors global setLoading hook) ---
+    if (btn.id) {
+        if (isLoading) {
+            var taskLabel = TASK_LABELS[btn.id] || 'Fluid Scaling';
+            NotificationCenter.startTask(btn.id, taskLabel);
+        } else {
+            NotificationCenter.completeTask(btn.id);
+        }
+    }
   }
 
   // --- Status banner helper for the jobs panel ---
@@ -7185,7 +8656,7 @@ const FluidScaling = (() => {
       return `
         <tr>
           <td title="${UIState.escapeHtml(row.pattern_id)}">${UIState.escapeHtml(patternLabel)}</td>
-          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}</td>
+          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}${sampleJobId ? ` <a href="${buildConsoleUrl('job', { project: row.project_id || state.orgProject, location: state.region, jobId: sampleJobId })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}</td>
           <td>${UIState.escapeHtml(row.workload_type)}</td>
           <td title="${UIState.escapeHtml(row.reservation_id || '')}">${UIState.escapeHtml(row.reservation_short_name || '—')}</td>
           <td>${UIState.escapeHtml(String(row.job_count))}</td>
@@ -7372,6 +8843,10 @@ const Router = (() => {
     document.title = `${capitalize(targetView)} · FinOps Optimizer`;
     updateScopeBadge(targetView);
 
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (e) { console.warn('[Router] loadAllCachedData error:', e); }
+    }
+
     const viewport = document.querySelector('.dashboard-viewport');
     if (viewport) viewport.scrollTop = 0;
   }
@@ -7416,6 +8891,13 @@ Router.register('dashboard', {
 Router.register('fluid-scaling', {
   show: () => {
     FluidScaling.init();
+  }
+});
+
+// Register Full Report (inline)
+Router.register('full-report', {
+  show: () => {
+    ReportModule.init().catch(() => {});
   }
 });
 
