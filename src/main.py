@@ -2145,7 +2145,7 @@ def analyze_ai_query(params: AIParams):
             logger.error(f"IAM 403 Access Denied for JOBS_BY_ORGANIZATION: {e}")
             raise HTTPException(
                 status_code=403,
-                detail=f"IAM 403 Access Denied: Organization-level BigQuery viewer permission (roles/bigquery.resourceViewer or roles/bigquery.admin) is required to run AI Doctor organization-wide discovery. Details: {e}"
+                detail=f"IAM 403 Access Denied: Organization-level BigQuery Resource Viewer permission (roles/bigquery.resourceViewer) is required to run AI Doctor organization-wide discovery. Details: {e}"
             ) from e
         
         # JOBS_BY_ORGANIZATION does not contain the 'query' text for privacy.

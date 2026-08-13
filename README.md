@@ -63,7 +63,7 @@ BigQuery HBO automatically optimizes queries over time. Since it is enabled by d
     *   **⏱️ Total Slot Time (`slot_ms`)**: Focuses on heavy aggregate slot-consuming query templates.
 *   **Multi-Stage Shuffle Spill Unnesting:** Unnests `job_stages` via `(SELECT SUM(s.shuffle_output_bytes_spilled) FROM UNNEST(job_stages) s)` to aggregate intermediate RAM-to-disk spills across all execution stages.
 *   **Deterministic Worst-Job Sampling:** Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload for AI auditing.
-*   **Strict IAM Guardrails:** Requires `roles/bigquery.resourceViewer` or `roles/bigquery.admin` for organization discovery. Intercepts IAM 403 `Forbidden` exceptions and raises an explicit `HTTP 403 Access Denied` response with clear role guidance.
+*   **Strict IAM Guardrails:** Requires `roles/bigquery.resourceViewer` at the organization level for discovery. Intercepts IAM 403 `Forbidden` exceptions and raises an explicit `HTTP 403 Access Denied` response with clear role guidance.
 *   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.5-flash` by default, or `gemini-3.1-flash-lite`) directly.
 *   **No Cloud Resource Connection required** (by default) — works with your existing end-user ADC credentials out of the box. A connection is only needed if deploying on Cloud Run with a service account.
 *   **No additional APIs to enable** beyond the Vertex AI API on your project.
@@ -323,19 +323,15 @@ To query organization-wide metadata (`INFORMATION_SCHEMA` tables scoped with `*_
 *   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`): Permissions to inspect table definitions and schemas.
 
 ### 2. Organization-level Permissions (Required for Organisation-scoped Views)
-*   **BigQuery Resource Admin** (`roles/bigquery.resourceAdmin`): Required to retrieve slot metrics from `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, and `TABLE_STORAGE_BY_ORGANIZATION`. Also enables viewing reservation hierarchies.
-*   **BigQuery Data Viewer** (`roles/bigquery.dataViewer`) or **Metadata Viewer** (`roles/bigquery.metadataViewer`): Required at the organization level to query `INFORMATION_SCHEMA.SCHEMATA_OPTIONS` across all projects. Without this, the Storage Analysis fast-path (`UNION ALL`) will fail with a 403 Access Denied and fall back to a slower, project-by-project loop.
+*   **BigQuery Resource Viewer** (`roles/bigquery.resourceViewer`): Required to query org-scoped `INFORMATION_SCHEMA` views — `JOBS_TIMELINE_BY_ORGANIZATION`, `JOBS_BY_ORGANIZATION`, `RESERVATIONS`, and `CAPACITY_COMMITMENT_CHANGES`. Provides read-only access to reservation hierarchies and job telemetry without the ability to create, modify, or delete reservations or commitments.
+*   **BigQuery Metadata Viewer** (`roles/bigquery.metadataViewer`) *(optional, at Organization level)*: Enables a fast-path batched `UNION ALL` query across all projects' `SCHEMATA_OPTIONS` for Storage Analysis, and provides access to `TABLE_STORAGE_BY_ORGANIZATION`. Without this, the app automatically falls back to a slower project-by-project loop — the only impact is longer scan times on large organizations.
 
-### 3. Dataset-level Permissions (Optional - for inline execution)
-*   **BigQuery Data Owner** (`roles/bigquery.dataOwner`): Required if executing the DDL commands to change storage models directly from the dashboard.
-
-### 4. Active Assist / Recommender Permissions (Required for Recommendations Module)
+### 3. Active Assist / Recommender Permissions (Required for Recommendations Module)
 *   **BigQuery Partitioning Clustering Recommender Viewer** (`roles/recommender.bigqueryPartitionClusterViewer`): Crucial for retrieving Google's native Active Assist partitioning and clustering recommendations.
     *   **Organization-level Grant (Recommended)**: Must be granted at the **Organization** resource level to query the organization-wide `INFORMATION_SCHEMA.RECOMMENDATIONS_BY_ORGANIZATION` view.
     *   **Project-level Grant**: Can be granted at the individual **Project** level if only analyzing specific standalone projects.
-*   **Recommender Viewer** (`roles/recommender.viewer`): General viewer role providing broader read access across Google's recommendation engines (can also be granted at the Org or Project level depending on target scope).
 
-### 5. AI Doctor Permissions (Required for GenAI Query Analysis)
+### 4. AI Doctor Permissions (Required for GenAI Query Analysis)
 The AI Doctor is the **only module that uses AI**. It calls BigQuery's `AI.GENERATE` function with the Vertex AI publisher endpoint — **no model creation, no remote model, no BigQuery ML dataset, and no Cloud Resource Connection are required** for the default setup.
 
 *   **End-User Credentials (default, zero setup)**:
