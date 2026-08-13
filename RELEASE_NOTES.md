@@ -6,6 +6,19 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 13, 2026 — v1.4.3
+
+**Fixed (Report Generator Normalization, Clean Scans & Universal CSV Export)**
+- **Baseline Cost Normalization:** Standardized all report baseline and finding metrics (on-demand compute, fallback Editions pricing, slot-hours, average slots) to normalized 30-day monthly values regardless of custom `lookback_days` windows (7d, 14d, 90d).
+- **Division Safety & Boundary Validation:** Added strict range validation (`1 <= lookback_days <= 365`) on `/api/report/prepare` and internal defensive sanitization to prevent zero/negative division.
+- **Clean Scan Evaluation Matrix:** Updated Section 6 check matrix (`_is_module_evaluated()`) so diagnostic scans evaluated with 0 anti-patterns correctly render as **`✅ Passed`** rather than "Not run (no data)".
+- **Universal Multi-Page CSV Export:** Upgraded `downloadTableAsCSV()` to export all filtered pages from DataTables internal cache while preserving user-selected sort order.
+- **Snapshot Import Resilience:** Added 15 MB file size limit pre-check and automatic file input element reset on error/completion.
+- **Defensive HBO Insights Rendering:** Added null-safe guards and fallback formatters across slot contention, shuffle quota, and data volume sub-tables.
+- **AI Model Catalog Alignment:** Updated model pricing and documentation references to Gemini 3.6 Flash and Gemini 3.5 Flash-Lite across interactive calculators, documentation specs, and CI workflows.
+
+---
+
 ## August 13, 2026 — v1.4.2
 
 **Feature (Assessment Report Generator & Comprehensive Analysis Sweep)**

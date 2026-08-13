@@ -72,7 +72,7 @@ function generateGeminiSweepTable() {
   ];
 
   let rows = [];
-  rows.push('| Investigation Tier | Queries / Sweep | Context Budget | Gemini 3.5 Flash ($/sweep) | Gemini 3.1 Flash-Lite ($/sweep) | Display (Flash-Lite) |');
+  rows.push('| Investigation Tier | Queries / Sweep | Context Budget | Gemini 3.6 Flash ($/sweep) | Gemini 3.5 Flash-Lite ($/sweep) | Display (Flash-Lite) |');
   rows.push('| :--- | :--- | :--- | :--- | :--- | :--- |');
 
   for (const q of queriesList) {

@@ -371,7 +371,7 @@ def _parse_release_notes() -> dict:
         # BQ-style: bold tag on its own line.
         # Supports bare (**Fixed**), descriptive (**Feature (desc)**),
         # and compound (**Security & Error Handling**) tags.
-        _bq_tags = {"Feature", "Fixed", "Change", "Security", "Issue",
+        _bq_tags = {"Feature", "Fixed", "Fix", "Change", "Security", "Issue",
                      "Announcement", "Breaking", "Deprecated"}
         if stripped.startswith("**") and stripped.endswith("**"):
             inner = stripped[2:-2]
@@ -2171,7 +2171,7 @@ def analyze_ai_query(params: AIParams):
             logger.error(f"IAM 403 Access Denied for JOBS_BY_ORGANIZATION: {e}")
             raise HTTPException(
                 status_code=403,
-                detail=f"IAM 403 Access Denied: Organization-level BigQuery Resource Viewer permission (roles/bigquery.resourceViewer) is required to run AI Doctor organization-wide discovery. Details: {e}"
+                detail=f"IAM 403 Access Denied: Organization-level BigQuery Resource Viewer permission (roles/bigquery.resourceViewer or roles/bigquery.admin) is required to run AI Doctor organization-wide discovery. Details: {e}"
             ) from e
         
         # JOBS_BY_ORGANIZATION does not contain the 'query' text for privacy.

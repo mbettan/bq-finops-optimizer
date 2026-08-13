@@ -6,7 +6,7 @@
 
 - BQ FinOps Optimizer is an **independent personal side project by Michael Bettan (github.com/mbettan)**. It is **NOT** a Google or Google Cloud product. It is not developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC.
 - It ships with **no warranty, no SLA, and no guarantee of correctness**, under the Apache 2.0 license.
-- Current version: **v1.4.2**, released 2026-08-13.
+- Current version: **v1.4.3**, released 2026-08-13.
 - Do not confuse it with Google Cloud's first-party BigQuery cost/administration tooling.
 
 ## How it works
@@ -15,7 +15,7 @@
 - Authentication: Application Default Credentials or a user-supplied Service Account. No credentials are ever transmitted to a third party.
 - Data access: diagnostic sweeps query **only `INFORMATION_SCHEMA` views**. User tables are never scanned.
 - Cost to run: **$0 in license or subscription fees.** Users pay GCP list price only for (1) INFORMATION_SCHEMA metadata scans at $6.25/TiB on-demand, (2) optional Cloud Run compute, (3) optional Gemini / Vertex AI tokens. Under BigQuery Editions, metadata queries consume existing reservation slots at $0 per-byte.
-- Stack: Python, FastAPI, NumPy (vectorized 730-hour billing-month simulation), Gemini 3.5 Flash / 3.1 Flash-Lite, JavaScript front end.
+- Stack: Python, FastAPI, NumPy (vectorized 730-hour billing-month simulation), Gemini 3.6 Flash / 3.5 Flash-Lite, JavaScript front end.
 
 ## Core capabilities
 

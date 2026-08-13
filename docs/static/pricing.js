@@ -59,22 +59,22 @@
     }),
     gemini: Object.freeze({
       flash: Object.freeze({
-        name: 'Gemini 3.5 Flash',
+        name: 'Gemini 3.6 Flash',
         inputPer1M: 1.50,
         outputPer1M: 7.50,
         inputPerToken: 0.00000150,
         outputPerToken: 0.00000750,
         source: 'https://cloud.google.com/vertex-ai/generative-ai/pricing',
-        retrieved: '2026-08-12'
+        retrieved: '2026-08-13'
       }),
       flashLite: Object.freeze({
-        name: 'Gemini 3.1 Flash-Lite',
+        name: 'Gemini 3.5 Flash-Lite',
         inputPer1M: 0.30,
         outputPer1M: 2.50,
         inputPerToken: 0.00000030,
         outputPerToken: 0.00000250,
         source: 'https://cloud.google.com/vertex-ai/generative-ai/pricing',
-        retrieved: '2026-08-12'
+        retrieved: '2026-08-13'
       })
     }),
     tokensPerQuery: Object.freeze({

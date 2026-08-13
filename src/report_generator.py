@@ -19,7 +19,10 @@ from __future__ import annotations
 import html as html_lib
 import json
 import logging
+import os
+import re
 import secrets
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -29,7 +32,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .constants import (
     EDITIONS_SLOT_HR_RATE,
@@ -184,7 +187,7 @@ _FINDING_META: dict[str, dict[str, str]] = {
 
 class ReportPrepareRequest(BaseModel):
     snapshot: dict[str, Any]
-    lookback_days: int = 30
+    lookback_days: int = Field(default=30, ge=1, le=365)
 
 
 # ---------------------------------------------------------------------------
@@ -459,40 +462,55 @@ class FindingsSynthesizer:
 
         # ── ID-01: Pricing Model ─────────────────────────────────────
         if fid == "PRICING_MODEL":
-            # FIX #1: Use unified baseline cost from bq_top_spenders (same as §1 & §3)
+            lookback = self._data.get("_lookback_days", 30) or 30
+            monthly_factor = 30.0 / max(lookback, 1)
+            window_hours = max(lookback, 1) * 24.0
+
+            # Use unified baseline cost from bq_top_spenders (same as §1 & §3)
             top = self._data.get("bq_top_spenders")
             if isinstance(top, list) and top:
                 total_bytes = sum(sf(r.get("total_bytes_billed")) for r in top if isinstance(r, dict))
-                ondemand_cost = (total_bytes / (1024**4)) * ON_DEMAND_USD_PER_TB
+                window_ondemand_cost = (total_bytes / (1024**4)) * ON_DEMAND_USD_PER_TB
+                ondemand_cost = window_ondemand_cost * monthly_factor
             else:
                 # Fallback to bq_job_results if top_spenders unavailable
                 jobs = self._data.get("bq_job_results")
                 if isinstance(jobs, dict):
-                    ondemand_cost = sum(
+                    window_ondemand_cost = sum(
                         sf(ps.get("total_on_demand_cost"))
                         for ps in jobs.get("project_summaries", [])
                         if isinstance(ps, dict)
                     )
+                    ondemand_cost = window_ondemand_cost * monthly_factor
                 else:
                     return False, None, enrichment
             if ondemand_cost <= 0:
                 return False, None, enrichment
 
-            # Get editions cost from sim (monthly cost at 3yr rate)
+            # Get editions cost: simulation (monthly at 3yr rate) or jobs (normalized to monthly)
             sim = self._data.get("bq_slots_simulation_results")
             editions_cost = 0.0
             if isinstance(sim, list) and sim:
                 best = min(sim, key=lambda r: sf(r.get("total_3yr")))
                 editions_cost = sf(best.get("total_3yr"))
+            else:
+                jobs = self._data.get("bq_job_results")
+                if isinstance(jobs, dict):
+                    raw_editions = sum(
+                        sf(ps.get("total_editions_cost"))
+                        for ps in jobs.get("project_summaries", [])
+                        if isinstance(ps, dict)
+                    )
+                    editions_cost = raw_editions * monthly_factor
 
             # Derive slot metrics from top_spenders (consistent with baseline)
             total_slot_ms = sum(sf(r.get("total_slot_ms")) for r in top if isinstance(r, dict)) if isinstance(top, list) else 0
-            avg_slots = (total_slot_ms / 3_600_000) / 730 if total_slot_ms > 0 else 0
+            avg_slots = (total_slot_ms / 3_600_000) / window_hours if total_slot_ms > 0 else 0
             # Fall back to slots API if near zero
             if avg_slots < 1.0:
                 slots_data = self._data.get("bq_slots_results")
                 if isinstance(slots_data, dict) and sf(slots_data.get("total_slot_ms")) > 0:
-                    avg_slots = (sf(slots_data.get("total_slot_ms")) / 3_600_000) / 730
+                    avg_slots = (sf(slots_data.get("total_slot_ms")) / 3_600_000) / window_hours
             breakeven_enterprise = ondemand_cost / (0.06 * 730) if ondemand_cost > 0 else 0
             breakeven_standard = ondemand_cost / (0.04 * 730) if ondemand_cost > 0 else 0
 
@@ -563,10 +581,13 @@ class FindingsSynthesizer:
         if fid == "SELECT_STAR":
             linter = self._data.get("bq_linter_results")
             if isinstance(linter, list):
-                select_star = [r for r in linter if isinstance(r, dict) and r.get("abuse_type", "").upper() in ("SELECT_STAR", "SELECT *", "SELECTSTAR")]
-                if not select_star:
-                    # Also trigger on any linter results (generic)
-                    select_star = linter
+                select_star = [
+                    r for r in linter
+                    if isinstance(r, dict) and (
+                        r.get("abuse_type", "").upper() in ("SELECT_STAR", "SELECT *", "SELECTSTAR")
+                        or r.get("pattern", "").upper() in ("SELECT_STAR", "SELECT *", "SELECTSTAR")
+                    )
+                ]
                 if select_star:
                     total_gb = sum(sf(r.get("billed_gb")) for r in select_star)
                     top3 = sorted(select_star, key=lambda r: -sf(r.get("billed_gb")))[:3]
@@ -578,7 +599,7 @@ class FindingsSynthesizer:
                         parts.append(f"{user} ({gb:,.1f} GB): {snippet}")
                     enrichment["evidence"] = f"{len(select_star)} queries, {total_gb:,.0f} GB total. Top offenders: {'; '.join(parts)}"
                     enrichment["affected_objects"] = ", ".join(set(r.get("user_email", "?") for r in select_star[:10]))
-                    impact = total_gb / 1024 * ON_DEMAND_USD_PER_TB  # Convert GB to TiB
+                    impact = (total_gb / 1024) * ON_DEMAND_USD_PER_TB  # Convert GB to TiB
                     return True, round(impact, 2) if impact > 1 else None, enrichment
             return False, None, enrichment
 
@@ -634,17 +655,20 @@ class FindingsSynthesizer:
             if isinstance(gov, dict):
                 has_quota = gov.get("custom_quota") or gov.get("has_custom_quota")
                 has_mbb = gov.get("max_bytes_billed") or gov.get("has_max_bytes_billed")
-                if not has_quota and not has_mbb:
+                has_quota_key = "custom_quota" in gov or "has_custom_quota" in gov
+                has_mbb_key = "max_bytes_billed" in gov or "has_max_bytes_billed" in gov
+                if has_quota_key and has_mbb_key and not has_quota and not has_mbb:
                     enrichment["evidence"] = "Neither custom quotas nor max_bytes_billed detected. The project is fully exposed to unbounded single-query spend."
                     return True, None, enrichment
-                if not has_quota:
+                elif has_quota_key and not has_quota:
                     enrichment["evidence"] = "max_bytes_billed is set but custom quotas are not configured."
                     return True, None, enrichment
-                if not has_mbb:
+                elif has_mbb_key and not has_mbb:
                     enrichment["evidence"] = "Custom quotas are set but max_bytes_billed is not enforced on jobs."
                     return True, None, enrichment
             elif isinstance(gov, list):
-                if not any(r.get("custom_quota") or r.get("has_custom_quota") for r in gov if isinstance(r, dict)):
+                has_quota_keys = any("custom_quota" in r or "has_custom_quota" in r for r in gov if isinstance(r, dict))
+                if has_quota_keys and not any(r.get("custom_quota") or r.get("has_custom_quota") for r in gov if isinstance(r, dict)):
                     enrichment["evidence"] = "No custom quotas detected across governance checks."
                     return True, None, enrichment
             return False, None, enrichment
@@ -763,13 +787,20 @@ class FindingsSynthesizer:
                 return True, None, enrichment
             return False, None, enrichment
 
-        # Generic: trigger if result list/dict is non-empty
+        # Generic: trigger if result list/dict contains findings
         for k in fdef["keys"]:
             val = self._data.get(k)
             if isinstance(val, list) and len(val) > 0:
                 return True, None, enrichment
             if isinstance(val, dict) and len(val) > 0:
-                return True, None, enrichment
+                has_content = any(
+                    (isinstance(v, (list, dict, set)) and len(v) > 0) or
+                    (isinstance(v, (int, float)) and v > 0) or
+                    (isinstance(v, str) and len(v.strip()) > 0)
+                    for v in val.values()
+                )
+                if has_content:
+                    return True, None, enrichment
         return False, None, enrichment
 
     @staticmethod
@@ -796,11 +827,14 @@ class FindingsSynthesizer:
         sf = FindingsSynthesizer._safe_float
         compute_baseline = 0.0
         storage_baseline = 0.0
+        lookback = self._data.get("_lookback_days", 30) or 30
+        monthly_factor = 30.0 / max(lookback, 1)
         top = self._data.get("bq_top_spenders")
         if isinstance(top, list):
-            compute_baseline = sum(
+            window_bytes = sum(
                 sf(r.get("total_bytes_billed")) for r in top if isinstance(r, dict)
             ) / (1024**4) * ON_DEMAND_USD_PER_TB
+            compute_baseline = window_bytes * monthly_factor
         storage_data = self._data.get("bq_storage_results")
         if isinstance(storage_data, dict):
             for ds in storage_data.get("datasets", []):
@@ -1024,7 +1058,10 @@ class HTMLReportRenderer:
     ) -> None:
         self._data = data
         self._findings = findings
-        self._lookback_days = lookback_days
+        try:
+            self._lookback_days = max(int(lookback_days or 30), 1)
+        except (ValueError, TypeError):
+            self._lookback_days = 30
         self._nonce = nonce
         self._css = self._load_css()
         self._baseline = self._compute_baseline()
@@ -1032,8 +1069,13 @@ class HTMLReportRenderer:
     def _compute_baseline(self) -> dict[str, float]:
         """Compute financial baselines from bq_top_spenders — single source of truth."""
         sf = FindingsSynthesizer._safe_float
+        lookback_days = max(self._lookback_days, 1)
+        monthly_factor = 30.0 / lookback_days
+        window_hours = lookback_days * 24.0
+
         b: dict[str, float] = {
             "bytes_billed_tib": 0.0,
+            "window_on_demand_cost": 0.0,
             "on_demand_cost": 0.0,
             "total_slot_ms": 0.0,
             "avg_slots": 0.0,
@@ -1045,17 +1087,18 @@ class HTMLReportRenderer:
         if isinstance(top, list):
             total_bytes = sum(sf(r.get("total_bytes_billed")) for r in top if isinstance(r, dict))
             b["bytes_billed_tib"] = total_bytes / (1024**4)
-            b["on_demand_cost"] = b["bytes_billed_tib"] * ON_DEMAND_USD_PER_TB
+            b["window_on_demand_cost"] = b["bytes_billed_tib"] * ON_DEMAND_USD_PER_TB
+            b["on_demand_cost"] = b["window_on_demand_cost"] * monthly_factor
             total_slot_ms = sum(sf(r.get("total_slot_ms")) for r in top if isinstance(r, dict))
             b["total_slot_ms"] = total_slot_ms
-            b["avg_slots"] = (total_slot_ms / 3_600_000) / 730 if total_slot_ms > 0 else 0.0
+            b["avg_slots"] = (total_slot_ms / 3_600_000) / window_hours if total_slot_ms > 0 else 0.0
 
         # FIX #2: If avg_slots is near zero, try the slots API for better data
         slots = self._data.get("bq_slots_results")
         if b["avg_slots"] < 1.0 and isinstance(slots, dict):
             slot_ms = sf(slots.get("total_slot_ms"))
             if slot_ms > 0:
-                b["avg_slots"] = (slot_ms / 3_600_000) / 730
+                b["avg_slots"] = (slot_ms / 3_600_000) / window_hours
                 b["total_slot_ms"] = slot_ms
 
         # FIX #3: Storage baseline — include all storage categories
@@ -1108,6 +1151,7 @@ class HTMLReportRenderer:
             self._head(),
             "<body>",
             self._cover(),
+            self._toc(),
             self._section_1_executive_summary(),
             self._section_2_methodology(),
             self._section_3_pricing(),
@@ -1432,19 +1476,26 @@ four core FinOps dimensions using {self._lookback_days}-day execution telemetry 
         slots = self._data.get("bq_slots_results")
 
         if sim or jobs:
-            # FIX #1: Use unified baseline on-demand cost (same as Section 1)
+            # Unified baseline on-demand cost (same as Section 1)
             b = self._baseline
             ondemand_cost = b["on_demand_cost"]
             editions_cost = 0.0
-            if isinstance(jobs, dict):
-                for ps in jobs.get("project_summaries", []):
-                    editions_cost += FindingsSynthesizer._safe_float(ps.get("total_editions_cost"))
             if isinstance(sim, list) and sim:
                 best_row = min(sim, key=lambda r: FindingsSynthesizer._safe_float(r.get("total_3yr")))
                 editions_cost = FindingsSynthesizer._safe_float(best_row.get("total_3yr"))
+            elif isinstance(jobs, dict):
+                lookback_days = max(self._lookback_days, 1)
+                monthly_factor = 30.0 / lookback_days
+                raw_editions = sum(
+                    FindingsSynthesizer._safe_float(ps.get("total_editions_cost"))
+                    for ps in jobs.get("project_summaries", [])
+                    if isinstance(ps, dict)
+                )
+                editions_cost = raw_editions * monthly_factor
+
             content += f"""<h3>Pricing Model Comparison</h3>
 <table class="data-table">
-  <thead><tr><th>Model</th><th>Estimated Cost ({self._lookback_days}d)</th><th>Rate</th></tr></thead>
+  <thead><tr><th>Model</th><th>Estimated Monthly Cost (30-day baseline)</th><th>Rate</th></tr></thead>
   <tbody>
     <tr><td>On-Demand</td><td>{_format_usd(ondemand_cost)}</td><td>${ON_DEMAND_USD_PER_TB}/TiB</td></tr>
     <tr><td>Editions (Projected)</td><td>{_format_usd(editions_cost)}</td><td>${EDITIONS_SLOT_HR_RATE}/slot-hr</td></tr>
@@ -1458,7 +1509,9 @@ four core FinOps dimensions using {self._lookback_days}-day execution telemetry 
             be_ent_3yr = ondemand_cost / (0.036 * 730) if ondemand_cost > 0 else 0
             avg_slots = b["avg_slots"]  # Use baseline avg_slots (consistent with Section 1)
 
-            if editions_cost > 0 and editions_cost < ondemand_cost * 0.9:
+            if ondemand_cost <= 0:
+                verdict = '<span class="verdict-neutral">\u2139\ufe0f Workload runs on reservations. On-Demand pricing comparison not applicable.</span>'
+            elif editions_cost > 0 and editions_cost < ondemand_cost * 0.9:
                 verdict = f'<span class="verdict-positive">\u2705 Editions is {((ondemand_cost - editions_cost) / ondemand_cost * 100):.0f}% cheaper. Migrate to Editions.</span>'
             elif editions_cost > ondemand_cost:
                 verdict = f'<span class="verdict-negative">\u274c On-Demand is cheaper ({editions_cost / ondemand_cost:.1f}\u00d7). Remain on On-Demand.</span>'
@@ -1712,7 +1765,7 @@ four core FinOps dimensions using {self._lookback_days}-day execution telemetry 
                     f'<td><span class="priority-badge priority-{f.priority.lower()}">{f.score_glyph} {_esc(f.priority)}</span></td>'
                     f'<td class="num">{impact_cell}</td>'
                     f'<td class="num">{pct_cell}</td>'
-                    f'<td>{_esc(f.confidence)[0]}</td>'
+                    f'<td>{_esc(f.confidence[0]) if f.confidence else "—"}</td>'
                     f'<td>{_esc(f.effort)}</td>'
                     f'<td>{_esc(f.horizon)}</td>'
                     f'</tr>'
@@ -1818,10 +1871,10 @@ four core FinOps dimensions using {self._lookback_days}-day execution telemetry 
             fid = fdef["finding_id"]
             ref = fdef["ref_id"]
             title = fdef["title"]
-            has_data = all(self._has_data(k) for k in fdef["keys"])
+            is_evaluated = all(self._is_module_evaluated(k) for k in fdef["keys"])
             if fid in triggered_ids:
                 continue
-            if has_data:
+            if is_evaluated:
                 passed_items += f'<tr class="check-passed"><td>{_esc(ref)}</td><td>{_esc(title)}</td><td>\u2705 Passed</td></tr>'
             else:
                 passed_items += f'<tr class="check-na"><td>{_esc(ref)}</td><td>{_esc(title)}</td><td>\u2b1c Not run (no data)</td></tr>'
@@ -1930,6 +1983,11 @@ four core FinOps dimensions using {self._lookback_days}-day execution telemetry 
         return self._wrap_section(7, "Appendix & Glossary", content, always_has_data=True)
 
     # ── Helpers ───────────────────────────────────────────────────────
+
+    def _is_module_evaluated(self, key: str) -> bool:
+        """True if the module was run and stored in the snapshot (even if 0 findings returned)."""
+        val = self._data.get(key)
+        return val is not None
 
     def _has_data(self, key: str) -> bool:
         val = self._data.get(key)
@@ -2123,10 +2181,13 @@ class ReportEntry:
     created: float
 
 
-import tempfile
-
+_SAFE_REPORT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,64}$")
 _REPORT_CACHE_DIR = Path(tempfile.gettempdir()) / "bq_finops_report_cache"
-_REPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_REPORT_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+try:
+    os.chmod(_REPORT_CACHE_DIR, 0o700)
+except Exception:
+    pass
 _report_cache: OrderedDict[str, ReportEntry] = OrderedDict()
 _cache_lock = threading.Lock()
 _CACHE_MAX = 50
@@ -2139,6 +2200,10 @@ def _evict_expired() -> None:
     expired = [k for k, v in _report_cache.items() if now - v.created > _CACHE_TTL_S]
     for k in expired:
         del _report_cache[k]
+        try:
+            (_REPORT_CACHE_DIR / f"{k}.json").unlink(missing_ok=True)
+        except Exception:
+            pass
     try:
         if _REPORT_CACHE_DIR.exists():
             for f in _REPORT_CACHE_DIR.glob("*.json"):
@@ -2230,10 +2295,18 @@ def prepare_report(request: ReportPrepareRequest):
         _evict_expired()
         _report_cache[report_id] = ReportEntry(html=html, nonce=nonce, created=now)
         while len(_report_cache) > _CACHE_MAX:
-            _report_cache.popitem(last=False)
+            evicted_id, _ = _report_cache.popitem(last=False)
+            try:
+                (_REPORT_CACHE_DIR / f"{evicted_id}.json").unlink(missing_ok=True)
+            except Exception:
+                pass
         try:
             cache_file = _REPORT_CACHE_DIR / f"{report_id}.json"
             cache_file.write_text(json.dumps({"html": html, "nonce": nonce, "created": now}), encoding="utf-8")
+            try:
+                os.chmod(cache_file, 0o600)
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Failed to persist report to disk: {e}")
 
@@ -2261,13 +2334,21 @@ def report_error(reason: str = ""):
 @router.get("/report/view/{report_id}", response_class=HTMLResponse)
 def get_report(report_id: str):
     """Serve a cached report with CSP header, falling back to disk cache."""
+    if not _SAFE_REPORT_ID_RE.match(report_id):
+        return HTMLResponse(
+            content=_REPORT_ERROR_TEMPLATE.format(
+                reason="Invalid report identifier format."
+            ),
+            status_code=404
+        )
     entry = None
     with _cache_lock:
+        _evict_expired()
         entry = _report_cache.get(report_id)
         if not entry:
             try:
-                cache_file = _REPORT_CACHE_DIR / f"{report_id}.json"
-                if cache_file.exists():
+                cache_file = (_REPORT_CACHE_DIR / f"{report_id}.json").resolve()
+                if str(cache_file).startswith(str(_REPORT_CACHE_DIR.resolve())) and cache_file.exists():
                     raw = json.loads(cache_file.read_text(encoding="utf-8"))
                     if time.time() - raw.get("created", 0) <= _CACHE_TTL_S:
                         entry = ReportEntry(html=raw["html"], nonce=raw["nonce"], created=raw["created"])
@@ -2277,6 +2358,10 @@ def get_report(report_id: str):
 
         if not entry or (time.time() - entry.created) > _CACHE_TTL_S:
             _report_cache.pop(report_id, None)
+            try:
+                (_REPORT_CACHE_DIR / f"{report_id}.json").unlink(missing_ok=True)
+            except Exception:
+                pass
             return HTMLResponse(
                 content=_REPORT_ERROR_TEMPLATE.format(
                     reason="This assessment report has expired or the server was restarted. Please return to the Assessment page and click <strong>Generate Report</strong> to create a fresh report."

@@ -451,8 +451,8 @@ describe('Suite 5: Headless DOM Hydration & Event Interactions', () => {
         { 'data-agent-idx': '4', text: 'Org (200)' }
       ],
       '#mk-toggle-ai-model .cost-toggle-pill': [
-        { 'data-model': 'flash', text: 'Gemini 3.5 Flash' },
-        { 'data-model': 'flash-lite', text: 'Gemini 3.1 Flash-Lite' }
+        { 'data-model': 'flash', text: 'Gemini 3.6 Flash' },
+        { 'data-model': 'flash-lite', text: 'Gemini 3.5 Flash-Lite' }
       ]
     };
 
@@ -550,7 +550,7 @@ describe('Suite 5: Headless DOM Hydration & Event Interactions', () => {
     assert.strictEqual(mockDoc.getElementById('mk-cost-kpi-total').textContent, '$20.60');
     const tblRateAI = mockDoc.getElementById('mk-tbl-rate-ai');
     assert.ok(tblRateAI.children.length > 0, 'Should have created anchor node');
-    assert.strictEqual(tblRateAI.children[0].textContent, 'Gemini 3.1 Flash-Lite');
+    assert.strictEqual(tblRateAI.children[0].textContent, 'Gemini 3.5 Flash-Lite');
     assert.strictEqual(tblRateAI.children[0].href, 'https://cloud.google.com/vertex-ai/generative-ai/pricing');
   });
 

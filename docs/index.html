@@ -56,7 +56,7 @@
         "operatingSystem": "Cross-platform",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "isAccessibleForFree": true,
-        "softwareVersion": "1.4.2",
+        "softwareVersion": "1.4.3",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
         "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
@@ -76,7 +76,7 @@
         "mainEntityOfPage": "https://mbettan.github.io/bq-finops-optimizer/",
         "disambiguatingDescription": "Independent open-source project. Not a Google or Google Cloud product, and not endorsed or supported by Google.",
         "keywords": "BigQuery cost optimization, BigQuery FinOps, GCP cost management, BigQuery slot analysis, SQL anti-pattern detection, Gemini SQL optimization, BigQuery Editions simulator, INFORMATION_SCHEMA analysis, physical vs logical storage billing",
-        "releaseNotes": "v1.4.2 — Executive Assessment Report Generator & Comprehensive Analysis Sweep with automated sequential execution, standalone HTML document rendering, and IAM least-privilege review.",
+        "releaseNotes": "v1.4.3 — Assessment Report Normalization, Clean Scan Matrix Evaluation, Universal Multi-Page CSV Export, and Runtime Model Alignment.",
         "featureList": [
             "Executive Assessment Report Generator & Comprehensive Analysis Sweep",
             "AI Doctor — Gemini-powered SQL anti-pattern diagnosis and query rewriting",
@@ -285,7 +285,7 @@
             <div class="hero-copy">
                 <div class="hero-badges">
                     <span class="chip chip-live"><span class="chip-dot"></span>Open Source · Apache 2.0</span>
-                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.4.2</span>
+                    <span class="chip chip-version"><i class="fas fa-bolt"></i>v1.4.3</span>
                 </div>
 
                 <h1 class="hero-title">
@@ -1072,7 +1072,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                             <div class="card-icon icon-ai"><i class="fas fa-user-md"></i></div>
                             <h3>AI Doctor &amp; SQL Anti-Pattern Diagnosis</h3>
                             <p>Aggregates query executions across <code>JOBS_BY_ORGANIZATION</code> over 7–90 day lookback windows. Evaluates org-wide workloads using <strong>5 Discovery Priority strategy modes</strong>, identifies CROSS JOIN explosions, wide-table full scans, unpruned partitions, and generates rewritten optimized SQL with estimated savings.</p>
-                            <div class="gemini-tag"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Powered by Gemini 3.5 Flash · Agent Platform native</div>
+                            <div class="gemini-tag"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Powered by Gemini 3.6 Flash · Agent Platform native</div>
                         </div>
                         <div>
                             <p class="premium-label">5 Discovery Priority Strategies</p>
@@ -1126,7 +1126,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 
                 <!-- 4. Executive Assessment Report Generator (2-col) -->
                 <article class="card spotlight reveal">
-                    <span class="pill pill-new">✦ v1.4.2 Feature</span>
+                    <span class="pill pill-new">✦ v1.4.3 Feature</span>
                     <div class="card-icon icon-rose"><i class="fas fa-file-invoice-dollar"></i></div>
                     <h3>Executive Assessment Report</h3>
                     <p>Single-click automated sequential sweep across all diagnostic modules, generating a standalone executive HTML report with synthesized KPI scorecards, workload ROI rankings, prioritized roadmap, and print/PDF optimization.</p>
@@ -1430,10 +1430,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                             <!-- LLM Model Selector -->
                             <div class="cost-toggle-pills" id="mk-toggle-ai-model" role="radiogroup" aria-label="Gemini model selection" style="margin-top: 0.5rem;">
                                 <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-model="flash">
-                                    <i class="fas fa-bolt" aria-hidden="true" style="color: #38bdf8; margin-right: 4px;"></i> Gemini 3.5 Flash
+                                    <i class="fas fa-bolt" aria-hidden="true" style="color: #38bdf8; margin-right: 4px;"></i> Gemini 3.6 Flash
                                 </button>
                                 <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-model="flash-lite">
-                                    <i class="fas fa-feather" aria-hidden="true" style="color: #34d399; margin-right: 4px;"></i> Gemini 3.1 Flash-Lite
+                                    <i class="fas fa-feather" aria-hidden="true" style="color: #34d399; margin-right: 4px;"></i> Gemini 3.5 Flash-Lite
                                 </button>
                             </div>
 
@@ -1504,7 +1504,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                                         </tr>
                                         <tr>
                                             <td><strong style="color: #a78bfa;"><i class="fas fa-brain" aria-hidden="true" style="margin-right: 6px;"></i>Agent Platform</strong></td>
-                                            <td id="mk-tbl-rate-ai" style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;"><a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" rel="noopener noreferrer" class="cost-external-link">Gemini 3.5 Flash</a> (Off)</td>
+                                            <td id="mk-tbl-rate-ai" style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;"><a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" rel="noopener noreferrer" class="cost-external-link">Gemini 3.6 Flash</a> (Off)</td>
                                             <td class="num" id="mk-tbl-run-ai" style="color: #f8fafc;">$0.00</td>
                                             <td class="num strong" id="mk-tbl-mo-ai" style="color: #a78bfa;">$0.00</td>
                                         </tr>
@@ -1811,7 +1811,11 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
             <div class="releases-layout reveal">
                 <!-- Left Nav / Version Timeline -->
                 <div class="releases-nav" id="releases-nav" role="tablist" aria-label="Release versions">
-                    <button class="release-nav-btn is-active" data-version="v1.4.2" role="tab" aria-selected="true">
+                    <button class="release-nav-btn is-active" data-version="v1.4.3" role="tab" aria-selected="true">
+                        <span>v1.4.3</span>
+                        <span class="release-nav-date">Aug 13, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.2" role="tab" aria-selected="false">
                         <span>v1.4.2</span>
                         <span class="release-nav-date">Aug 13, 2026</span>
                     </button>
@@ -1849,12 +1853,12 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 <div class="release-detail-card" id="release-detail-card">
                     <div class="release-detail-header">
                         <div class="release-tag-pill" id="release-title-badge">
-                            <span id="release-version-text">v1.4.2</span>
+                            <span id="release-version-text">v1.4.3</span>
                             <span class="latest-pill" id="release-latest-pill">Latest Release</span>
                         </div>
                         <div class="release-meta">
                             <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>August 13, 2026</span>
-                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.2" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
+                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.3" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
                                 <i class="fab fa-github"></i>View on GitHub ↗
                             </a>
                         </div>
@@ -1864,8 +1868,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                         <div class="release-content" id="release-body-content">
                             <h3>🌟 Highlights &amp; Major Capabilities</h3>
                             <ul>
-                                <li><strong>Executive Assessment Report Generator &amp; Analysis Sweep (#40):</strong> Automated single-click sequential sweep across all diagnostic modules, generating a standalone executive HTML report with synthesized KPI scorecards, workload ROI rankings, prioritized roadmap, and print/PDF optimization.</li>
-                                <li><strong>IAM Least-Privilege Governance:</strong> Updated documentation and error guidance to reflect least-privilege IAM configurations (read-only <code>roles/bigquery.resourceViewer</code> and optional metadata viewer).</li>
+                                <li><strong>Report Generator Normalization &amp; Division Safety:</strong> Standardized 30-day baseline normalization across on-demand and Editions fallback costs with strict <code>lookback_days</code> boundary validation.</li>
+                                <li><strong>Clean Scan Matrix Evaluation:</strong> Evaluated diagnostic modules with zero issues cleanly render as <strong>✅ Passed</strong> in executive reports.</li>
+                                <li><strong>Universal Multi-Page CSV Export:</strong> Export full multi-page datasets from DataTables cache in active sort order.</li>
+                                <li><strong>Gemini 3.6 Flash &amp; 3.5 Flash-Lite Alignment:</strong> Synced runtime economics specifications, calculator engine, and CI test matrices.</li>
                             </ul>
                         </div>
                         <div class="release-fade-overlay" id="release-fade-overlay"></div>

@@ -259,7 +259,7 @@
 
                 if (urlStr.includes('/api/about')) {
                     const releases = window.SIMULATOR_PARSED_RELEASES || [];
-                    const latestVersion = releases.length ? releases[0].version : '1.4.2';
+                    const latestVersion = releases.length ? releases[0].version : '1.4.3';
                     const latestDate = releases.length ? releases[0].release_date : '—';
                     return new Response(JSON.stringify({
                         "name": "BigQuery FinOps Optimizer",
