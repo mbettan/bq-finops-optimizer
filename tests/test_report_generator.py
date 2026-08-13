@@ -449,3 +449,183 @@ class TestFullPipeline:
         csp = resp.headers.get("Content-Security-Policy", "")
         assert "script-src 'nonce-" in csp
         assert "connect-src blob:" in csp
+
+        # Verify Table of Contents is emitted
+        assert "Table of Contents" in html or "report-toc" in html
+
+
+# ---------------------------------------------------------------------------
+# Regression Tests for v1.4.3 / v1.4.2 / v1.4.1 Issues
+# ---------------------------------------------------------------------------
+
+class TestReportFixes:
+
+    def test_zero_division_guard_on_reservation_org(self):
+        """Issue 1: ondemand_cost == 0 with editions_cost > 0 does not raise ZeroDivisionError."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        data["bq_top_spenders"] = [{"total_bytes_billed": 0, "total_slot_ms": 1000000}]
+        data["bq_slots_simulation_results"] = [{"total_3yr": 500}]
+        data["bq_job_results"] = {"project_summaries": [{"total_editions_cost": 500}]}
+        findings = FindingsSynthesizer(data).synthesize()
+        html = HTMLReportRenderer(data, findings, 30).render()
+        assert "Workload runs on reservations" in html
+        assert "ZeroDivisionError" not in html
+
+    def test_guardrails_not_triggered_on_standard_gov_response(self):
+        """Issue 2: Governance response without quota fields does not falsely trigger GUARDRAILS."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        data["bq_gov_results"] = {
+            "expiration_issues": [],
+            "filter_issues": []
+        }
+        findings = FindingsSynthesizer(data).synthesize()
+        ref_ids = [f.ref_id for f in findings]
+        assert "ID-12" not in ref_ids
+
+    def test_lookback_normalization(self):
+        """Issue 4: Lookback window costs, editions fallback, and slots are normalized to monthly."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 7
+        data["bq_top_spenders"] = [{
+            "total_bytes_billed": 7 * (1024**4),  # 7 TiB in 7 days = $43.75 in 7 days
+            "total_slot_ms": 168 * 3_600_000 * 100,  # 100 avg slots for 7 days (168 hours)
+        }]
+        renderer = HTMLReportRenderer(data, [], 7)
+        b = renderer._baseline
+        # Monthly on-demand cost should be normalized: 7 TiB * $6.25 * (30/7) = $187.50
+        assert round(b["on_demand_cost"], 2) == 187.50
+        # Avg slots over 168 hours should be exactly 100
+        assert round(b["avg_slots"], 1) == 100.0
+
+        # Verify PRICING_MODEL trigger normalizes 90-day window correctly
+        data_90d = {k: None for k in REPORT_RELEVANT_KEYS}
+        data_90d["_parse_errors"] = []
+        data_90d["_lookback_days"] = 90
+        data_90d["bq_top_spenders"] = [{
+            "total_bytes_billed": 90 * (1024**4),  # 90 TiB in 90d -> $562.50 / 90d -> $187.50 / mo
+            "total_slot_ms": 90 * 24 * 3_600_000 * 50,
+        }]
+        # When simulation is missing but jobs fallback has raw 90d editions spend:
+        data_90d["bq_job_results"] = {
+            "project_summaries": [{"total_editions_cost": 300.0}]  # $300 in 90d -> $100 / mo
+        }
+        findings = FindingsSynthesizer(data_90d).synthesize()
+        pricing_finding = next((f for f in findings if f.ref_id == "ID-01"), None)
+        assert pricing_finding is not None
+        # Monthly savings: $187.50 ondemand - $100.00 editions = $87.50
+        assert pricing_finding.impact_usd_monthly == 87.50
+
+    def test_table_of_contents_emitted(self, minimal_snapshot):
+        """Issue 5: Table of contents is present in rendered HTML."""
+        agg = ReportAggregator(minimal_snapshot)
+        data = agg.aggregate()
+        data["_lookback_days"] = 30
+        html = HTMLReportRenderer(data, [], 30).render()
+        assert 'class="report-toc"' in html
+        assert 'Executive Summary' in html
+
+    def test_generic_trigger_ignores_empty_response_envelope(self):
+        """Issue 6: Dict with empty list values does not trigger generic finding."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        data["bq_performance_results"] = {
+            "slot_contention_jobs": [],
+            "shuffle_quota_jobs": [],
+            "data_volume_jobs": []
+        }
+        findings = FindingsSynthesizer(data).synthesize()
+        ref_ids = [f.ref_id for f in findings]
+        assert "ID-14" not in ref_ids
+
+    def test_select_star_does_not_trigger_on_other_abuse(self):
+        """Issue 7: Non-SELECT * queries do not trigger SELECT_STAR finding."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        data["bq_linter_results"] = [
+            {"abuse_type": "CROSS_JOIN", "billed_gb": 500, "user_email": "u@example.com"}
+        ]
+        findings = FindingsSynthesizer(data).synthesize()
+        ref_ids = [f.ref_id for f in findings]
+        assert "ID-04" not in ref_ids
+
+    def test_empty_confidence_rendering(self):
+        """Issue 8: Finding with empty confidence string does not raise IndexError."""
+        from src.report_generator import Finding
+        f = Finding(
+            finding_id="TEST",
+            ref_id="ID-99",
+            title="Test Finding",
+            pillar="Query",
+            lever="Usage",
+            priority="Low",
+            score=10.0,
+            impact_usd_monthly=None,
+            effort="Low",
+            horizon="M1",
+            confidence="",
+            category="Test",
+            description="desc",
+            recommendation="rec",
+            official_docs_url="http://example.com",
+            source_module="test",
+        )
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        html = HTMLReportRenderer(data, [f], 30).render()
+        assert "ID-99" in html
+
+    def test_invalid_report_id_rejected(self, client):
+        """Issue 15: Invalid report_id format and path traversal attempts return 404."""
+        resp = client.get("/report/view/..%2F..%2Fetc%2Fpasswd")
+        assert resp.status_code == 404
+        resp = client.get("/report/view/invalid!id@special")
+        assert resp.status_code == 404
+
+    def test_lookback_days_validation(self, client, minimal_snapshot):
+        """lookback_days < 1 or > 365 is rejected at the API schema boundary with 422."""
+        resp = client.post("/api/report/prepare", json={
+            "snapshot": minimal_snapshot,
+            "lookback_days": 0,
+        })
+        assert resp.status_code == 422
+        resp = client.post("/api/report/prepare", json={
+            "snapshot": minimal_snapshot,
+            "lookback_days": -10,
+        })
+        assert resp.status_code == 422
+        resp = client.post("/api/report/prepare", json={
+            "snapshot": minimal_snapshot,
+            "lookback_days": 400,
+        })
+        assert resp.status_code == 422
+
+    def test_clean_modules_rendered_as_passed(self):
+        """Modules that ran and found 0 issues (empty list) should render as Passed in Section 6."""
+        data = {k: None for k in REPORT_RELEVANT_KEYS}
+        data["_parse_errors"] = []
+        data["_lookback_days"] = 30
+        # Simulate modules that were evaluated and returned 0 issues
+        data["bq_linter_results"] = []
+        data["bq_batch_results"] = []
+        data["bq_antipatterns_results"] = []
+        data["bq_skew_results"] = []
+        data["bq_mv_results"] = []
+        data["bq_resource_warning_results"] = []
+        html = HTMLReportRenderer(data, [], 30).render()
+        assert "ID-04" in html
+        assert "ID-05" in html
+        # Should show Passed for evaluated modules, not "Not run"
+        assert '<tr class="check-passed"><td>ID-04</td><td>SELECT * Anti-Patterns</td><td>✅ Passed</td></tr>' in html
+        assert '<tr class="check-passed"><td>ID-05</td><td>Batch-Eligible Workloads</td><td>✅ Passed</td></tr>' in html
+
+
+
+

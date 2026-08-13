@@ -64,7 +64,7 @@ BigQuery HBO automatically optimizes queries over time. Since it is enabled by d
 *   **Multi-Stage Shuffle Spill Unnesting:** Unnests `job_stages` via `(SELECT SUM(s.shuffle_output_bytes_spilled) FROM UNNEST(job_stages) s)` to aggregate intermediate RAM-to-disk spills across all execution stages.
 *   **Deterministic Worst-Job Sampling:** Uses `ARRAY_AGG(job_meta ORDER BY total_slot_ms DESC LIMIT 1)[OFFSET(0)]` to atomically isolate the single worst execution instance and its exact metadata payload for AI auditing.
 *   **Strict IAM Guardrails:** Requires `roles/bigquery.resourceViewer` at the organization level for discovery. Intercepts IAM 403 `Forbidden` exceptions and raises an explicit `HTTP 403 Access Denied` response with clear role guidance.
-*   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.5-flash` by default, or `gemini-3.1-flash-lite`) directly.
+*   **No model creation required** — no `CREATE MODEL`, no remote model, no BigQuery ML dataset. The function calls the Vertex AI publisher endpoint (`/publishers/google/models/gemini-3.6-flash` by default, or `gemini-3.5-flash-lite`) directly.
 *   **No Cloud Resource Connection required** (by default) — works with your existing end-user ADC credentials out of the box. A connection is only needed if deploying on Cloud Run with a service account.
 *   **No additional APIs to enable** beyond the Vertex AI API on your project.
 *   Sends each SQL statement to Gemini with a structured prompt that checks for 7 common anti-patterns (e.g., `SELECT *`, missing `WHERE` before `JOIN`, `CROSS JOIN`, `COUNT(DISTINCT)` vs. `APPROX_COUNT_DISTINCT`).
@@ -75,7 +75,7 @@ The `AI.GENERATE` call is configured with the following production-tuned `model_
 
 | Parameter | Value | Rationale |
 | :--- | :--- | :--- |
-| **Model** | `gemini-3.5-flash` (default), `gemini-3.1-flash-lite` | `gemini-3.5-flash` provides state-of-the-art reasoning for anti-pattern identification; `gemini-3.1-flash-lite` provides lowest cost and fast inference. |
+| **Model** | `gemini-3.6-flash` (default), `gemini-3.5-flash-lite` | `gemini-3.6-flash` provides state-of-the-art reasoning for anti-pattern identification; `gemini-3.5-flash-lite` provides lowest cost and fast inference. |
 | **Temperature** | `0.1` | Near-deterministic output for consistent anti-pattern detection. |
 | **Max Output Tokens** | `1024` | Provides headroom for 5–7 bullet-point findings. Previous value of `300` caused silent `NULL` returns (`finish_reason: MAX_TOKENS`) when the model's internal reasoning consumed the entire budget. |
 | **Thinking Level** | `MINIMAL` | Gemini 3.x parameter. Constrains thinking tokens to preserve budget for output. |
@@ -130,9 +130,9 @@ The breakdown below details the exact pricing structure for each layer:
 * **Automated Hourly Sweeps (720 runs / month):** **$12.53 / month**.
 * **Intra-Region Network Egress:** **$0.00** (Free internal GCP routing).
 
-#### 3. AI Doctor (Vertex AI Gemini 3.5 Flash / 3.1 Flash-Lite)
-* Powered by `gemini-3.5-flash` ($1.50 / 1M input, $7.50 / 1M output) or `gemini-3.1-flash-lite` ($0.30 / 1M input, $2.50 / 1M output).
-* Running a deep semantic review on **50 query candidates costs ~15.3 cents ($0.153)** with 3.1 Flash-Lite (or ~$0.563 with 3.5 Flash) per run.
+#### 3. AI Doctor (Vertex AI Gemini 3.6 Flash / 3.5 Flash-Lite)
+* Powered by `gemini-3.6-flash` ($1.50 / 1M input, $7.50 / 1M output) or `gemini-3.5-flash-lite` ($0.30 / 1M input, $2.50 / 1M output).
+* Running a deep semantic review on **50 query candidates costs ~15.3 cents ($0.153)** with 3.5 Flash-Lite (or ~$0.563 with 3.6 Flash) per run.
 
 #### 📊 Cost Summary Matrix
 
@@ -179,7 +179,7 @@ The breakdown below details the exact pricing structure for each layer:
 *   **Data Libraries**: NumPy, Pandas, DB-Types
 *   **Data Visualization**: Chart.js, DataTables.net
 *   **Google Cloud Libraries**: `google-cloud-bigquery`, `google-cloud-bigquery-storage`
-*   **AI/ML**: BigQuery `AI.GENERATE` with Gemini 3.5 Flash (default) or Gemini 3.1 Flash-Lite (via Vertex AI global endpoint, `MINIMAL` thinking, safety `OFF`)
+*   **AI/ML**: BigQuery `AI.GENERATE` with Gemini 3.6 Flash (default) or Gemini 3.5 Flash-Lite (via Vertex AI global endpoint, `MINIMAL` thinking, safety `OFF`)
 *   **Containerization**: Docker (minimal slim-python environment)
 
 ---

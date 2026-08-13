@@ -462,11 +462,21 @@ function downloadTableAsCSV(tableId, filename) {
     const rows = [];
     if (typeof $ !== 'undefined' && $.fn && $.fn.DataTable && $.fn.DataTable.isDataTable('#' + tableId)) {
         const dt = $('#' + tableId).DataTable();
-        dt.rows({ search: 'applied' }).every(function () {
+        const tempDiv = document.createElement('div');
+        dt.rows({ search: 'applied', order: 'applied' }).every(function () {
             const node = this.node();
             if (node) {
                 const cells = node.querySelectorAll('td');
                 rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+            } else {
+                const rowData = this.data();
+                if (Array.isArray(rowData)) {
+                    const cells = rowData.map(cellHtml => {
+                        tempDiv.innerHTML = typeof cellHtml === 'string' ? cellHtml : String(cellHtml ?? '');
+                        return escapeCSV(cellText(tempDiv));
+                    });
+                    rows.push(cells);
+                }
             }
         });
     } else {
@@ -1051,7 +1061,17 @@ const Snapshot = (() => {
     }
   }
 
+  const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024; // 15 MB
+
   function importSnapshot(file) {
+    if (!file) return;
+    if (file.size > MAX_SNAPSHOT_BYTES) {
+      showNotification('File too large: snapshot files must be under 15 MB.', 'error');
+      const input = document.getElementById('import-snapshot-input');
+      if (input) input.value = '';
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       let parsed;
@@ -1059,11 +1079,15 @@ const Snapshot = (() => {
         parsed = JSON.parse(e.target.result);
       } catch (err) {
         showNotification('Invalid file: not valid JSON.', 'error');
+        const input = document.getElementById('import-snapshot-input');
+        if (input) input.value = '';
         return;
       }
 
       if (!parsed || parsed._meta?.app !== 'bq-finops-optimizer' || !parsed.data) {
         showNotification('This does not look like a FinOps snapshot file.', 'error');
+        const input = document.getElementById('import-snapshot-input');
+        if (input) input.value = '';
         return;
       }
       if (parsed._meta.schema_version > SCHEMA_VERSION) {
@@ -4380,6 +4404,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     }
 
     const renderPerformanceResults = (data) => {
+        if (!data || typeof data !== 'object') return;
+
         // Render Slot Contention
         if ($.fn.DataTable.isDataTable('#slot-contention-table')) {
             $('#slot-contention-table').DataTable().destroy();
@@ -4387,18 +4413,21 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const contentionTbody = document.querySelector('#slot-contention-table tbody');
         if (contentionTbody) {
             contentionTbody.innerHTML = '';
-            (data.slot_contention_jobs || []).forEach(row => {
+            const slotJobs = Array.isArray(data.slot_contention_jobs) ? data.slot_contention_jobs : [];
+            slotJobs.forEach(row => {
+                if (!row) return;
                 const tr = document.createElement('tr');
+                const stageStr = row.stage_id != null ? escapeHtmlAttr(String(row.stage_id)) : '—';
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${renderUserLink(row.user_email, row.project_id)}</td>
                     <td>${renderProjectLink(row.project_id)}</td>
-                    <td>${row.stage_id}</td>
+                    <td>${stageStr}</td>
                 `;
                 contentionTbody.appendChild(tr);
             });
         }
-        $('#slot-contention-table').DataTable({ pageLength: 5, responsive: true, order: [] });
+        safeInitDataTable('#slot-contention-table', { pageLength: 5, responsive: true, order: [] });
 
         // Render Shuffle Quota
         if ($.fn.DataTable.isDataTable('#shuffle-quota-table')) {
@@ -4407,18 +4436,21 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const shuffleTbody = document.querySelector('#shuffle-quota-table tbody');
         if (shuffleTbody) {
             shuffleTbody.innerHTML = '';
-            (data.shuffle_quota_jobs || []).forEach(row => {
+            const shuffleJobs = Array.isArray(data.shuffle_quota_jobs) ? data.shuffle_quota_jobs : [];
+            shuffleJobs.forEach(row => {
+                if (!row) return;
                 const tr = document.createElement('tr');
+                const stageStr = row.stage_id != null ? escapeHtmlAttr(String(row.stage_id)) : '—';
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${renderUserLink(row.user_email, row.project_id)}</td>
                     <td>${renderProjectLink(row.project_id)}</td>
-                    <td>${row.stage_id}</td>
+                    <td>${stageStr}</td>
                 `;
                 shuffleTbody.appendChild(tr);
             });
         }
-        $('#shuffle-quota-table').DataTable({ pageLength: 5, responsive: true, order: [] });
+        safeInitDataTable('#shuffle-quota-table', { pageLength: 5, responsive: true, order: [] });
 
         // Render Data Volume
         if ($.fn.DataTable.isDataTable('#data-volume-table')) {
@@ -4427,18 +4459,21 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         const volumeTbody = document.querySelector('#data-volume-table tbody');
         if (volumeTbody) {
             volumeTbody.innerHTML = '';
-            (data.data_volume_jobs || []).forEach(row => {
+            const volumeJobs = Array.isArray(data.data_volume_jobs) ? data.data_volume_jobs : [];
+            volumeJobs.forEach(row => {
+                if (!row) return;
                 const tr = document.createElement('tr');
+                const diffVal = Number(row.diff_pct) || 0;
                 tr.innerHTML = `
                     ${renderJobId(row.job_id, row.project_id, state.region)}
                     <td>${renderUserLink(row.user_email, row.project_id)}</td>
                     <td>${renderProjectLink(row.project_id)}</td>
-                    <td class="text-danger" style="font-weight: 600;">${formatDiffPct(row.diff_pct)}</td>
+                    <td class="text-danger" style="font-weight: 600;">${formatDiffPct(diffVal)}</td>
                 `;
                 volumeTbody.appendChild(tr);
             });
         }
-        $('#data-volume-table').DataTable({ pageLength: 5, responsive: true, order: [] });
+        safeInitDataTable('#data-volume-table', { pageLength: 5, responsive: true, order: [] });
     };
 
     const cachedHboResults = localStorage.getItem('bq_hbo_results');
@@ -4477,6 +4512,10 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
     }
 
     const renderHygieneResults = (data) => {
+        if (!data || !Array.isArray(data)) return;
+        if ($.fn.DataTable.isDataTable('#hygiene-results-table')) {
+            $('#hygiene-results-table').DataTable().clear().destroy();
+        }
         const tbody = document.querySelector('#hygiene-results-table tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -4485,7 +4524,8 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
         let totalTtSize = 0;
         let highChurnCount = 0;
         let potentialSavings = 0;
-        const actPhyRate = parseFloat(document.getElementById('st-act-phy').value) || 0.04;
+        const actPhyEl = document.getElementById('st-act-phy');
+        const actPhyRate = actPhyEl ? parseFloat(actPhyEl.value) || 0.04 : 0.04;
 
         data.forEach(row => {
             totalSize += row.live_active_physical_gb || 0;
@@ -7471,9 +7511,9 @@ function safeInitDataTable(selector, options) {
   }
   const tableEl = $table[0];
 
-  // 1) Always tear down a prior instance cleanly (removes scrollX header clones).
+  // 1) Always tear down a prior instance cleanly without wiping DOM rows.
   if ($.fn.DataTable.isDataTable(selector)) {
-    $table.DataTable().clear().destroy();
+    $table.DataTable().destroy();
   }
 
   // 2) Determine the authoritative column count from the LAST header row
