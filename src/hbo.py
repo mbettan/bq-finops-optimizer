@@ -19,6 +19,7 @@ from .utils import (
     run_query_with_retry_limit,
     run_query_and_log as _run_and_log,
 )
+from .cache import cached_analysis
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -79,6 +80,7 @@ class HBOStatus(BaseModel):
     truncated: Optional[bool] = None
 
 @router.post("/analyze", response_model=List[HBOResult])
+@cached_analysis("hbo")
 def analyze_hbo(params: HBOAnalyzeParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("HBO Analyze", params, _logger=logger)
@@ -348,6 +350,7 @@ def _enrich_from_projects(
 
 
 @router.post("/optimizations", response_model=HBOOptimizationsResult)
+@cached_analysis("hbo_optimizations")
 def get_optimizations(params: HBOOptimizationsParams):
     """Enrich HBO jobs with specific optimization types from JOBS_BY_PROJECT.
 
@@ -437,6 +440,7 @@ def get_optimizations(params: HBOOptimizationsParams):
         handle_endpoint_exception(e, "HBO optimizations")
 
 @router.post("/summary", response_model=HBOSummary)
+@cached_analysis("hbo_summary")
 def get_hbo_summary(params: HBOCommonParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("HBO Summary", params, _logger=logger)
@@ -518,6 +522,7 @@ class PerformanceInsightsResult(BaseModel):
     data_volume_jobs: List[Dict]
 
 @router.post("/performance_insights", response_model=PerformanceInsightsResult)
+@cached_analysis("hbo_performance")
 def get_performance_insights(params: HBOCommonParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("HBO Performance Insights", params, _logger=logger)
@@ -611,6 +616,7 @@ def get_performance_insights(params: HBOCommonParams):
         handle_endpoint_exception(e, "Performance insights")
 
 @router.post("/status", response_model=List[HBOStatus])
+@cached_analysis("hbo_status")
 def check_hbo_status(params: HBOStatusParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("HBO Status Check", params, _logger=logger)

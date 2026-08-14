@@ -6,6 +6,20 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## August 13, 2026 — v1.4.5
+
+**Feature (Server-Side Shared Result Cache — GCS FUSE & Cross-User Hydration)**
+Added a production-grade, zero-base-cost **Server-Side Shared Result Cache** (`src/cache.py`) that decouples diagnostic state from browser `localStorage` and shares analysis results across instances, cold starts, and team members:
+- **Zero-Cost GCS FUSE Volume Mounts:** Leverages Cloud Run Gen 2 Cloud Storage volume mounts (`/cache`) backed by GCS FUSE, providing multi-instance result persistence with zero infrastructure cost at idle ($0/mo base vs. $35–50/mo for Redis/Memorystore).
+- **Exact Parameter Hashing & Scoping:** Implements canonicalized SHA-256 parameter hashing (`v1/{org}/{region}/{module}/{hash}.json`) ensuring distinct lookback periods (e.g. 7d vs 90d), pricing rates, and focused project filters never cross-contaminate or serve invalid results. Domain-scoped project IDs (`example.com:proj`) are securely hashed (`h_<sha256>`).
+- **In-Process Single-Flight Concurrency:** Mutex registry collapses concurrent identical requests on the same instance into a single BigQuery scan, preventing redundant compute during parallel report generation sweeps.
+- **Cache Control & Freshness API:** Added `/api/cache/status` for instantaneous multi-module freshness inspection (accelerated by the 60s kernel stat cache), `/api/cache/{module}` for module-level eviction, and `/api/cache` for scope-wide invalidation.
+- **Client-Side CacheClient & Instant Hydration:** Browser `localStorage` is converted into a lightweight first-paint render cache with non-destructive fallback (`safeSetLocalStorage`). Added `hydrateFromServerCache()` to populate views and assessment reports for new users or clean browsers with zero BigQuery cost (`X-Cache: HIT`).
+- **Automatic Invalidation:** Updated Cost Attribution configuration updates to automatically drop stale attribution calculations across all scopes.
+- **Standard HTTP Headers:** Emits `X-Cache` (`HIT`, `MISS`, `BYPASS`), `X-Cache-Age`, `X-Cache-Expires`, and `X-Cache-Key` while preserving unwrapped JSON payloads and `/api/meta/scope-map` endpoint introspection.
+
+---
+
 ## August 13, 2026 — v1.4.3
 
 **Fixed (Report Generator Normalization, Clean Scans & Universal CSV Export)**

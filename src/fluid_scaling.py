@@ -28,6 +28,7 @@ from .utils import (
     DAYS_PER_MONTH,
     run_query_and_log as _run_and_log,
 )
+from .cache import cached_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,7 @@ def get_effective_fluid_scaling_reservations(client: bigquery.Client, project: s
 
 
 @router.post("/status", response_model=List[FluidScalingStatus])
+@cached_analysis("fluid_status")
 def check_fluid_scaling_status(params: FluidScalingParams):
     t0 = log_endpoint_start("Fluid Scaling Status", params, _logger=logger)
     try:
@@ -482,6 +484,7 @@ def _build_config_status(
 
 
 @router.post("/estimate", response_model=FluidScalingEstimateResponse)
+@cached_analysis("fluid_estimate")
 def estimate_fluid_scaling(params: FluidEstimateParams):
     # NOTE: focus_projects intentionally NOT applied to capacity planning.
     t0 = log_endpoint_start("Fluid Scaling Estimate", params, _logger=logger)

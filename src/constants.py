@@ -8,7 +8,7 @@ circular dependency.
 
 import os
 
-__version__ = "1.4.3"
+__version__ = "1.4.5"
 
 # Centralized on-demand pricing — single source of truth [R-pricing]
 ON_DEMAND_USD_PER_TB = float(os.environ.get("BQ_ON_DEMAND_USD_PER_TB", "6.25"))

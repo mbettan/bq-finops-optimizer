@@ -109,7 +109,15 @@ A diagnostic that can't leave the browser doesn't get acted on. Four cross-cutti
 *   **Strict Scope Preservation**: Endpoints correctly differentiate between scoped views (e.g., usage filtering) and mathematical invariants (e.g., capacity planning, fluid scaling estimation, cost attribution) which explicitly reject or bypass scope filters to guarantee financial accuracy.
 *   **Data Sanitization**: Complete frontend HTML escaping prevents XSS across anomaly logs, AI recommendations, and query snippets.
 
-### 8. Runtime Economics & Google Cloud Costs
+### 8. Server-Side Shared Result Cache (GCS FUSE)
+Analysis results are cached on the server across instances, cold starts, and team members using Cloud Run Gen 2 Cloud Storage volume mounts (`gcsfuse`):
+*   **Zero-Base-Cost Shared Storage**: Results persist in a GCS bucket mounted at `/cache` ($0/month base cost vs. $35–50/month for Cloud Memorystore/Redis), with automatic 7-day retention lifecycle management.
+*   **Parameter-Exact SHA-256 Hashing**: Request parameters (lookback days, prices, focus projects) are canonicalized and hashed (`v1/{org}/{region}/{module}/{hash}.json`) so different parameter variations never poison or overwrite each other.
+*   **Instant Multi-User Hydration**: When a new team member opens the application or switches devices, the UI checks `/api/cache/status` (accelerated by the 60-second in-memory FUSE stat cache) and auto-populates tables via `hydrateFromServerCache()` at **zero BigQuery cost** (`X-Cache: HIT`).
+*   **In-Process Single-Flight Locks**: Prevents concurrent duplicate BigQuery executions during parallel sweeps.
+*   **Cache Control**: Full API control via `GET /api/cache/status`, `DELETE /api/cache/{module}`, and `DELETE /api/cache`.
+
+### 9. Runtime Economics & Google Cloud Costs
 
 A common question when evaluating this tool across large Google Cloud organizations is:  
 > *"What does it actually cost to run diagnostic sweeps on my environment?"*
@@ -121,7 +129,7 @@ The breakdown below details the exact pricing structure for each layer:
 * **Small Metadata Queries:** Billed at the 10 MB minimum floor = **$0.00006 per query** (~16,000 queries per $1.00).
 * **Deep Org-Wide Telemetry Sweeps:** Scanning live system telemetry across millions of historical jobs over 90 days (e.g., 800 GB of metadata) costs **~$4.88 per run** ($6.25 per TiB scanned).
 * **BigQuery Editions (Reservations):** **$0.00 per-byte**. Queries consume compute slots from your existing reservation (standard slot rates apply if autoscaling triggers).
-* **No Query Caching:** `INFORMATION_SCHEMA` queries bypass the BigQuery cache and are billed on each execution.
+* **Server-Side Shared Result Caching:** Subsequent requests for the same parameters return instant `X-Cache: HIT` from GCS FUSE with **$0.00 BigQuery scan charges**.
 
 #### 2. Cloud Run Serverless Hosting
 * **Idle Cost (`min-instances = 0`):** **$0.00** (Zero passive cost when idle).
@@ -226,6 +234,21 @@ In the browser, open the **Settings** panel (gear icon) and set:
 *   **Max Bytes Billed (GiB)**: Safety cap for query costs (default: 800 GiB). Applied to every single BigQuery query execution, including fluid scaling status checks.
 
 **Input Validation:** All project ID fields are validated on save against the GCP project ID specification (`^[a-z][a-z0-9\-]{5,29}$`). Whitespace is stripped automatically (handles bad copy-paste). Invalid values block the save and show specific error messages. When settings change, all cached module results are flushed from `localStorage` to prevent stale data from a previous scope.
+
+### 4. Environment Variables & Caching Options
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `AUTH_ENFORCED_UPSTREAM` | *Required* | Confirms the instance runs behind Cloud Run IAM or IAP (`true`). |
+| `CACHE_BACKEND` | `off` | Result cache backend: `file` (for GCS FUSE or local directory), `gcs` (REST fallback), or `off`. |
+| `CACHE_DIR` | `/cache` | Local path or Cloud Run GCS volume mount path (e.g. `./.cache` for local development). |
+| `CACHE_TTL_DEFAULT` | `3600` | Default result TTL in seconds (1 hour). |
+| `CACHE_TTL_<MODULE>` | — | Per-module TTL override in seconds (e.g. `CACHE_TTL_JOBS=1800`, `CACHE_TTL_STORAGE=7200`). |
+| `CACHE_MAX_ENTRY_MB` | `32` | Maximum payload size in megabytes before skipping cache. |
+| `CACHE_COMPRESS` | `auto` | Gzip compression mode: `auto` (compresses above threshold), `always`, or `never`. |
+| `CACHE_COMPRESS_OVER_KB` | `512` | Payload threshold in kilobytes for `auto` compression mode. |
+| `BQ_ON_DEMAND_USD_PER_TB` | `6.25` | Default on-demand rate per TB for compute simulations. |
+| `BQ_EDITIONS_SLOT_HR_RATE` | `0.06` | Default Editions slot-hour baseline rate. |
 
 ---
 

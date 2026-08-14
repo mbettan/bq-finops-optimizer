@@ -37,4 +37,10 @@ Thumbs.db
 # Local PRD drafts
 roadmap.md
 
+# Cache
+.cache/
+/cache/
+*.cache
+
+
 

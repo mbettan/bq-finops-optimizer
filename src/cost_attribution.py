@@ -4,6 +4,7 @@ from typing import Optional, Dict, Literal
 from datetime import datetime, timedelta
 from google.cloud import bigquery
 from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
+from .cache import cached_analysis
 from collections import defaultdict
 import json
 import os
@@ -108,8 +109,21 @@ def get_config():
         logger.error(f"Failed to load cost attribution config: {e}")
         raise HTTPException(status_code=500, detail="Failed to load cost attribution configuration; check server logs.")
 
+def _invalidate_attribution_cache() -> None:
+    """The config is global, so every scope's cached calculation is now stale."""
+    try:
+        from .cache import invalidate
+        n = invalidate(module="cost_attribution")
+        if n:
+            logger.info("Cost attribution config changed — dropped %d cached result(s).", n)
+    except Exception:
+        logger.warning("Failed to invalidate cost attribution cache", exc_info=True)
+
 @router.post("/config")
 def update_config(config: CostAttributionConfig):
+    # Config feeds /calculate; leaving stale results cached would make the
+    # config edit look like a no-op for up to a full TTL.
+    _invalidate_attribution_cache()
     # M3: borrowing_rule is not implemented — reject non-default with 501.
     if config.borrowing_rule != "lender_pays":
         raise HTTPException(
@@ -121,6 +135,7 @@ def update_config(config: CostAttributionConfig):
     return {"message": "Configuration updated successfully"}
 
 @router.post("/calculate")
+@cached_analysis("cost_attribution")
 def calculate_cost_attribution(params: CostAttributionParams):
     params.focus_projects = validate_focus_projects(params.focus_projects)
     t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)

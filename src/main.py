@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response, Request, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.gzip import GZipMiddleware
@@ -54,6 +54,9 @@ from .migration_optimizer import (
     TranslationResponse,
     run_migration_translation,
 )
+from . import cache as result_cache
+from .cache import cached_analysis
+from .auth import router as auth_router, GoogleAuthMiddleware, is_auth_enabled
 import time
 import uuid
 
@@ -67,12 +70,15 @@ from .constants import __version__, ON_DEMAND_USD_PER_TB, EDITIONS_SLOT_HR_RATE
 # scans, the anti-pattern linter, AI analysis) — a handful of concurrent admin
 # dashboard tabs can otherwise queue requests behind each other, including
 # trivial ones like static asset serving. Raise the cap once at startup.
-THREAD_POOL_CAPACITY = 100
+THREAD_POOL_CAPACITY = int(os.environ.get("THREAD_POOL_CAPACITY", "100"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_POOL_CAPACITY
+    logger.info("Result cache: %s", result_cache.describe())
+    if is_auth_enabled():
+        logger.info("Google OAuth: enabled (client_id=%s...)", os.environ.get("GOOGLE_CLIENT_ID", "")[:12])
     yield
     close_bq_clients()
 
@@ -84,6 +90,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(GoogleAuthMiddleware)
+app.include_router(auth_router)
 app.include_router(cost_attribution_router)
 app.include_router(hbo_router)
 app.include_router(fluid_scaling_router)
@@ -148,12 +156,11 @@ if os.path.exists(_env_file):
 # place (in the environment, or in .env for local runs behind a trusted
 # proxy) — this flag is a self-check, not a substitute for the real control.
 _AUTH_ENFORCED_UPSTREAM = os.environ.get("AUTH_ENFORCED_UPSTREAM", "").strip().lower() in ("1", "true", "yes")
-if not _AUTH_ENFORCED_UPSTREAM:
+if not _AUTH_ENFORCED_UPSTREAM and not is_auth_enabled():
     raise RuntimeError(
-        "Refusing to start: this service has no built-in request authentication and "
-        "must run behind Cloud Run IAM (--no-allow-unauthenticated) or Identity-Aware "
-        "Proxy (IAP). Once that is confirmed in place, set AUTH_ENFORCED_UPSTREAM=true "
-        "(env var or .env) to start the service."
+        "Refusing to start: this service has no request authentication configured. "
+        "Either configure Google OAuth by setting GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, "
+        "or set AUTH_ENFORCED_UPSTREAM=true if deployed behind Cloud Run IAM or IAP."
     )
 
 # Configure logging
@@ -497,6 +504,7 @@ class StaticAuditResult(BaseModel):
     clustering_fields: Optional[str] = None
 
 @app.post("/api/storage/static_audit", response_model=List[StaticAuditResult])
+@cached_analysis("static_audit")
 def run_static_schema_audit(params: StaticAuditParams):
     _validate_safe_params(params)
     params.focus_projects = validate_focus_projects(params.focus_projects)
@@ -611,6 +619,7 @@ class ActiveAssistResult(BaseModel):
     editions_monthly_savings: Optional[float] = None
 
 @app.post("/api/storage/active_assist", response_model=List[ActiveAssistResult])
+@cached_analysis("active_assist")
 def fetch_active_assist_recommendations(params: StorageParams):
     _validate_safe_params(params)
     params.focus_projects = validate_focus_projects(params.focus_projects)
@@ -962,6 +971,7 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, p
     return "LOGICAL"
 
 @app.post("/api/storage/analyze")
+@cached_analysis("storage")
 def analyze_storage(params: StorageParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Storage Analysis", params, _logger=logger)
@@ -1065,6 +1075,7 @@ def analyze_storage(params: StorageParams):
         handle_endpoint_exception(e, "Storage analysis")
 
 @app.post("/api/jobs/analyze")
+@cached_analysis("jobs")
 def analyze_jobs(params: JobAnalysisParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Job Analysis (Compute Analyzer)", params, _logger=logger)
@@ -1240,6 +1251,7 @@ class HygieneResult(BaseModel):
     time_travel_days: int = DEFAULT_TIME_TRAVEL_DAYS
 
 @app.post("/api/storage/hygiene", response_model=List[HygieneResult])
+@cached_analysis("hygiene")
 def analyze_storage_hygiene(params: HygieneParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Storage Hygiene", params, _logger=logger)
@@ -1375,6 +1387,7 @@ class DMLAbuseResult(BaseModel):
     avg_inserts_per_day: float = 0.0
 
 @app.post("/api/antipatterns/dml", response_model=List[DMLAbuseResult])
+@cached_analysis("ap_dml")
 def analyze_dml_abuse(params: DMLAbuseParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("DML Abuse Auditor", params, _logger=logger)
@@ -1440,6 +1453,7 @@ class MVCostResult(BaseModel):
     total_slot_hours: float
 
 @app.post("/api/antipatterns/mv", response_model=List[MVCostResult])
+@cached_analysis("ap_mv")
 def analyze_mv_costs(params: DMLAbuseParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("MV Cost Auditor", params, _logger=logger)
@@ -1548,6 +1562,7 @@ class LinterResult(BaseModel):
     billed_gb: float
 
 @app.post("/api/antipatterns/linter", response_model=List[LinterResult])
+@cached_analysis("ap_linter")
 def analyze_query_linter(params: AntiPatternParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Linter Analysis", params, _logger=logger)
@@ -1630,6 +1645,7 @@ class SkewResult(BaseModel):
     skew_ratio: float
 
 @app.post("/api/antipatterns/skew", response_model=List[SkewResult])
+@cached_analysis("ap_skew")
 def analyze_data_skew(params: AntiPatternParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Skew Analysis", params, _logger=logger)
@@ -1717,6 +1733,7 @@ class BatchCandidateResult(BaseModel):
     impact_score: float
 
 @app.post("/api/antipatterns/batch_candidates", response_model=List[BatchCandidateResult])
+@cached_analysis("ap_batch")
 def analyze_batch_candidates(params: AntiPatternParams):
     """Workload-centric concurrency & priority engine.
 
@@ -2075,6 +2092,7 @@ def extract_table_names(sql: str, default_project: str) -> List[str]:
     return unique_tables
 
 @app.post("/api/ai/analyze", response_model=List[AIResult])
+@cached_analysis("ai_doctor")
 def analyze_ai_query(params: AIParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("AI Doctor", params, _logger=logger)
@@ -2760,6 +2778,7 @@ class BIResult(BaseModel):
     failure_reasons: str
 
 @app.post("/api/bi/analyze", response_model=List[BIResult])
+@cached_analysis("bi")
 def analyze_bi_engine(params: BIParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("BI Engine Optimizer", params, _logger=logger)
@@ -2853,6 +2872,7 @@ class GovernanceResponse(BaseModel):
     filter_issues: List[PartitionFilterResult]
 
 @app.post("/api/governance/analyze", response_model=GovernanceResponse)
+@cached_analysis("governance")
 def analyze_governance(params: GovernanceParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Governance Auditor", params, _logger=logger)
@@ -3021,6 +3041,7 @@ class MVResult(BaseModel):
     rejected_reason: str
 
 @app.post("/api/mv/analyze", response_model=List[MVResult])
+@cached_analysis("mv_rejections")
 def analyze_mv_rejections(params: JobGovernanceParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("MV Rejections", params, _logger=logger)
@@ -3071,6 +3092,7 @@ class WarningResult(BaseModel):
     resource_warning: str
 
 @app.post("/api/resource_warnings/analyze", response_model=List[WarningResult])
+@cached_analysis("resource_warnings")
 def analyze_resource_warnings(params: JobGovernanceParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Resource Warnings", params, _logger=logger)
@@ -3120,6 +3142,7 @@ class SlotsParams(OrgParams):
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/slots/analyze")
+@cached_analysis("slots")
 def analyze_slots(params: SlotsParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Slots Analysis (Capacity Planner)", params, _logger=logger)
@@ -3294,6 +3317,7 @@ class TieredRecResult(BaseModel):
     minutes_observed: Optional[int] = None
 
 @app.post("/api/slots/tiered_recommendations", response_model=List[TieredRecResult])
+@cached_analysis("slots_tiered")
 def get_tiered_recommendations(params: TieredRecParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Tiered Recommendations", params, _logger=logger)
@@ -3400,6 +3424,7 @@ class SlotUtilizationParams(OrgParams):
         return v
 
 @app.post("/api/slots/utilization")
+@cached_analysis("slots_util")
 def analyze_slot_utilization(params: SlotUtilizationParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Slot Utilization", params, _logger=logger)
@@ -3490,6 +3515,7 @@ class SlotSimulationParams(OrgParams):
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/slots/simulate")
+@cached_analysis("slots_sim")
 def simulate_slots(params: SlotSimulationParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Slot Simulation", params, _logger=logger)
@@ -3860,6 +3886,7 @@ def _render_sql_local(template: str, **idents) -> str:
 
 
 @app.post("/api/slots/fluid_simulation", response_model=FluidSimResponse)
+@cached_analysis("fluid_sim")
 def simulate_fluid_scaling(params: FluidSimParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
@@ -4020,6 +4047,7 @@ class SlotActualParams(OrgParams):
         return v
 
 @app.post("/api/slots/actual_provisioning")
+@cached_analysis("slots_actual")
 def get_actual_provisioning(params: SlotActualParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Actual Provisioning", params, _logger=logger)
@@ -4219,6 +4247,7 @@ class PeakSlotsParams(OrgParams):
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/slots/peak")
+@cached_analysis("slots_peak")
 def get_peak_slots(params: PeakSlotsParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Peak Slots", params, _logger=logger)
@@ -4260,6 +4289,7 @@ class SlotProfilerParams(FocusMixin):
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/slots/profiler")
+@cached_analysis("profiler")
 def analyze_workload_profile(params: SlotProfilerParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Workload Profiler", params, _logger=logger)
@@ -4427,6 +4457,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
 
 
 @app.post("/api/slots/profiler/queries")
+@cached_analysis("profiler_queries")
 def get_top_profiler_queries(params: SlotProfilerParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Profiler Top Queries", params, _logger=logger)
@@ -4575,6 +4606,7 @@ class UserProfilerParams(FocusMixin):
     max_bytes_billed_gb: Optional[int] = None
 
 @app.post("/api/users/top_spenders")
+@cached_analysis("top_spenders")
 def get_top_spenders(params: UserProfilerParams):
     _validate_safe_params(params)
     t0 = log_endpoint_start("Top Spenders", params, _logger=logger)
@@ -4837,5 +4869,96 @@ def get_anomalies():
     anomalies that the UI rendered indistinguishably from real findings.
     """
     return []
+
+
+# ---------------------------------------------------------------------------
+# Cache control
+# ---------------------------------------------------------------------------
+# The frontend uses /status to decide which panels can be hydrated without a
+# BigQuery round-trip, and DELETE to force a genuine re-run when the user
+# clicks an Analyze button.  `module` is validated against the registry inside
+# result_cache.invalidate(), so it can never reach the filesystem as arbitrary
+# text.
+
+class CacheStatusEntry(BaseModel):
+    module: str
+    endpoint: str
+    label: str
+    cached_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    age_s: Optional[int] = None
+    fresh: bool = False
+    size_bytes: Optional[int] = None
+    params_digest: Optional[dict] = None
+
+
+@app.get("/api/cache/status", response_model=List[CacheStatusEntry])
+def get_cache_status(org_project_id: str, region: str = "region-us"):
+    """Freshness of every cacheable module in one scope.
+
+    One small pointer read per module.  After the first call these are served
+    from the gcsfuse stat cache (60s TTL), so the whole sweep is a few ms.
+    """
+    from .report_generator import REPORT_MODULES
+    labels = {m["endpoint"]: m["label"] for m in REPORT_MODULES}
+
+    now = time.time()
+    out: List[CacheStatusEntry] = []
+    for endpoint, (module, _ttl) in result_cache.CACHE_MODULES.items():
+        ptr = result_cache.latest(module, org_project_id, region)
+        if not ptr:
+            out.append(CacheStatusEntry(
+                module=module, endpoint=endpoint,
+                label=labels.get(endpoint, module.replace("_", " ").title()),
+            ))
+            continue
+        expires = float(ptr.get("expires_at_epoch", 0))
+        created = float(ptr.get("created_at_epoch", 0))
+        out.append(CacheStatusEntry(
+            module=module, endpoint=endpoint,
+            label=labels.get(endpoint, module.replace("_", " ").title()),
+            cached_at=ptr.get("created_at"),
+            expires_at=ptr.get("expires_at"),
+            age_s=int(now - created) if created else None,
+            fresh=expires > now,
+            size_bytes=ptr.get("size_bytes"),
+            params_digest=ptr.get("params_digest"),
+        ))
+    return out
+
+
+@app.get("/api/cache/{module}/latest")
+def get_cached_latest(
+    module: str,
+    org_project_id: str = Query(..., description="Organization or parent project ID"),
+    region: str = Query("region-us", description="GCP region or multi-region"),
+):
+    """Retrieve the latest cached analysis payload for a module in the given scope."""
+    data = result_cache.load_latest_data(module, org=org_project_id, region=region)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No fresh cache found for module '{module}' in scope '{org_project_id}/{region}'"
+        )
+    return data
+
+
+@app.delete("/api/cache/{module}")
+def delete_cache_module(module: str, org_project_id: str, region: str = "region-us"):
+    """Drop every parameter variant of one module within one scope.
+
+    Note for the UI copy: other Cloud Run instances may keep serving the old
+    entry for up to 60s, because gcsfuse caches stat results for that long.
+    """
+    n = result_cache.invalidate(module=module, org=org_project_id, region=region)
+    return {"deleted": n, "module": module}
+
+
+@app.delete("/api/cache")
+def delete_cache_scope(org_project_id: str, region: str = "region-us"):
+    """Drop every cached module within one scope ('Clear cached results')."""
+    n = result_cache.invalidate(module=None, org=org_project_id, region=region)
+    return {"deleted": n}
+
 
 

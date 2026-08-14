@@ -35,6 +35,21 @@ def _reset_bq_client_pool():
         utils._adc = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_cache(tmp_path, monkeypatch):
+    """Isolate cache directory per test and reset flight locks."""
+    from src import cache as C
+    temp_dir = str(tmp_path / "cache")
+    monkeypatch.setattr(C, "_CACHE_DIR", temp_dir)
+    backend = C.FileCacheBackend(temp_dir)
+    monkeypatch.setattr(C, "_backend", backend)
+    with C._flight_registry_lock:
+        C._flights.clear()
+    yield
+    with C._flight_registry_lock:
+        C._flights.clear()
+
+
 @pytest.fixture
 def test_client():
     """FastAPI test client instance."""

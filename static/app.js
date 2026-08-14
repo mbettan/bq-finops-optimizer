@@ -151,17 +151,133 @@ const state = {
     debugMode: false
 };
 
-// Quota-safe localStorage helper available globally
+// Quota-safe localStorage helper available globally.
+//
+// localStorage is now a *render* cache only — the server-side cache
+// (/api/cache/status) is authoritative, so a quota failure here is
+// recoverable and must not destroy anything.
+//
+// The previous version called localStorage.removeItem(key) in this catch
+// block. setItem is atomic, so a failed write leaves nothing behind to clean
+// up; the only thing that removal could do was delete the *previous good
+// value* for the module, turning a recoverable quota error into data loss.
 function safeSetLocalStorage(key, value) {
-    try {
-        localStorage.setItem(key, value);
-        return true;
-    } catch (e) {
-        console.warn(`[localStorage] Failed to write key "${key}" (possibly quota exceeded):`, e);
-        try { localStorage.removeItem(key); } catch (_) {}
-        return false;
-    }
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn(
+      `[localStorage] Failed to write key "${key}" (quota exceeded?). Server cache is authoritative; continuing.`,
+      e,
+    );
+    return false;
+  }
 }
+
+/* ============================================================
+   SERVER-SIDE CACHE CLIENT
+   The server keeps analysis results in a shared, TTL'd store
+   (GCS via a Cloud Run FUSE mount). localStorage is now only a
+   render cache for instant first paint.
+
+   Hydration strategy: we deliberately do NOT add a second render
+   path. For any module the server reports fresh but this browser
+   has no localStorage copy of, we re-issue the module's normal
+   POST. It returns X-Cache: HIT, costs nothing in BigQuery, and
+   flows through the existing renderer — so there is exactly one
+   code path to keep correct.
+   ============================================================ */
+const CacheClient = (() => {
+  let _status = null; // endpoint -> status entry
+  const ENDPOINT_TO_MODULE = {};
+
+  function scopeQuery() {
+    const p = new URLSearchParams();
+    p.set("org_project_id", state.orgProject || "");
+    p.set("region", state.region || "region-us");
+    return p.toString();
+  }
+
+  /** Fetch freshness for every module in the current scope. Null if unavailable. */
+  async function refreshStatus() {
+    if (!state.orgProject) return null;
+    try {
+      const res = await fetch(`/api/cache/status?${scopeQuery()}`);
+      if (!res.ok) return null;
+      const rows = await res.json();
+      _status = {};
+      rows.forEach((r) => {
+        _status[r.endpoint] = r;
+        ENDPOINT_TO_MODULE[r.endpoint] = r.module;
+      });
+      return _status;
+    } catch (_) {
+      // Cache disabled or unreachable — every module simply reports unknown.
+      return null;
+    }
+  }
+
+  function statusFor(endpoint) {
+    return (_status && _status[endpoint]) || null;
+  }
+
+  function isFresh(endpoint) {
+    const s = statusFor(endpoint);
+    return !!(s && s.fresh);
+  }
+
+  /** "45 min ago" / "2 h ago" — for the per-panel freshness badge. */
+  function ageLabel(endpoint) {
+    const s = statusFor(endpoint);
+    if (!s || !s.fresh || s.age_s == null) return null;
+    const m = Math.round(s.age_s / 60);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+  }
+
+  /** Drop the server entry for an endpoint in the current scope. */
+  async function invalidate(endpoint) {
+    const mod = ENDPOINT_TO_MODULE[endpoint];
+    if (!mod || !state.orgProject) return;
+    try {
+      await fetch(`/api/cache/${encodeURIComponent(mod)}?${scopeQuery()}`, {
+        method: "DELETE",
+      });
+      if (_status && _status[endpoint]) _status[endpoint].fresh = false;
+    } catch (_) {
+      /* non-fatal */
+    }
+  }
+
+  /** Drop every cached module in the current scope. */
+  async function invalidateAll() {
+    if (!state.orgProject) return;
+    try {
+      await fetch(`/api/cache?${scopeQuery()}`, { method: "DELETE" });
+      _status = null;
+    } catch (_) {
+      /* non-fatal */
+    }
+  }
+
+  /** Append ?refresh=true so a POST recomputes instead of reading the cache. */
+  function withRefresh(url) {
+    return url + (url.includes("?") ? "&" : "?") + "refresh=true";
+  }
+
+  return {
+    refreshStatus,
+    statusFor,
+    isFresh,
+    ageLabel,
+    invalidate,
+    invalidateAll,
+    withRefresh,
+  };
+})();
+window.CacheClient = CacheClient;
 
 /* ============================================================
    CORE UI UTILITIES
@@ -908,15 +1024,27 @@ function updateScopeBadge(viewName) {
 /**
  * Clear stale module data instantly when a user clicks a fetch button.
  * Removes the specified localStorage keys and empties the tbody of each table selector.
+ *
+ * Since the server-side cache landed, clearing localStorage alone is not
+ * enough: the POST that follows would be served from the server cache and the
+ * button would look like a no-op. Passing `endpoint` also drops the server
+ * entry for the current scope, so an explicit user-initiated run really does
+ * re-query BigQuery.
+ *
  * @param {string[]} keys - localStorage keys to remove
  * @param {string[]} tableSelectors - CSS selectors for table elements whose tbody should be cleared
+ * @param {string} [endpoint] - API path whose server-side cache entry to drop
  */
-function clearModuleCache(keys = [], tableSelectors = []) {
-    keys.forEach(k => localStorage.removeItem(k));
-    tableSelectors.forEach(sel => {
-        const tbody = document.querySelector(`${sel} tbody`);
-        if (tbody) tbody.innerHTML = '';
-    });
+function clearModuleCache(keys = [], tableSelectors = [], endpoint = null) {
+  keys.forEach((k) => localStorage.removeItem(k));
+  tableSelectors.forEach((sel) => {
+    const tbody = document.querySelector(`${sel} tbody`);
+    if (tbody) tbody.innerHTML = "";
+  });
+  if (endpoint && window.CacheClient) {
+    // Fire-and-forget: a failed invalidation must never block the analysis.
+    window.CacheClient.invalidate(endpoint).catch(() => {});
+  }
 }
 
 /* ============================================================
@@ -1437,7 +1565,10 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.currentRegion.textContent = state.region;
         updateScopeBadge(Router.getCurrentViewId());
 
-        showNotification('Settings saved. Cached results were cleared for the new scope — re-run any analysis you need.', 'success');
+        showNotification('Settings saved. Scope updated.', 'success');
+        if (typeof hydrateFromServerCache === 'function') {
+            hydrateFromServerCache();
+        }
         Router.navigate('storage');
     });
 
@@ -1487,7 +1618,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         setLoading(elements.btnAnalyzeStorage, true);
-        clearModuleCache(['bq_storage_results', 'bq_active_assist_results', 'bq_static_audit_results'], ['#storage-results-table', '#active-assist-table', '#static-audit-table']);
+        clearModuleCache(['bq_storage_results', 'bq_active_assist_results', 'bq_static_audit_results'], ['#storage-results-table', '#active-assist-table', '#static-audit-table'], '/api/storage/analyze');
 
         const ttDays = parseFloat(document.getElementById('st-tt-days').value) || 7;
         const params = {
@@ -1507,7 +1638,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             debug_log("Fetching storage analysis with params:", params);
-            const response = await fetch('/api/storage/analyze', {
+            const response = await fetch('/api/storage/analyze?refresh=true', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildPayload('/api/storage/analyze', params))
@@ -1570,7 +1701,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             setLoading(btnAnalyzeJobs, true);
-            clearModuleCache(['bq_job_results'], ['#job-summary-table', '#top-jobs-table']);
+            clearModuleCache(['bq_job_results'], ['#job-summary-table', '#top-jobs-table'], '/api/jobs/analyze');
 
             const params = {
                 on_demand_rate_per_tb: parseFloat(document.getElementById('jb-od-rate').value),
@@ -1588,7 +1719,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 debug_log("Fetching job analysis with params:", params);
-                const response = await fetch('/api/jobs/analyze', {
+                const response = await fetch('/api/jobs/analyze?refresh=true', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(buildPayload('/api/jobs/analyze', params))
@@ -1984,7 +2115,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const fetchActiveAssistRecommendations = async (force = false) => {
         const btn = document.getElementById('run-active-assist-btn');
         if (btn) setLoading(btn, true);
-        clearModuleCache(['bq_active_assist_results'], ['#active-assist-table']);
+        clearModuleCache(['bq_active_assist_results'], ['#active-assist-table'], '/api/storage/active_assist');
 
         const params = {
             region: state.region,
@@ -1995,7 +2126,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             debug_log("Fetching Active Assist recommendations with params:", params);
-            const response = await fetch('/api/storage/active_assist', {
+            const response = await fetch('/api/storage/active_assist?refresh=true', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildPayload('/api/storage/active_assist', params))
@@ -2139,7 +2270,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const fetchStaticAuditResults = async (force = false) => {
         const btn = document.getElementById('run-static-audit-btn');
         if (btn) setLoading(btn, true);
-        clearModuleCache(['bq_static_audit_results'], ['#static-audit-table']);
+        clearModuleCache(['bq_static_audit_results'], ['#static-audit-table'], '/api/storage/static_audit');
 
         const params = {
             region: state.region,
@@ -2150,7 +2281,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             debug_log("Fetching Static Table Audit results with params:", params);
-            const response = await fetch('/api/storage/static_audit', {
+            const response = await fetch('/api/storage/static_audit?refresh=true', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildPayload('/api/storage/static_audit', params))
@@ -3630,7 +3761,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeProfiler, true);
-            clearModuleCache(['bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries'], ['#profiler-summary-table', '#profiler-timeline-table', '#profiler-queries-table']);
+            clearModuleCache(['bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries'], ['#profiler-summary-table', '#profiler-timeline-table', '#profiler-queries-table'], '/api/slots/profiler');
 
             const params = {
                 org_project_id: state.orgProject,
@@ -3690,7 +3821,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeUsers, true);
-            clearModuleCache(['bq_top_spenders'], ['#top-spenders-table']);
+            clearModuleCache(['bq_top_spenders'], ['#top-spenders-table'], '/api/users/top_spenders');
 
             const params = {
                 org_project_id: state.orgProject,
@@ -4251,7 +4382,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHbo, true);
-            clearModuleCache(['bq_hbo_results', 'bq_hbo_status', 'bq_hbo_summary', 'bq_hbo_optimizations'], ['#hbo-results-table']);
+            clearModuleCache(['bq_hbo_results', 'bq_hbo_status', 'bq_hbo_summary', 'bq_hbo_optimizations'], ['#hbo-results-table'], '/api/hbo/analyze');
 
             const projectOverride = document.getElementById('hbo-project-override')?.value;
             const lookbackOverride = document.getElementById('hbo-lookback-override')?.value;
@@ -4365,7 +4496,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(btnAnalyzePerformance, true);
-            clearModuleCache(['bq_performance_results'], ['#performance-results-table']);
+            clearModuleCache(['bq_performance_results'], ['#performance-results-table'], '/api/hbo/performance_insights');
 
             const projectOverride = document.getElementById('perf-project-override')?.value;
             const lookbackOverride = document.getElementById('perf-lookback-override')?.value;
@@ -4599,7 +4730,7 @@ ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode 
             }
 
             setLoading(elements.btnAnalyzeHygiene, true);
-            clearModuleCache(['bq_hygiene_results'], ['#hygiene-results-table']);
+            clearModuleCache(['bq_hygiene_results'], ['#hygiene-results-table'], '/api/storage/hygiene');
 
             const params = {
                 org_project_id: state.orgProject,
@@ -5554,7 +5685,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeLinter.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeLinter, true);
-            clearModuleCache(['bq_linter_results'], ['#linter-results-table']);
+            clearModuleCache(['bq_linter_results'], ['#linter-results-table'], '/api/antipatterns/linter');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5590,7 +5721,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeDml.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeDml, true);
-            clearModuleCache(['bq_antipatterns_results'], ['#antipatterns-results-table']);
+            clearModuleCache(['bq_antipatterns_results'], ['#antipatterns-results-table'], '/api/antipatterns/dml');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5627,7 +5758,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeMv.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeMv, true);
-            clearModuleCache(['bq_mv_results'], ['#mv-results-table']);
+            clearModuleCache(['bq_mv_results'], ['#mv-results-table'], '/api/antipatterns/mv');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5662,7 +5793,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeSkew.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeSkew, true);
-            clearModuleCache(['bq_skew_results'], ['#skew-results-table']);
+            clearModuleCache(['bq_skew_results'], ['#skew-results-table'], '/api/antipatterns/skew');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5698,7 +5829,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeBatch.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeBatch, true);
-            clearModuleCache(['bq_batch_results'], ['#batch-candidates-results-table']);
+            clearModuleCache(['bq_batch_results'], ['#batch-candidates-results-table'], '/api/antipatterns/batch_candidates');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5736,7 +5867,7 @@ write_client.append_rows(iter([request]))`;
             setLoading(elements.btnAnalyzeExpiration, true);
             // Don't clear bq_gov_results — only clear the DataTable.
             // Clearing the key wipes the sibling scan's cached data.
-            clearModuleCache([], ['#expiration-results-table']);
+            clearModuleCache([], ['#expiration-results-table'], '/api/governance/analyze');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5779,7 +5910,7 @@ write_client.append_rows(iter([request]))`;
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeFilter, true);
             // Don't clear bq_gov_results — only clear the DataTable.
-            clearModuleCache([], ['#filter-results-table']);
+            clearModuleCache([], ['#filter-results-table'], '/api/governance/analyze');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5821,7 +5952,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeMvRejections.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeMvRejections, true);
-            clearModuleCache(['bq_mv_rejection_results'], ['#mv-rejections-table']);
+            clearModuleCache(['bq_mv_rejection_results'], ['#mv-rejections-table'], '/api/mv/analyze');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -5856,7 +5987,7 @@ write_client.append_rows(iter([request]))`;
         elements.btnAnalyzeWarnings.addEventListener('click', async () => {
             if (!checkSettings()) return;
             setLoading(elements.btnAnalyzeWarnings, true);
-            clearModuleCache(['bq_resource_warning_results'], ['#resource-warnings-table']);
+            clearModuleCache(['bq_resource_warning_results'], ['#resource-warnings-table'], '/api/resource_warnings/analyze');
             const params = {
                 org_project_id: state.orgProject,
                 max_bytes_billed_gb: state.maxBytesBilledGb,
@@ -6005,7 +6136,7 @@ write_client.append_rows(iter([request]))`;
             }
 
             setLoading(elements.btnAnalyzeBi, true);
-            clearModuleCache(['bq_bi_results'], ['#bi-results-table']);
+            clearModuleCache(['bq_bi_results'], ['#bi-results-table'], '/api/bi/analyze');
 
             const params = {
                 org_project_id: state.orgProject,
@@ -6642,7 +6773,7 @@ write_client.append_rows(iter([request]))`;
             }
 
             setLoading(elements.btnRunAiAnalysis, true);
-            clearModuleCache(['bq_ai_results'], ['#ai-results-table']);
+            clearModuleCache(['bq_ai_results'], ['#ai-results-table'], '/api/ai/analyze');
 
             const params = {
                 org_project_id: state.orgProject,
@@ -6766,6 +6897,91 @@ write_client.append_rows(iter([request]))`;
             }
         });
     }
+
+    async function paintCacheBadges() {
+        if (!window.CacheClient) return;
+        const status = await CacheClient.refreshStatus();
+        if (!status) return;
+        document.querySelectorAll("[data-cache-endpoint]").forEach((el) => {
+            const ep = el.getAttribute("data-cache-endpoint");
+            const age = CacheClient.ageLabel(ep);
+            if (age) {
+                el.textContent = `Cached (${age})`;
+                el.title = `Served from server-side cache. Last computed ${age}.`;
+                el.classList.add("fresh");
+            } else {
+                el.textContent = "";
+                el.classList.remove("fresh");
+            }
+        });
+    }
+    window.paintCacheBadges = paintCacheBadges;
+
+    const MODULE_TO_STORAGE_KEYS = {
+        'storage': 'bq_storage_results',
+        'static_audit': 'bq_static_audit_results',
+        'hygiene': 'bq_hygiene_results',
+        'governance': 'bq_gov_results',
+        'active_assist': 'bq_active_assist_results',
+        'jobs': 'bq_job_results',
+        'slots': 'bq_slots_results',
+        'simulation': 'bq_slots_simulation_results',
+        'tiered': 'bq_slots_tiered',
+        'fluid': 'bq_fluid_simulation_data',
+        'top_spenders': 'bq_top_spenders',
+        'cost_attribution': 'bq_cost_attribution_results',
+        'linter': 'bq_linter_results',
+        'batch_candidates': 'bq_batch_results',
+        'dml': 'bq_antipatterns_results',
+        'skew': 'bq_skew_results',
+        'mv': 'bq_mv_results',
+        'warnings': 'bq_performance_results',
+        'ai': 'bq_ai_results',
+        'bi': 'bq_bi_results',
+        'hbo': 'bq_hbo_results'
+    };
+
+    /**
+     * Server-side cache hydration: for every fresh module in the shared GCS cache,
+     * download the latest cached payload directly into localStorage and render.
+     */
+    async function hydrateFromServerCache() {
+        if (!window.CacheClient) return;
+        const status = await CacheClient.refreshStatus();
+        if (!status || !Array.isArray(status) || status.length === 0) return;
+        paintCacheBadges();
+
+        const org = state.orgProject || localStorage.getItem('bq_org_project') || '';
+        const region = state.region || localStorage.getItem('bq_region') || 'region-us';
+        if (!org) return;
+
+        const freshEntries = status.filter(entry => entry.fresh && MODULE_TO_STORAGE_KEYS[entry.module]);
+        if (freshEntries.length === 0) return;
+
+        let loadedCount = 0;
+        for (const entry of freshEntries) {
+            const storageKey = MODULE_TO_STORAGE_KEYS[entry.module];
+            try {
+                const res = await fetch(`/api/cache/${encodeURIComponent(entry.module)}/latest?org_project_id=${encodeURIComponent(org)}&region=${encodeURIComponent(region)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    safeSetLocalStorage(storageKey, typeof data === 'string' ? data : JSON.stringify(data));
+                    loadedCount++;
+                }
+            } catch (err) {
+                console.warn(`[Cache] Failed to load latest data for ${entry.module}:`, err);
+            }
+        }
+
+        if (loadedCount > 0) {
+            if (typeof window.loadAllCachedData === 'function') {
+                try { window.loadAllCachedData(); } catch (e) { console.warn('[Cache] Render error:', e); }
+            }
+            paintCacheBadges();
+            showNotification(`Loaded ${loadedCount} report${loadedCount > 1 ? 's' : ''} from shared server cache.`, 'success');
+        }
+    }
+    window.hydrateFromServerCache = hydrateFromServerCache;
 
     function loadAllCachedData() {
         const cachedAiResults = localStorage.getItem('bq_ai_results');
@@ -6966,6 +7182,7 @@ write_client.append_rows(iter([request]))`;
 
     // Load all cached data on page startup
     loadAllCachedData();
+    hydrateFromServerCache(); // async, non-blocking — server-cache fill-in
 
     // Snapshot export/import wiring
     const exportBtn = document.getElementById('btn-export-snapshot');
@@ -7491,7 +7708,32 @@ const ReportModule = (() => {
     return d.innerHTML;
   }
 
-  return { init, onClick };
+  async function runModuleFetch(endpoint) {
+    if (!MODULES || MODULES.length === 0) await init();
+    const mod = MODULES.find(m => m.endpoint === endpoint);
+    if (!mod) return null;
+    const basePayload = buildSweepPayload();
+    const body = buildModulePayload(mod, basePayload);
+    const res = await fetch(mod.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+    for (const key of mod.keys) {
+      const val = extractKeyData(data, key, mod);
+      if (val !== undefined) {
+        safeSetLocalStorage(key, typeof val === 'string' ? val : JSON.stringify(val));
+      }
+    }
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+    return data;
+  }
+
+  return { init, onClick, runModuleFetch };
 })();
 
 /**
@@ -8885,6 +9127,9 @@ const Router = (() => {
 
     if (typeof window.loadAllCachedData === 'function') {
       try { window.loadAllCachedData(); } catch (e) { console.warn('[Router] loadAllCachedData error:', e); }
+    }
+    if (typeof window.paintCacheBadges === 'function') {
+      try { window.paintCacheBadges(); } catch (_) {}
     }
 
     const viewport = document.querySelector('.dashboard-viewport');
