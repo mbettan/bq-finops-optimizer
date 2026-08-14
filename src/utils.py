@@ -77,10 +77,79 @@ _ALIAS_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 MAX_FOCUS_PROJECTS = 50
 
 
+# Analysis scope for multi-project INFORMATION_SCHEMA views.
+# "organization" (default) keeps existing *_BY_ORGANIZATION behavior.
+# "folder" uses *_BY_FOLDER (parent folder of the execution/anchor project).
+# "project" uses *_BY_PROJECT / project-scoped views.
+ANALYSIS_SCOPES = frozenset({"organization", "folder", "project"})
+
+_INFORMATION_SCHEMA_VIEWS = {
+    "JOBS": {
+        "organization": "JOBS_BY_ORGANIZATION",
+        "folder": "JOBS_BY_FOLDER",
+        "project": "JOBS_BY_PROJECT",
+    },
+    "JOBS_TIMELINE": {
+        "organization": "JOBS_TIMELINE_BY_ORGANIZATION",
+        "folder": "JOBS_TIMELINE_BY_FOLDER",
+        "project": "JOBS_TIMELINE_BY_PROJECT",
+    },
+    "TABLE_STORAGE": {
+        "organization": "TABLE_STORAGE_BY_ORGANIZATION",
+        "folder": "TABLE_STORAGE_BY_FOLDER",
+        "project": "TABLE_STORAGE_BY_PROJECT",
+    },
+}
+
+
+def validate_analysis_scope(scope: Optional[str]) -> str:
+    """Normalize and validate analysis scope. Defaults to organization."""
+    if scope is None or (isinstance(scope, str) and not scope.strip()):
+        return "organization"
+    normalized = scope.strip().lower()
+    if normalized not in ANALYSIS_SCOPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid analysis_scope: {scope!r}. "
+                f"Must be one of: {', '.join(sorted(ANALYSIS_SCOPES))}."
+            ),
+        )
+    return normalized
+
+
+def information_schema_view(base_name: str, scope: str = "organization") -> str:
+    """Map a logical INFORMATION_SCHEMA family to the view for ``scope``.
+
+    Args:
+        base_name: ``JOBS`` | ``JOBS_TIMELINE`` | ``TABLE_STORAGE``
+        scope: ``organization`` | ``folder`` | ``project``
+
+    Returns:
+        e.g. ``JOBS_BY_FOLDER``
+    """
+    views = _INFORMATION_SCHEMA_VIEWS.get(base_name)
+    if views is None:
+        raise ValueError(f"Unsupported INFORMATION_SCHEMA base: {base_name!r}")
+    normalized = scope.strip().lower() if isinstance(scope, str) else scope
+    if normalized not in views:
+        raise ValueError(
+            f"Unsupported analysis scope: {scope!r}. "
+            f"Must be one of: {', '.join(sorted(ANALYSIS_SCOPES))}."
+        )
+    return views[normalized]
+
+
+def analysis_scope_from_params(params) -> str:
+    """Read and validate ``analysis_scope`` from a params object (default organization)."""
+    return validate_analysis_scope(getattr(params, "analysis_scope", None))
+
+
 class FocusMixin(BaseModel):
     """Mixin providing the optional focus_projects field.
     Inherit alongside existing param classes to add project-scoping support."""
     focus_projects: Optional[List[str]] = None
+    analysis_scope: str = "organization"
 
 
 class OrgParams(BaseModel):
@@ -94,6 +163,7 @@ class OrgParams(BaseModel):
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
+    analysis_scope: str = "organization"
 
 
 class AppliedScope(BaseModel):

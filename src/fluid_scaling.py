@@ -22,6 +22,8 @@ from .utils import (
     FocusMixin,
     OrgParams,
     validate_focus_projects,
+    analysis_scope_from_params,
+    information_schema_view,
     build_project_filter,
     log_endpoint_start,
     log_endpoint_end,
@@ -285,7 +287,7 @@ usage_per_sec AS (
     reservation_id,
     period_start,
     SUM(period_slot_ms) / 1000.0 AS used_slots
-  FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_TIMELINE_BY_ORGANIZATION
+  FROM `{org_project}`.`{region}`.INFORMATION_SCHEMA.{jobs_timeline_view}
   -- job_creation_time must have a wide slack (7 days) to ensure jobs that started BEFORE the
   -- lookback window but continued running INTO the window are not dropped by partition pruning.
   WHERE job_creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL (@lookback_days + 7) DAY)
@@ -493,7 +495,17 @@ def estimate_fluid_scaling(params: FluidEstimateParams):
         region = _safe_ident(_normalize_region(params.region), "region")
 
 
-        unified_sql = _render_sql(_SQL_UNIFIED_FLUID_SCALING, admin_project=admin_project, org_project=org_project, region=region, focus_clause="")
+        jobs_timeline_view = information_schema_view(
+            "JOBS_TIMELINE", analysis_scope_from_params(params)
+        )
+        unified_sql = _render_sql(
+            _SQL_UNIFIED_FLUID_SCALING,
+            admin_project=admin_project,
+            org_project=org_project,
+            region=region,
+            focus_clause="",
+            jobs_timeline_view=jobs_timeline_view,
+        )
         df = _run_query_to_df(client, unified_sql, params.lookback_days, "fluid_scaling_unified", params=params)
 
         logger.info("Fetched %d unified rows", len(df))

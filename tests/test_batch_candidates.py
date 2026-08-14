@@ -91,7 +91,7 @@ class TestBatchCandidateSQLEngine:
 
     def test_endpoint_has_permission_fallback(self):
         src = inspect.getsource(_main.analyze_batch_candidates)
-        assert "JOBS_BY_ORGANIZATION" in src
+        assert "information_schema_view" in src
         assert "JOBS_BY_PROJECT" in src
         assert "dry_run=True" in src
 
@@ -213,6 +213,36 @@ class TestBatchCandidateEndpoint:
         assert executed, "analysis query was never submitted"
         assert "INFORMATION_SCHEMA.JOBS_BY_PROJECT" in executed[0]
         assert "JOBS_BY_ORGANIZATION" not in executed[0]
+
+    def test_folder_scope_probes_jobs_by_folder(self, test_client, mock_bq_all):
+        """analysis_scope=folder must probe JOBS_BY_FOLDER (not ORGANIZATION)."""
+        probed = []
+        real_query = mock_bq_all.query
+        job = real_query.return_value
+
+        def _query(sql, job_config=None, **kwargs):
+            if job_config is not None and getattr(job_config, "dry_run", False):
+                probed.append(sql)
+            return job
+
+        mock_bq_all.query = _query
+        try:
+            response = test_client.post(
+                "/api/antipatterns/batch_candidates",
+                json={
+                    "org_project_id": "valid-proj",
+                    "region": "region-us",
+                    "lookback_days": 7,
+                    "analysis_scope": "folder",
+                },
+            )
+        finally:
+            mock_bq_all.query = real_query
+
+        assert response.status_code == 200
+        assert probed, "folder-scope dry-run probe was never submitted"
+        assert "JOBS_BY_FOLDER" in probed[0]
+        assert "JOBS_BY_ORGANIZATION" not in probed[0]
 
     def test_time_period_params_are_bound(self, test_client, mock_bq_all):
         """The lookback window must reach BigQuery as bound params, not literals."""

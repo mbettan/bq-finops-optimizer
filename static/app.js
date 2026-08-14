@@ -138,6 +138,7 @@ const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
+    analysisScope: localStorage.getItem('bq_analysis_scope') || 'organization',
     maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
     focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
     storageData: [],
@@ -855,11 +856,15 @@ function buildPayload(endpoint, basePayload) {
         // causes a hard 422. Defaulting to 'org' is the safer fallback.
         console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — defaulting to org scope`);
     }
+    const withAnalysisScope = {
+        analysis_scope: (typeof state !== 'undefined' && state.analysisScope) || 'organization',
+        ...basePayload,
+    };
     if (scope !== 'focus') {
-        const { focus_projects, ...rest } = basePayload;
+        const { focus_projects, ...rest } = withAnalysisScope;
         return rest;
     }
-    return basePayload;
+    return withAnalysisScope;
 }
 
 /** Maps navigation view names to their primary POST endpoint for badge display. */
@@ -1214,6 +1219,7 @@ document.addEventListener('DOMContentLoaded', () => {
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
+        cfgAnalysisScope: document.getElementById('cfg-analysis-scope'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
         cfgFocusProjects: document.getElementById('cfg-focus-projects'),
@@ -1316,6 +1322,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgOrgProject.value = state.orgProject;
         if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
+        if (elements.cfgAnalysisScope) elements.cfgAnalysisScope.value = state.analysisScope || 'organization';
         if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
         if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
         updateScopeBadge(Router.getCurrentViewId());
@@ -1372,6 +1379,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const newRegion = elements.cfgRegion.value;
+        const allowedScopes = ['organization', 'folder', 'project'];
+        const newAnalysisScope = elements.cfgAnalysisScope
+            ? elements.cfgAnalysisScope.value
+            : 'organization';
+        if (!allowedScopes.includes(newAnalysisScope)) {
+            validationErrors.push(`Invalid Analysis scope "${newAnalysisScope}".`);
+        }
 
         let newMaxBytes = null;
         if (elements.cfgMaxBytesBilled) {
@@ -1398,6 +1412,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Commit validated values to state and localStorage ---
         state.orgProject = newOrg;
         state.region = newRegion;
+        state.analysisScope = newAnalysisScope;
         if (elements.cfgAdminProject) {
             state.adminProject = newAdmin;
             localStorage.setItem('bq_admin_project', newAdmin);
@@ -1420,11 +1435,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
+        localStorage.setItem('bq_analysis_scope', state.analysisScope);
 
         // Flush ALL scope-dependent caches. Use an allow-list of
         // scope-independent keys rather than a fragile deny-list.
         const SCOPE_INDEPENDENT = new Set([
-            'bq_org_project', 'bq_admin_project', 'bq_region',
+            'bq_org_project', 'bq_admin_project', 'bq_region', 'bq_analysis_scope',
             'bq_max_bytes_billed_gb', 'bq_focus_projects',
             'bq_version_dismissed',
         ]);
