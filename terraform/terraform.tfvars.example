@@ -1,0 +1,13 @@
+project_id = "YOUR_PROJECT_ID"
+org_id     = "YOUR_ORG_ID"
+# folder_id = "YOUR_FOLDER_ID"
+iam_scope  = "organization"
+region     = "us-central1"
+
+invoker_members = [
+  "user:you@example.com",
+]
+
+deployer_members = [
+  "user:you@example.com",
+]
