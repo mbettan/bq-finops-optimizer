@@ -1,5 +1,9 @@
 // BigQuery FinOps Optimizer - Frontend Logic
 
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) window.location.reload();
+});
+
 // Global API response XSS sanitizer
 (() => {
     const nativeFetch = window.fetch.bind(window);
@@ -896,16 +900,20 @@ function updateScopeBadge(viewName) {
     const scope = endpoint ? FOCUS_SCOPE_MAP[endpoint] : undefined;
     const projects = state.focusProjects || [];
 
+    const analysis = (typeof state !== 'undefined' && state.analysisScope) || 'organization';
+    const analysisLabel = {
+        folder: '📁 Folder-wide',
+        project: '📦 Project only',
+        organization: '🌐 Organization-wide',
+    }[analysis] || `🌐 ${analysis}`;
+
     container.style.display = '';
-    if (scope === 'org') {
-        badge.textContent = '🌐 Organization-wide';
-        badge.style.color = '#9ca3af';
-    } else if (projects.length > 0) {
+    if (projects.length > 0 && scope === 'focus') {
         badge.textContent = `🎯 Focused: ${projects.length} project${projects.length > 1 ? 's' : ''}`;
         badge.style.color = 'var(--accent-primary)';
     } else {
-        badge.textContent = '🌐 Organization-wide';
-        badge.style.color = '#9ca3af';
+        badge.textContent = analysisLabel;
+        badge.style.color = analysis === 'organization' ? '#9ca3af' : 'var(--accent-primary)';
     }
 }
 
@@ -1214,12 +1222,16 @@ document.addEventListener('DOMContentLoaded', () => {
         currentProject: document.getElementById('current-project'),
         currentAdminProject: document.getElementById('current-admin-project'),
         currentRegion: document.getElementById('current-region'),
+        currentFolder: document.getElementById('current-folder'),
+        currentFolderContainer: document.getElementById('current-folder-container'),
         
         // Settings Form
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
         cfgAnalysisScope: document.getElementById('cfg-analysis-scope'),
+        cfgFolderGroup: document.getElementById('cfg-folder-group'),
+        cfgFolderName: document.getElementById('cfg-folder-name'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
         cfgFocusProjects: document.getElementById('cfg-focus-projects'),
@@ -7004,9 +7016,55 @@ write_client.append_rows(iter([request]))`;
     const reportGenEmptyBtn = document.getElementById('btn-report-generate-empty');
     if (reportGenEmptyBtn) reportGenEmptyBtn.addEventListener('click', () => ReportModule.onClick());
 
+    const applyRuntimeConfig = async () => {
+        try {
+            const res = await fetch('/api/runtime-config');
+            if (!res.ok) return;
+            const cfg = await res.json();
+            const allowed = cfg.allowed_analysis_scopes || [];
+            if (allowed.length === 1) {
+                state.analysisScope = allowed[0];
+                try { localStorage.setItem('bq_analysis_scope', state.analysisScope); } catch (_) {}
+            } else if (!localStorage.getItem('bq_analysis_scope') && cfg.default_analysis_scope) {
+                state.analysisScope = cfg.default_analysis_scope;
+            }
+            if (cfg.default_org_project_id) {
+                state.orgProject = cfg.default_org_project_id;
+                try { localStorage.setItem('bq_org_project', state.orgProject); } catch (_) {}
+            }
+            if (elements.cfgAnalysisScope && allowed.length) {
+                [...elements.cfgAnalysisScope.options].forEach((opt) => {
+                    if (!allowed.includes(opt.value)) opt.remove();
+                });
+                if (allowed.length === 1) {
+                    elements.cfgAnalysisScope.disabled = true;
+                    const help = document.getElementById('cfg-analysis-scope-help');
+                    if (help) {
+                        help.textContent = 'This deployment is locked to folder-wide INFORMATION_SCHEMA views (JOBS_BY_FOLDER and related). Organization-wide and project-only are disabled.';
+                    }
+                }
+            }
+            const folderId = (cfg.analysis_folder_id || '').trim();
+            const folderName = (cfg.analysis_folder_name || '').trim();
+            const folderLabel = [folderName, folderId ? `folders/${folderId}` : '']
+                .filter(Boolean)
+                .join(' · ');
+            if (folderLabel && elements.cfgFolderName) {
+                elements.cfgFolderName.value = folderLabel;
+                if (elements.cfgFolderGroup) elements.cfgFolderGroup.hidden = false;
+                if (elements.currentFolder) elements.currentFolder.textContent = folderLabel;
+                if (elements.currentFolderContainer) elements.currentFolderContainer.style.display = '';
+            }
+        } catch (_) {
+            // Keep compiled defaults when the endpoint is unavailable.
+        }
+    };
+
     // App Start
-    initUI();
-    ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
+    applyRuntimeConfig().then(() => {
+        initUI();
+        ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
+    });
 });
 
 /* ============================================================

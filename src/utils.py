@@ -10,7 +10,7 @@ from typing import Optional, List
 from fastapi import HTTPException
 import google.auth
 from google.cloud import bigquery
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,15 @@ def log_endpoint_start(endpoint_name: str, params, _logger=None) -> float:
     cap_gb = getattr(params, 'max_bytes_billed_gb', None)
     cap_str = f"{cap_gb} GiB" if cap_gb else "800 GiB (default)"
 
-    scope_str = f"{len(focus)} projects ({', '.join(focus[:3])}{'…' if len(focus) > 3 else ''})" if focus else "full organization"
+    analysis = getattr(params, "analysis_scope", None) or "organization"
+    if focus:
+        scope_str = f"{len(focus)} projects ({', '.join(focus[:3])}{'…' if len(focus) > 3 else ''})"
+    else:
+        scope_str = {
+            "folder": "folder-wide",
+            "project": "project",
+            "organization": "organization-wide",
+        }.get(analysis, analysis)
     lookback_str = f" | lookback={lookback}d" if lookback else ""
 
     log.info(
@@ -102,17 +110,36 @@ _INFORMATION_SCHEMA_VIEWS = {
 }
 
 
-def validate_analysis_scope(scope: Optional[str]) -> str:
-    """Normalize and validate analysis scope. Defaults to organization."""
-    if scope is None or (isinstance(scope, str) and not scope.strip()):
+def _allowed_analysis_scopes() -> frozenset:
+    raw = os.environ.get("ALLOWED_ANALYSIS_SCOPES", "").strip()
+    if not raw:
+        return ANALYSIS_SCOPES
+    allowed = frozenset(s.strip().lower() for s in raw.split(",") if s.strip())
+    return allowed or ANALYSIS_SCOPES
+
+
+def _default_analysis_scope() -> str:
+    configured = os.environ.get("DEFAULT_ANALYSIS_SCOPE", "").strip().lower()
+    allowed = _allowed_analysis_scopes()
+    if configured in allowed:
+        return configured
+    if "organization" in allowed:
         return "organization"
+    return next(iter(sorted(allowed)))
+
+
+def validate_analysis_scope(scope: Optional[str]) -> str:
+    """Normalize and validate analysis scope. Defaults to organization unless env overrides."""
+    if scope is None or (isinstance(scope, str) and not scope.strip()):
+        return _default_analysis_scope()
     normalized = scope.strip().lower()
-    if normalized not in ANALYSIS_SCOPES:
+    allowed = _allowed_analysis_scopes()
+    if normalized not in allowed:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Invalid analysis_scope: {scope!r}. "
-                f"Must be one of: {', '.join(sorted(ANALYSIS_SCOPES))}."
+                f"Must be one of: {', '.join(sorted(allowed))}."
             ),
         )
     return normalized
@@ -149,7 +176,7 @@ class FocusMixin(BaseModel):
     """Mixin providing the optional focus_projects field.
     Inherit alongside existing param classes to add project-scoping support."""
     focus_projects: Optional[List[str]] = None
-    analysis_scope: str = "organization"
+    analysis_scope: str = Field(default_factory=_default_analysis_scope)
 
 
 class OrgParams(BaseModel):
@@ -163,7 +190,7 @@ class OrgParams(BaseModel):
     admin_project_id: Optional[str] = None
     region: str = "region-us"
     max_bytes_billed_gb: Optional[int] = None
-    analysis_scope: str = "organization"
+    analysis_scope: str = Field(default_factory=_default_analysis_scope)
 
 
 class AppliedScope(BaseModel):
@@ -367,11 +394,26 @@ def close_bq_clients() -> None:
             logger.debug("Failed to close pooled BigQuery client", exc_info=True)
 
 
+def bq_job_project() -> Optional[str]:
+    """Project that creates/bills BigQuery jobs, if split from the folder anchor.
+
+    When unset, jobs run in org_project_id (legacy behavior). Set
+    BQ_EXECUTION_PROJECT when the runtime SA can jobs.create in the Cloud Run
+    project but INFORMATION_SCHEMA.JOBS_BY_* must be qualified with a project
+    in a different folder.
+    """
+    raw = os.environ.get("BQ_EXECUTION_PROJECT", "").strip()
+    return raw or None
+
+
 def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
     """
     Initializes the BigQuery client and resolves the target project ID.
     If org_project_id is empty or None, it defaults to client.project.
     Validates that the resolved project ID is not empty and matches safety regex.
+
+    Jobs are created in BQ_EXECUTION_PROJECT when that env is set; the returned
+    project id remains the Settings/org anchor used in INFORMATION_SCHEMA SQL.
     """
     org_project_id = getattr(params, "org_project_id", None)
     project_override = org_project_id.strip() if (org_project_id and org_project_id.strip()) else None
@@ -379,9 +421,27 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
     # Check parameter for dummy project
     if project_override:
         reject_dummy_project(project_override)
-        
+
+    job_project = bq_job_project()
+    if job_project:
+        reject_dummy_project(job_project)
+        _safe_ident(job_project, "BQ_EXECUTION_PROJECT")
+
+    default_org = os.environ.get("DEFAULT_ORG_PROJECT_ID", "").strip() or None
+    if default_org:
+        reject_dummy_project(default_org)
+        _safe_ident(default_org, "DEFAULT_ORG_PROJECT_ID")
+        # Stale UI often sends the Cloud Run/job project as the folder anchor.
+        if not project_override or (job_project and project_override == job_project):
+            logger.warning(
+                "Using DEFAULT_ORG_PROJECT_ID %s as folder anchor (request org_project_id=%s)",
+                default_org,
+                project_override,
+            )
+            project_override = default_org
+
     try:
-        client = get_bq_client(project_override)
+        client = get_bq_client(job_project or project_override)
     except Exception as e:
         logger.error("Failed to initialize BigQuery client: %s", e)
         raise HTTPException(
@@ -410,6 +470,9 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
     reject_dummy_project(resolved_project)
         
     _safe_ident(resolved_project, "project_id")
+
+    if hasattr(params, "org_project_id"):
+        params.org_project_id = resolved_project
         
     return client, resolved_project
 

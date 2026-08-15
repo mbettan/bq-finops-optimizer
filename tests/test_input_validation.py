@@ -291,6 +291,15 @@ class TestFluidSimBounds:
         assert response.status_code == 422
 
 
+def test_runtime_config_defaults_are_unrestricted():
+    response = client.get("/api/runtime-config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["default_analysis_scope"] == "organization"
+    assert "folder" in body["allowed_analysis_scopes"]
+    assert "organization" in body["allowed_analysis_scopes"]
+
+
 # ---------------------------------------------------------------------------
 # HBO model bounds: lookback_days now has Field(ge=1, le=90) like every other
 # endpoint (see LOOKBACK_ENDPOINTS above, which covers all three HBO routes

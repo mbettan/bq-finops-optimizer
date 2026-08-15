@@ -42,6 +42,8 @@ from .utils import (
     validate_analysis_scope,
     analysis_scope_from_params,
     information_schema_view,
+    _allowed_analysis_scopes,
+    _default_analysis_scope,
     build_project_filter,
     log_endpoint_start,
     log_endpoint_end,
@@ -94,16 +96,16 @@ app.include_router(report_router)
 
 @app.middleware("http")
 async def cache_static_assets(request: Request, call_next):
-    """Versioned assets (?v=hash) get long-lived caching; unversioned paths get no-store."""
+    """Do not long-cache JS/CSS. This app is redeployed often; immutable
+    year-long caching made Chrome keep an old app.js until a new tab.
+    ETag still allows cheap 304s on refresh.
+    """
     response = await call_next(request)
     path = request.url.path
     if path.startswith("/static/") and (path.endswith(".js") or path.endswith(".css")):
-        if "v=" in str(request.url.query):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        else:
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 @app.middleware("http")
@@ -226,9 +228,9 @@ def read_index():
             html
         )
         headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
-            "Expires": "0"
+            "Expires": "0",
         }
         return HTMLResponse(content=html, headers=headers)
     except Exception as e:
@@ -250,6 +252,18 @@ def get_about():
     making it the single source of truth for what's shown in the UI.
     """
     return _about_cache
+
+@app.get("/api/runtime-config")
+def get_runtime_config():
+    """Deployment defaults for analysis scope (env-driven; safe when unset)."""
+    return {
+        "default_analysis_scope": _default_analysis_scope(),
+        "allowed_analysis_scopes": sorted(_allowed_analysis_scopes()),
+        "default_org_project_id": os.environ.get("DEFAULT_ORG_PROJECT_ID", "").strip(),
+        "analysis_folder_id": os.environ.get("ANALYSIS_FOLDER_ID", "").strip(),
+        "analysis_folder_name": os.environ.get("ANALYSIS_FOLDER_NAME", "").strip(),
+    }
+
 
 @app.get("/api/meta/scope-map")
 def get_scope_map():
@@ -518,7 +532,7 @@ def run_static_schema_audit(params: StaticAuditParams):
                 f"▶ Static Schema Audit — project={resolved_project} | region={region_val} | "
                 f"scope={scope} | safety_cap=800 GiB (default)"
             )
-            storage_view = information_schema_view("TABLE_STORAGE", scope)
+            storage_view = information_schema_view('TABLE_STORAGE', scope)
             proj_sql = f"""
             SELECT DISTINCT project_id 
             FROM `{resolved_project}`.`{region_val}`.INFORMATION_SCHEMA.{storage_view}
@@ -812,6 +826,9 @@ def run_query_to_df(scoped_client: bigquery.Client, sql: str, description: str =
 
 def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
     focus_clause, focus_params = build_project_filter(params.focus_projects)
+    storage_project = _safe_ident(
+        (params.org_project_id or scoped_client.project).strip(), "org_project_id"
+    )
     sql = f"""
     SELECT
        project_id AS project_name,
@@ -823,7 +840,7 @@ def get_storage_metrics(scoped_client: bigquery.Client, params: StorageParams):
        SUM(fail_safe_physical_bytes) AS fail_safe_physical_bytes,
        SUM(long_term_physical_bytes) AS long_term_physical_bytes
     FROM
-       `{scoped_client.project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("TABLE_STORAGE", analysis_scope_from_params(params))}
+       `{storage_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('TABLE_STORAGE', analysis_scope_from_params(params))}
     WHERE TRUE
        AND total_physical_bytes > 0
        AND deleted = false
@@ -960,7 +977,11 @@ def get_physical_datasets(scoped_client: bigquery.Client, projects: set, region:
     return physical_datasets, failed_projects
 
 def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, params=None):
-    sql = f"SELECT option_value FROM `{scoped_client.project}`.`{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
+    options_project = _safe_ident(
+        ((getattr(params, "org_project_id", None) if params is not None else None) or scoped_client.project).strip(),
+        "org_project_id",
+    )
+    sql = f"SELECT option_value FROM `{options_project}`.`{region}`.INFORMATION_SCHEMA.ORGANIZATION_OPTIONS WHERE option_name = 'default_storage_billing_model'"
     logger.info(f"Checking Organization Default Storage Billing Model for {region}")
     try:
         results = run_query_and_log(scoped_client, sql, "Org Storage Billing Model", params=params)
@@ -1102,7 +1123,7 @@ def analyze_jobs(params: JobAnalysisParams):
           NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0) AS actual_duration_ms,
           {duration_expression} AS billed_duration_ms
         FROM
-          `{org_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+          `{org_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE
           creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND state = 'DONE'
@@ -1273,7 +1294,7 @@ def analyze_storage_hygiene(params: HygieneParams):
           time_travel_physical_bytes / POW(1024,3) AS time_travel_gb,
           SAFE_DIVIDE(time_travel_physical_bytes, active_physical_bytes) AS churn_ratio,
           IF(time_travel_physical_bytes > 0.5 * active_physical_bytes, 'High Churn/Recreate Detected', 'Healthy') AS health_status
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("TABLE_STORAGE", analysis_scope_from_params(params))}
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('TABLE_STORAGE', analysis_scope_from_params(params))}
         WHERE
           total_physical_bytes > 0
           AND deleted = FALSE
@@ -1411,7 +1432,7 @@ def analyze_dml_abuse(params: DMLAbuseParams):
           COUNT(DISTINCT DATE(creation_time)) AS active_days,
           SAFE_DIVIDE(COUNT(job_id), GREATEST(COUNT(DISTINCT DATE(creation_time)), 1)) AS avg_inserts_per_day
         FROM
-          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+          `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE
           statement_type = 'INSERT'
           AND state = 'DONE'
@@ -1467,7 +1488,7 @@ def analyze_mv_costs(params: DMLAbuseParams):
         # 1. First discover which projects have destination tables (org-wide)
         projects_sql = f"""
         SELECT DISTINCT destination_table.project_id AS project_id
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND destination_table.table_id IS NOT NULL
@@ -1512,7 +1533,7 @@ def analyze_mv_costs(params: DMLAbuseParams):
           destination_table.dataset_id AS dataset_id,
           destination_table.table_id AS table_id,
           total_slot_ms
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND destination_table.table_id IS NOT NULL
@@ -1578,7 +1599,7 @@ def analyze_query_linter(params: AntiPatternParams):
         else:
             projects_sql = f"""
             SELECT DISTINCT project_id 
-            FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+            FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
               AND job_type = 'QUERY'
               AND project_id IS NOT NULL
@@ -1665,7 +1686,7 @@ def analyze_data_skew(params: AntiPatternParams):
             stage.compute_ms_avg AS avg_compute_ms,
             stage.compute_ms_max AS max_compute_ms
           FROM
-            `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))},
+            `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))},
             UNNEST(job_stages) AS stage
           WHERE
             creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
@@ -1758,7 +1779,7 @@ def analyze_batch_candidates(params: AntiPatternParams):
     # Prefer the scoped multi-project jobs view; fall back to project scope when
     # the caller lacks the corresponding IAM role. A dry run costs nothing and
     # never executes.
-    jobs_view = information_schema_view("JOBS", analysis_scope_from_params(params))
+    jobs_view = information_schema_view('JOBS', analysis_scope_from_params(params))
     probe_sql = f"SELECT 1 FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.{jobs_view} LIMIT 1"
     jobs_target_view = f"INFORMATION_SCHEMA.{jobs_view}"
     try:
@@ -2147,7 +2168,7 @@ def analyze_ai_query(params: AIParams):
             (SELECT COALESCE(SUM(s.shuffle_output_bytes_spilled), 0) FROM UNNEST(job_stages) s) AS bytes_spilled,
             STRUCT(job_id, project_id, user_email, total_bytes_billed, total_slot_ms, creation_time) AS job_meta
           FROM
-            `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+            `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
           WHERE
             job_type = 'QUERY'
             AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
@@ -2187,7 +2208,7 @@ def analyze_ai_query(params: AIParams):
         try:
             discovery_results = run_query_and_log(scoped_client, discovery_sql, f"AI Query Discovery ({strat})", params=params, query_parameters=focus_params)
         except gax_exc.Forbidden as e:
-            jobs_view = information_schema_view("JOBS", analysis_scope_from_params(params))
+            jobs_view = information_schema_view('JOBS', analysis_scope_from_params(params))
             logger.error(f"IAM 403 Access Denied for {jobs_view}: {e}")
             raise HTTPException(
                 status_code=403,
@@ -2803,7 +2824,7 @@ def analyze_bi_engine(params: BIParams):
           ARRAY_TO_STRING(
             ARRAY(SELECT code FROM UNNEST(bi_engine_statistics.bi_engine_reasons)), ', '
           ) AS failure_reasons
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE 
           job_type = 'QUERY'
           AND creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
@@ -2923,7 +2944,7 @@ def analyze_governance(params: GovernanceParams):
               table_schema AS dataset_id,
               SUM(total_physical_bytes) AS total_bytes
             FROM
-              `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("TABLE_STORAGE", analysis_scope_from_params(params))}
+              `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('TABLE_STORAGE', analysis_scope_from_params(params))}
             WHERE total_physical_bytes > 0
               {focus_clause}
             GROUP BY 1, 2
@@ -3060,7 +3081,7 @@ def analyze_mv_rejections(params: JobGovernanceParams):
           mv.table_reference.table_id AS mv_name,
           mv.chosen,
           mv.rejected_reason
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))},
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))},
         UNNEST(materialized_view_statistics.materialized_view) AS mv
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND mv.chosen = false
@@ -3108,7 +3129,7 @@ def analyze_resource_warnings(params: JobGovernanceParams):
           user_email,
           project_id,
           query_info.resource_warning
-        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND query_info.resource_warning IS NOT NULL
           {focus_clause}
@@ -3158,7 +3179,7 @@ def analyze_slots(params: SlotsParams):
      reservation_id,
      SUM(period_slot_ms) / 1000 AS concurrent_slots
     FROM
-     `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS_TIMELINE", analysis_scope_from_params(params))}
+     `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS_TIMELINE', analysis_scope_from_params(params))}
     WHERE
      period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
      AND reservation_id IS NOT NULL
@@ -3379,7 +3400,7 @@ def get_tiered_recommendations(params: TieredRecParams):
         """
     
     try:
-        sql = get_sql(information_schema_view("JOBS_TIMELINE", analysis_scope_from_params(params)))
+        sql = get_sql(information_schema_view('JOBS_TIMELINE', analysis_scope_from_params(params)))
 
         try:
             results = run_query_and_log(scoped_client, sql, "Tiered Recommendations (Scoped)", params=params)
@@ -3447,7 +3468,7 @@ def analyze_slot_utilization(params: SlotUtilizationParams):
         period_start,
         SUM(period_slot_ms) AS total_slot_ms
       FROM
-        `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS_TIMELINE", analysis_scope_from_params(params))}
+        `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS_TIMELINE', analysis_scope_from_params(params))}
       WHERE
         period_start > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
@@ -3525,7 +3546,7 @@ def simulate_slots(params: SlotSimulationParams):
     SELECT
       TIMESTAMP_TRUNC(period_start, MINUTE) AS usage_minute,
       SUM(period_slot_ms) / (1000 * 60) AS avg_slots
-    FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS_TIMELINE", analysis_scope_from_params(params))}
+    FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS_TIMELINE', analysis_scope_from_params(params))}
     WHERE 
       period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'
@@ -3891,7 +3912,7 @@ def simulate_fluid_scaling(params: FluidSimParams):
     t0 = log_endpoint_start("Fluid Simulation", params, _logger=logger)
     try:
         client, org_project = init_bq_client_and_resolve_project(params)
-        jobs_view = information_schema_view("JOBS", analysis_scope_from_params(params))
+        jobs_view = information_schema_view('JOBS', analysis_scope_from_params(params))
         sql = _render_sql_local(
             _SQL_JOBS,
             org_project=org_project,
@@ -4259,7 +4280,7 @@ def get_peak_slots(params: PeakSlotsParams):
     sql = f"""
     WITH concurrent_usage AS (
         SELECT period_start, SUM(period_slot_ms) / 1000 AS concurrent_slots
-        FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS_TIMELINE", analysis_scope_from_params(params))}
+        FROM `{resolved_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS_TIMELINE', analysis_scope_from_params(params))}
         WHERE 
           period_start >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
@@ -4312,7 +4333,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
         APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
       FROM
-        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
       WHERE
         creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
@@ -4341,7 +4362,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         COUNT(*) AS total_queries,
         ROW_NUMBER() OVER (PARTITION BY j.reservation_id ORDER BY COUNT(*) DESC) AS rank
       FROM
-        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))} AS j
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))} AS j
       JOIN
         flagged_hours
       ON
@@ -4390,7 +4411,7 @@ def analyze_workload_profile(params: SlotProfilerParams):
         AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
         APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
       FROM
-        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
       WHERE
         creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
@@ -4478,7 +4499,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
         AVG(total_slot_ms / NULLIF(TIMESTAMP_DIFF(end_time, start_time, MILLISECOND), 0)) AS avg_slots_per_query,
         APPROX_QUANTILES(TIMESTAMP_DIFF(end_time, start_time, SECOND), 100)[OFFSET(50)] AS median_duration_seconds
       FROM
-        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
       WHERE
         creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
@@ -4511,7 +4532,7 @@ def get_top_profiler_queries(params: SlotProfilerParams):
         end_time,
         query_info.query_hashes.normalized_literals AS query_hash
       FROM
-        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+        `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
       WHERE
         creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
         AND job_type = 'QUERY'
@@ -4661,7 +4682,7 @@ def get_top_spenders(params: UserProfilerParams):
         4
       ) AS primary_reservations
     FROM
-      `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}
+      `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
     WHERE
       creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
       AND job_type = 'QUERY'

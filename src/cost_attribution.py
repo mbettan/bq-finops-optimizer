@@ -150,7 +150,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
         # params.admin_project_id or resolved_project, validated by _safe_ident
         # and reject_dummy_project. The else branch (region-scoped
         # INFORMATION_SCHEMA.JOBS) was unreachable dead code.
-        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view("JOBS", analysis_scope_from_params(params))}"
+        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}"
             
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)

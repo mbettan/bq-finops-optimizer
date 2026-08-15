@@ -237,6 +237,10 @@
                         <span class="label">Region:</span>
                         <span class="value" id="current-region">region-us</span>
                     </div>
+                    <div class="info-item" id="current-folder-container" style="display: none;">
+                        <span class="label">Folder:</span>
+                        <span class="value" id="current-folder">Not Set</span>
+                    </div>
                     <div class="info-item" id="scope-badge-container" style="display: none;">
                         <span class="label">Scope:</span>
                         <span class="value" id="scope-badge" style="color: var(--accent-primary); font-weight: 600;"></span>
@@ -504,10 +508,15 @@
                                     <option value="folder">Folder-wide</option>
                                     <option value="project">Project only</option>
                                 </select>
-                                <small>
+                                <small id="cfg-analysis-scope-help">
                                     Controls which <code>INFORMATION_SCHEMA</code> views multi-project modules query.
                                     Folder-wide uses the parent folder of the Execution Project (and its subfolders).
                                 </small>
+                            </div>
+                            <div class="form-group" id="cfg-folder-group" hidden>
+                                <label for="cfg-folder-name">Folder <span class="tooltip" data-tooltip="JOBS_BY_FOLDER / TABLE_STORAGE_BY_FOLDER cover this folder and all of its subfolders."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
+                                <input type="text" id="cfg-folder-name" readonly>
+                                <small>Read-only. Folder-wide analysis uses this folder (parent of the Execution Project) and its subfolders.</small>
                             </div>
                             <div class="form-group">
                                 <label for="cfg-region">Region <span class="tooltip" data-tooltip="The BigQuery region where your datasets and jobs are located."><i class="fa-solid fa-circle-info" style="margin-left: 0.25rem; opacity: 0.7;"></i></span></label>
@@ -3346,6 +3355,6 @@
     <!-- Notification Container -->
     <div id="notification-container"></div>
 
-    <script src="static/app.js"></script>
+    <script src="static/app.js?v=202608142315"></script>
 </body>
 </html>

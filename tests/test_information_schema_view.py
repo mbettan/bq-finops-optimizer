@@ -75,3 +75,28 @@ def test_analysis_scope_from_params_reads_field():
         analysis_scope = "folder"
 
     assert analysis_scope_from_params(_P()) == "folder"
+
+
+def test_runtime_config_includes_folder_when_env_set(monkeypatch, test_client):
+    monkeypatch.setenv("DEFAULT_ANALYSIS_SCOPE", "folder")
+    monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "folder")
+    monkeypatch.setenv("ANALYSIS_FOLDER_ID", "848210481602")
+    monkeypatch.setenv("ANALYSIS_FOLDER_NAME", "syy-df")
+
+    response = test_client.get("/api/runtime-config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["default_analysis_scope"] == "folder"
+    assert body["allowed_analysis_scopes"] == ["folder"]
+    assert body["analysis_folder_id"] == "848210481602"
+    assert body["analysis_folder_name"] == "syy-df"
+
+
+def test_validate_analysis_scope_respects_allowed_env(monkeypatch):
+    monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "folder")
+    monkeypatch.setenv("DEFAULT_ANALYSIS_SCOPE", "folder")
+    assert validate_analysis_scope(None) == "folder"
+    assert validate_analysis_scope("folder") == "folder"
+    with pytest.raises(HTTPException) as exc_info:
+        validate_analysis_scope("organization")
+    assert exc_info.value.status_code == 400
