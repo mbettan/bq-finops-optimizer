@@ -1,5 +1,5 @@
 resource "google_folder_iam_member" "runtime" {
-  for_each = var.iam_scope == "folder" ? toset(local.scope_sa_roles) : toset([])
+  for_each = var.manage_analysis_iam && var.iam_scope == "folder" ? toset(local.scope_sa_roles) : toset([])
 
   folder = var.folder_id
   role   = each.value

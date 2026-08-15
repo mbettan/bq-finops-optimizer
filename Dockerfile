@@ -1,6 +1,7 @@
-# P2: Digest-pinned base image for reproducible builds.
-# Regenerate with: docker pull python:3.11-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.11-slim
-FROM python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
+# P2: Digest-pinned multi-arch index (linux/amd64 + linux/arm64).
+# Do not pin a single-arch image digest from `docker inspect` on Apple Silicon;
+# Cloud Run requires linux/amd64.
+FROM python:3.11-slim@sha256:a630a63cdb314e2d138a2fca3e375e319e8568346ffafac5b980f888630ac4f1
 
 # Set working directory
 WORKDIR /app

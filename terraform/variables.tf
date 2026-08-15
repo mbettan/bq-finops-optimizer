@@ -41,9 +41,40 @@ variable "service_name" {
 }
 
 variable "sa_account_id" {
-  description = "Account ID (short name) for the runtime service account."
+  description = "Account ID (short name) for the runtime service account when creating one."
   type        = string
   default     = "bq-finops-optimizer-runtime"
+}
+
+variable "runtime_service_account_email" {
+  description = "Existing runtime SA email. When set, Terraform does not create a service account."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "resource_labels" {
+  description = "Labels applied to Cloud Run and Artifact Registry (org-policy compliant keys)."
+  type        = map(string)
+  default     = {}
+}
+
+variable "manage_analysis_iam" {
+  description = "Bind org- or folder-level BigQuery viewer roles on the runtime SA."
+  type        = bool
+  default     = true
+}
+
+variable "manage_iam" {
+  description = "Create project-level IAM bindings for the runtime SA and Cloud Build identities."
+  type        = bool
+  default     = true
+}
+
+variable "grant_runtime_act_as" {
+  description = "Grant Cloud Build and Compute SAs roles/iam.serviceAccountUser on the runtime SA."
+  type        = bool
+  default     = true
 }
 
 variable "repository_id" {
@@ -98,4 +129,12 @@ variable "placeholder_image" {
   description = "Initial container image until Cloud Build deploys the app image."
   type        = string
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
+variable "cloud_run_env" {
+  description = "Environment variables for the Cloud Run container."
+  type        = map(string)
+  default = {
+    AUTH_ENFORCED_UPSTREAM = "true"
+  }
 }

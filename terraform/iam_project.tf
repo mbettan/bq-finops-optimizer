@@ -1,6 +1,4 @@
 locals {
-  runtime_sa_member = "serviceAccount:${google_service_account.runtime.email}"
-
   project_sa_roles = [
     "roles/bigquery.jobUser",
     "roles/bigquery.metadataViewer",
@@ -9,7 +7,7 @@ locals {
 }
 
 resource "google_project_iam_member" "runtime" {
-  for_each = toset(local.project_sa_roles)
+  for_each = var.manage_iam ? toset(local.project_sa_roles) : toset([])
 
   project = var.project_id
   role    = each.value

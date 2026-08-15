@@ -2,10 +2,12 @@ resource "google_cloud_run_v2_service" "app" {
   name     = var.service_name
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
+  labels   = var.resource_labels
 
   template {
-    service_account = google_service_account.runtime.email
+    service_account = local.runtime_sa_email
     timeout         = "${var.cloud_run_timeout_seconds}s"
+    labels          = var.resource_labels
 
     scaling {
       min_instance_count = 0
@@ -15,9 +17,12 @@ resource "google_cloud_run_v2_service" "app" {
     containers {
       image = var.placeholder_image
 
-      env {
-        name  = "AUTH_ENFORCED_UPSTREAM"
-        value = "true"
+      dynamic "env" {
+        for_each = var.cloud_run_env
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       ports {

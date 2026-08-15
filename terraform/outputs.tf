@@ -20,7 +20,7 @@ output "folder_id" {
 
 output "runtime_service_account_email" {
   description = "Email of the Cloud Run runtime service account."
-  value       = google_service_account.runtime.email
+  value       = local.runtime_sa_email
 }
 
 output "artifact_registry_repository" {

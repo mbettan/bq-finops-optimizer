@@ -10,19 +10,25 @@ locals {
 }
 
 resource "google_project_iam_member" "cloudbuild_artifact_writer" {
+  count = var.manage_iam ? 1 : 0
+
   project = var.project_id
   role    = "roles/artifactregistry.writer"
   member  = "serviceAccount:${local.cloudbuild_sa}"
 }
 
 resource "google_project_iam_member" "cloudbuild_run_developer" {
+  count = var.manage_iam ? 1 : 0
+
   project = var.project_id
   role    = "roles/run.developer"
   member  = "serviceAccount:${local.cloudbuild_sa}"
 }
 
 resource "google_service_account_iam_member" "cloudbuild_runtime_user" {
-  service_account_id = google_service_account.runtime.name
+  count = var.grant_runtime_act_as ? 1 : 0
+
+  service_account_id = local.runtime_sa_name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${local.cloudbuild_sa}"
 }

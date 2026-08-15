@@ -48,8 +48,21 @@ def test_required_terraform_and_cloudbuild_files_exist():
 
 
 def test_private_tfvars_and_state_are_not_committed():
-    assert not (TERRAFORM / "terraform.tfvars").exists()
-    assert not list(TERRAFORM.glob("*.tfstate*"))
+    gitignore = _read(ROOT / ".gitignore")
+    assert "terraform/terraform.tfvars" in gitignore
+    assert "terraform/*.tfstate" in gitignore
+
+
+def test_existing_runtime_service_account_is_supported():
+    variables = _read(TERRAFORM / "variables.tf")
+    assert 'variable "runtime_service_account_email"' in variables
+    service_account = _read(TERRAFORM / "service_account.tf")
+    assert "create_runtime_sa" in service_account
+    assert "data \"google_service_account\" \"existing_runtime\"" in service_account
+    cloud_run = _read(TERRAFORM / "cloud_run.tf")
+    assert "local.runtime_sa_email" in cloud_run
+    cloudbuild = _read(ROOT / "cloudbuild.yaml")
+    assert "_RUNTIME_SA" in cloudbuild
 
 
 def test_examples_and_defaults_have_no_customer_secrets():
@@ -84,8 +97,9 @@ def test_invoker_and_deployer_defaults_are_empty():
 
 def test_cloud_run_is_authenticated_and_ignores_image_rollouts():
     cloud_run = _read(TERRAFORM / "cloud_run.tf")
+    variables = _read(TERRAFORM / "variables.tf")
     assert "INGRESS_TRAFFIC_ALL" in cloud_run
-    assert "AUTH_ENFORCED_UPSTREAM" in cloud_run
+    assert "AUTH_ENFORCED_UPSTREAM" in variables
     assert "ignore_changes" in cloud_run
     assert "template[0].containers[0].image" in cloud_run
     cloudbuild = _read(ROOT / "cloudbuild.yaml")
