@@ -42,7 +42,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from .constants import __version__
-from .utils import _IDENT_RE
+from .utils import _normalize_region
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,8 @@ def cache_key(module: str, params: BaseModel) -> Optional[Tuple[str, str, Dict[s
         return None
 
     org = scope_component(d.pop("org_project_id", None))
-    region = scope_component(d.pop("region", None) or "region-us")
+    region_raw = d.pop("region", None) or "region-us"
+    region = scope_component(_normalize_region(region_raw))
     if not org or not region:
         # No explicit org scope -> the handler would fall back to the ADC
         # default project.  Caching under a guessed scope risks serving one
@@ -187,11 +188,18 @@ def cache_key(module: str, params: BaseModel) -> Optional[Tuple[str, str, Dict[s
     for k in _KEY_EXCLUDE:
         d.pop(k, None)
 
-    # Match validate_focus_projects() (utils.py:107) -- trim, dedupe -- then
-    # sort, because ["a","b"] and ["b","a"] are the same scan.
+    # Match validate_focus_projects() (utils.py:107) -- trim, dedupe, sort.
+    # If empty or None, omit entirely so focus_projects=[] and focus_projects=None
+    # produce the exact same cache key.
     fp = d.get("focus_projects")
     if isinstance(fp, list):
-        d["focus_projects"] = sorted({str(x).strip() for x in fp if str(x).strip()})
+        fp_clean = sorted({str(x).strip() for x in fp if str(x).strip()})
+        if fp_clean:
+            d["focus_projects"] = fp_clean
+        else:
+            d.pop("focus_projects", None)
+    elif fp is None:
+        d.pop("focus_projects", None)
 
     canon = json.dumps(d, sort_keys=True, separators=(",", ":"), default=str)
     param_hash = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
@@ -409,11 +417,17 @@ def load(module: str, params: BaseModel) -> Optional[CacheHit]:
         return None
 
 
-def store(module: str, params: BaseModel, data: Any, ttl_s: Optional[int] = None) -> None:
+def store(
+    module: str,
+    params: Optional[BaseModel],
+    data: Any,
+    ttl_s: Optional[int] = None,
+    precomputed_key: Optional[Tuple[str, str, Dict[str, Any]]] = None,
+) -> None:
     """Write an entry plus its latest-pointer.  Never raises."""
     if not _backend.enabled:
         return
-    key = cache_key(module, params)
+    key = precomputed_key if precomputed_key is not None else (cache_key(module, params) if params is not None else None)
     if key is None:
         return
     prefix, param_hash, digest = key
@@ -577,9 +591,17 @@ def cached_analysis(module: str, ttl_s: Optional[int] = None):
                     response.headers["X-Cache"] = "OFF"
                 return fn(*args, **kwargs)
 
+            key = cache_key(module, params)
+            if key is None:
+                if response is not None:
+                    response.headers["X-Cache"] = "UNSCOPED"
+                return fn(*args, **kwargs)
+            flight_key = f"{key[0]}/{key[1]}"
+
             if refresh:
-                result = fn(*args, **kwargs)
-                store(module, params, result, ttl_s)
+                with _single_flight(flight_key):
+                    result = fn(*args, **kwargs)
+                    store(module, params, result, ttl_s, precomputed_key=key)
                 if response is not None:
                     response.headers["X-Cache"] = "BYPASS"
                 return result
@@ -589,13 +611,6 @@ def cached_analysis(module: str, ttl_s: Optional[int] = None):
                 if response is not None:
                     response.headers.update(_hit_headers(hit))
                 return hit.data
-
-            key = cache_key(module, params)
-            if key is None:
-                if response is not None:
-                    response.headers["X-Cache"] = "UNSCOPED"
-                return fn(*args, **kwargs)
-            flight_key = f"{key[0]}/{key[1]}"
 
             with _single_flight(flight_key):
                 # Double-check: another thread may have populated it while we
@@ -607,7 +622,7 @@ def cached_analysis(module: str, ttl_s: Optional[int] = None):
                         response.headers["X-Cache"] = "HIT"
                     return hit.data
                 result = fn(*args, **kwargs)
-                store(module, params, result, ttl_s)
+                store(module, params, result, ttl_s, precomputed_key=key)
 
             if response is not None:
                 response.headers["X-Cache"] = "MISS"

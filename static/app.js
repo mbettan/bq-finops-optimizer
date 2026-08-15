@@ -189,7 +189,41 @@ function safeSetLocalStorage(key, value) {
    ============================================================ */
 const CacheClient = (() => {
   let _status = null; // endpoint -> status entry
-  const ENDPOINT_TO_MODULE = {};
+  const ENDPOINT_TO_MODULE = {
+    "/api/storage/analyze": "storage",
+    "/api/storage/static_audit": "static_audit",
+    "/api/storage/hygiene": "hygiene",
+    "/api/storage/active_assist": "active_assist",
+    "/api/governance/analyze": "governance",
+    "/api/jobs/analyze": "jobs",
+    "/api/slots/analyze": "slots",
+    "/api/slots/simulate": "slots_sim",
+    "/api/slots/tiered_recommendations": "slots_tiered",
+    "/api/slots/utilization": "slots_util",
+    "/api/slots/actual_provisioning": "slots_actual",
+    "/api/slots/peak": "slots_peak",
+    "/api/slots/fluid_simulation": "fluid_sim",
+    "/api/slots/profiler": "profiler",
+    "/api/slots/profiler/queries": "profiler_queries",
+    "/api/users/top_spenders": "top_spenders",
+    "/api/cost-attribution/calculate": "cost_attribution",
+    "/api/antipatterns/dml": "ap_dml",
+    "/api/antipatterns/mv": "ap_mv",
+    "/api/antipatterns/linter": "ap_linter",
+    "/api/antipatterns/skew": "ap_skew",
+    "/api/antipatterns/batch_candidates": "ap_batch",
+    "/api/resource_warnings/analyze": "resource_warnings",
+    "/api/mv/analyze": "mv_rejections",
+    "/api/bi/analyze": "bi",
+    "/api/hbo/analyze": "hbo",
+    "/api/hbo/optimizations": "hbo_optimizations",
+    "/api/hbo/summary": "hbo_summary",
+    "/api/hbo/performance_insights": "hbo_performance",
+    "/api/hbo/status": "hbo_status",
+    "/api/fluid-scaling/estimate": "fluid_estimate",
+    "/api/fluid-scaling/status": "fluid_status",
+    "/api/ai/analyze": "ai_doctor",
+  };
 
   function scopeQuery() {
     const p = new URLSearchParams();
@@ -6925,20 +6959,28 @@ write_client.append_rows(iter([request]))`;
         'active_assist': 'bq_active_assist_results',
         'jobs': 'bq_job_results',
         'slots': 'bq_slots_results',
-        'simulation': 'bq_slots_simulation_results',
-        'tiered': 'bq_slots_tiered',
-        'fluid': 'bq_fluid_simulation_data',
+        'slots_sim': 'bq_slots_simulation_results',
+        'slots_tiered': 'bq_slots_tiered',
+        'slots_util': 'bq_slots_utilization',
+        'slots_actual': 'bq_slots_actual_provisioning',
+        'fluid_sim': 'bq_fluid_simulation_data',
         'top_spenders': 'bq_top_spenders',
         'cost_attribution': 'bq_cost_attribution_results',
-        'linter': 'bq_linter_results',
-        'batch_candidates': 'bq_batch_results',
-        'dml': 'bq_antipatterns_results',
-        'skew': 'bq_skew_results',
-        'mv': 'bq_mv_results',
-        'warnings': 'bq_performance_results',
-        'ai': 'bq_ai_results',
+        'ap_linter': 'bq_linter_results',
+        'ap_batch': 'bq_batch_results',
+        'ap_dml': 'bq_antipatterns_results',
+        'ap_skew': 'bq_skew_results',
+        'ap_mv': 'bq_mv_results',
+        'resource_warnings': 'bq_resource_warning_results',
+        'mv_rejections': 'bq_mv_rejection_results',
+        'ai_doctor': 'bq_ai_results',
         'bi': 'bq_bi_results',
-        'hbo': 'bq_hbo_results'
+        'hbo': 'bq_hbo_results',
+        'hbo_optimizations': 'bq_hbo_optimizations',
+        'hbo_summary': 'bq_hbo_summary',
+        'hbo_performance': 'bq_performance_results',
+        'hbo_status': 'bq_hbo_status',
+        'fluid_estimate': 'bq_fluid_estimate_data'
     };
 
     /**
@@ -6948,14 +6990,15 @@ write_client.append_rows(iter([request]))`;
     async function hydrateFromServerCache() {
         if (!window.CacheClient) return;
         const status = await CacheClient.refreshStatus();
-        if (!status || !Array.isArray(status) || status.length === 0) return;
+        if (!status || typeof status !== 'object' || Object.keys(status).length === 0) return;
         paintCacheBadges();
 
         const org = state.orgProject || localStorage.getItem('bq_org_project') || '';
         const region = state.region || localStorage.getItem('bq_region') || 'region-us';
         if (!org) return;
 
-        const freshEntries = status.filter(entry => entry.fresh && MODULE_TO_STORAGE_KEYS[entry.module]);
+        const statusList = Object.values(status);
+        const freshEntries = statusList.filter(entry => entry.fresh && MODULE_TO_STORAGE_KEYS[entry.module]);
         if (freshEntries.length === 0) return;
 
         let loadedCount = 0;

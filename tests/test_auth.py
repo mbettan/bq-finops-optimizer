@@ -82,10 +82,10 @@ def test_unauthenticated_requests_redirect_or_401(monkeypatch):
 def test_authenticated_cookie_allows_request(monkeypatch):
     monkeypatch.setattr(auth, "GOOGLE_CLIENT_ID", "dummy-client-id.apps.googleusercontent.com")
     monkeypatch.setattr(auth, "GOOGLE_CLIENT_SECRET", "dummy-secret")
-    monkeypatch.setattr(auth, "ALLOWED_DOMAINS", set())
-    monkeypatch.setattr(auth, "ALLOWED_USERS", set())
+    monkeypatch.setattr(auth, "ALLOWED_DOMAINS", {"example.com"})
+    monkeypatch.setattr(auth, "ALLOWED_USERS", {"user@example.com"})
     
-    cookie_val = auth.create_session_cookie_value({"email": "user@example.com"})
+    cookie_val = auth.create_session_cookie_value({"email": "user@example.com", "hd": "example.com"})
     client.cookies.set(auth.AUTH_SESSION_COOKIE, cookie_val)
     
     # /auth/me returns user details
@@ -95,3 +95,33 @@ def test_authenticated_cookie_allows_request(monkeypatch):
     assert resp.json()["email"] == "user@example.com"
     
     client.cookies.clear()
+
+
+def test_default_deny_when_no_allowlists_configured(monkeypatch):
+    monkeypatch.setattr(auth, "ALLOWED_DOMAINS", set())
+    monkeypatch.setattr(auth, "ALLOWED_USERS", set())
+    assert not auth.is_user_authorized("anyone@gmail.com", "gmail.com")
+    assert not auth.is_user_authorized("anyone@corp.com", "corp.com")
+
+
+def test_callback_xss_sanitization(monkeypatch):
+    monkeypatch.setattr(auth, "GOOGLE_CLIENT_ID", "dummy-client-id")
+    monkeypatch.setattr(auth, "GOOGLE_CLIENT_SECRET", "dummy-secret")
+    
+    xss_payload = "<script>alert(1)</script>"
+    resp = client.get(f"/auth/callback?error={xss_payload}")
+    assert resp.status_code == 400
+    assert "<script>" not in resp.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in resp.text
+
+
+def test_docs_and_openapi_require_auth(monkeypatch):
+    monkeypatch.setattr(auth, "GOOGLE_CLIENT_ID", "dummy-client-id")
+    monkeypatch.setattr(auth, "GOOGLE_CLIENT_SECRET", "dummy-secret")
+    
+    resp_docs = client.get("/docs", headers={"accept": "text/html"}, follow_redirects=False)
+    assert resp_docs.status_code == 302
+    assert resp_docs.headers["location"] == "/auth/login"
+    
+    resp_openapi = client.get("/openapi.json", headers={"accept": "application/json"})
+    assert resp_openapi.status_code == 401

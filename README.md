@@ -235,11 +235,19 @@ In the browser, open the **Settings** panel (gear icon) and set:
 
 **Input Validation:** All project ID fields are validated on save against the GCP project ID specification (`^[a-z][a-z0-9\-]{5,29}$`). Whitespace is stripped automatically (handles bad copy-paste). Invalid values block the save and show specific error messages. When settings change, all cached module results are flushed from `localStorage` to prevent stale data from a previous scope.
 
-### 4. Environment Variables & Caching Options
+### 4. Environment Variables & Authentication Options
+
+The application requires authentication to be configured before starting. You can either deploy behind Cloud Run IAM / IAP or enable direct Google OAuth 2.0.
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `AUTH_ENFORCED_UPSTREAM` | *Required* | Confirms the instance runs behind Cloud Run IAM or IAP (`true`). |
+| `AUTH_ENFORCED_UPSTREAM` | — | Set `true` if deployed behind Cloud Run IAM (`--no-allow-unauthenticated`) or Identity-Aware Proxy (IAP). |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth 2.0 Web Client ID for direct browser login. |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth 2.0 Client Secret for direct browser login. |
+| `AUTH_SECRET_KEY` | *auto* | 32-byte hex key for signing session and state cookies across multi-instance Cloud Run deployments. |
+| `ALLOWED_DOMAINS` | — | Comma-separated list of allowed Google Workspace domains (e.g. `example.com,corp.internal`). |
+| `ALLOWED_USERS` | — | Comma-separated list of allowed user email addresses (e.g. `finops@example.com,lead@example.com`). |
+| `AUTH_SESSION_MAX_AGE` | `604800` | Session cookie lifetime in seconds (default: 7 days). |
 | `CACHE_BACKEND` | `off` | Result cache backend: `file` (for GCS FUSE or local directory), `gcs` (REST fallback), or `off`. |
 | `CACHE_DIR` | `/cache` | Local path or Cloud Run GCS volume mount path (e.g. `./.cache` for local development). |
 | `CACHE_TTL_DEFAULT` | `3600` | Default result TTL in seconds (1 hour). |

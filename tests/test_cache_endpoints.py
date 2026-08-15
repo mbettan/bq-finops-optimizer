@@ -125,3 +125,22 @@ def test_cache_control_endpoints(client, mock_bq_all):
     del_scope = client.delete("/api/cache?org_project_id=test-project&region=region-us")
     assert del_scope.status_code == 200
     assert del_scope.json()["deleted"] >= 1
+
+
+def test_focus_projects_empty_list_caches_and_hits(client, mock_bq_all):
+    """Ensure that focus-scoped endpoints mutating params.focus_projects from [] to None
+    or normalizing region='us' to 'region-us' properly cache and HIT on subsequent reads."""
+    payload = {
+        "org_project_id": "test-project",
+        "region": "us",
+        "lookback_days": 30,
+        "focus_projects": [],
+    }
+    r1 = client.post("/api/storage/static_audit", json=payload)
+    assert r1.status_code == 200
+    assert r1.headers.get("X-Cache") == "MISS"
+
+    r2 = client.post("/api/storage/static_audit", json=payload)
+    assert r2.status_code == 200
+    assert r2.headers.get("X-Cache") == "HIT"
+    assert r1.json() == r2.json()

@@ -66,6 +66,17 @@ class TestKeyDerivation:
     def test_unscoped_request_is_not_cacheable(self):
         assert C.cache_key("jobs", P()) is None
 
+    def test_empty_focus_projects_matches_none_focus_projects(self):
+        a = C.cache_key("jobs", P(org_project_id="p", focus_projects=[]))
+        b = C.cache_key("jobs", P(org_project_id="p", focus_projects=None))
+        assert a[1] == b[1]
+
+    def test_unprefixed_region_normalizes_to_region_us(self):
+        a = C.cache_key("jobs", P(org_project_id="p", region="us"))
+        b = C.cache_key("jobs", P(org_project_id="p", region="region-us"))
+        assert a[0] == b[0]
+        assert a[1] == b[1]
+
 
 class TestScopeComponentSafety:
     @pytest.mark.parametrize("bad", [

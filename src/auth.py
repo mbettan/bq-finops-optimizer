@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -16,9 +17,9 @@ import secrets
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -102,6 +103,9 @@ def verify_google_id_token(token_str: str) -> Optional[Dict[str, Any]]:
         id_info = google_id_token.verify_oauth2_token(
             token_str, _google_request_adapter, GOOGLE_CLIENT_ID
         )
+        if not id_info.get("email_verified", False):
+            logger.warning("Google ID token email is not verified: %s", id_info.get("email"))
+            return None
         return id_info
     except Exception as e:
         logger.debug("Google ID token verification failed: %s", e)
@@ -111,16 +115,17 @@ def verify_google_id_token(token_str: str) -> Optional[Dict[str, Any]]:
 def is_user_authorized(email: str, hosted_domain: Optional[str] = None) -> bool:
     """Check if the user email or hosted domain matches configured allowlists."""
     email_clean = (email or "").strip().lower()
-    domain = hosted_domain or (email_clean.split("@")[-1] if "@" in email_clean else "")
+    domain = (hosted_domain or "").strip().lower()
 
-    # If no allowlist is configured, any authenticated Google account is permitted
+    # Default-deny when no allowlists are configured to prevent public access
     if not ALLOWED_DOMAINS and not ALLOWED_USERS:
-        return True
+        logger.warning("No ALLOWED_DOMAINS or ALLOWED_USERS configured -- denying access by default.")
+        return False
 
     if email_clean in ALLOWED_USERS:
         return True
 
-    if domain and domain.lower() in ALLOWED_DOMAINS:
+    if domain and domain in ALLOWED_DOMAINS:
         return True
 
     return False
@@ -201,14 +206,14 @@ def callback(request: Request, code: Optional[str] = None, state: Optional[str] 
         return RedirectResponse(url="/")
 
     if error:
-        return HTMLResponse(content=f"<h3>Authentication failed: {error}</h3><a href='/auth/login'>Try again</a>", status_code=400)
+        safe_error = html.escape(error)
+        return HTMLResponse(content=f"<h3>Authentication failed: {safe_error}</h3><a href='/auth/login'>Try again</a>", status_code=400)
 
     if not code or not state:
         return HTMLResponse(content="<h3>Invalid OAuth callback parameters</h3><a href='/auth/login'>Try again</a>", status_code=400)
 
     # Verify state cookie
     state_cookie = request.cookies.get(AUTH_STATE_COOKIE)
-    expected_state = _verify_and_unpack(state_cookie) if state_cookie and "." not in state_cookie else None
     # For state check, verify signature
     if not state_cookie or "." not in state_cookie:
         return HTMLResponse(content="<h3>OAuth state session expired.</h3><a href='/auth/login'>Please log in again</a>", status_code=400)
@@ -250,11 +255,12 @@ def callback(request: Request, code: Optional[str] = None, state: Optional[str] 
 
     if not is_user_authorized(email, hd):
         logger.warning("Unauthorized login attempt by %s (hd=%s)", email, hd)
+        safe_email = html.escape(email)
         return HTMLResponse(
             content=f"""
             <div style="font-family: system-ui, sans-serif; max-width: 500px; margin: 80px auto; padding: 30px; border: 1px solid #ff4444; border-radius: 8px; text-align: center; background: #fff5f5;">
                 <h2 style="color: #cc0000; margin-top: 0;">Access Denied</h2>
-                <p>Your Google account <strong>{email}</strong> is not authorized to access this FinOps application.</p>
+                <p>Your Google account <strong>{safe_email}</strong> is not authorized to access this FinOps application.</p>
                 <p style="font-size: 13px; color: #666;">Please sign in with an authorized organizational account.</p>
                 <div style="margin-top: 20px;">
                     <a href="/auth/login" style="background: #1a73e8; color: #fff; padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: 500;">Sign in with different account</a>
@@ -316,7 +322,7 @@ class GoogleAuthMiddleware(BaseHTTPMiddleware):
         if (
             path.startswith("/auth/")
             or path.startswith("/static/")
-            or path in ("/favicon.ico", "/favicon.png", "/docs", "/openapi.json", "/health")
+            or path in ("/favicon.ico", "/favicon.png", "/health")
         ):
             return await call_next(request)
 

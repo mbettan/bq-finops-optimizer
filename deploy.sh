@@ -213,24 +213,51 @@ log_success "Container image built successfully."
 # Authentication configuration
 GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}"
 GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:-}"
+AUTH_SECRET_KEY="${AUTH_SECRET_KEY:-}"
 ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-}"
 ALLOWED_USERS="${ALLOWED_USERS:-}"
 AUTH_FLAG="--no-allow-unauthenticated"
-ENV_VARS="CACHE_BACKEND=file,CACHE_DIR=/cache,CACHE_TTL_DEFAULT=${CACHE_TTL},LOG_LEVEL=INFO"
 
+# Use gcloud custom delimiter ^@^ to safely handle comma-separated values (e.g. ALLOWED_DOMAINS)
+ENV_LIST=()
+ENV_LIST+=("CACHE_BACKEND=file")
+ENV_LIST+=("CACHE_DIR=/cache")
+ENV_LIST+=("CACHE_TTL_DEFAULT=${CACHE_TTL}")
+ENV_LIST+=("LOG_LEVEL=INFO")
+
+IS_OAUTH_DEPLOY=false
 if [[ -n "${GOOGLE_CLIENT_ID}" && -n "${GOOGLE_CLIENT_SECRET}" ]]; then
+    IS_OAUTH_DEPLOY=true
     log_info "Configuring Google OAuth authentication (direct browser login enabled)..."
     AUTH_FLAG="--allow-unauthenticated"
-    ENV_VARS="${ENV_VARS},GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID},GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}"
+    
+    # Generate persistent AUTH_SECRET_KEY if not provided
+    if [[ -z "${AUTH_SECRET_KEY}" ]]; then
+        log_info "Generating persistent AUTH_SECRET_KEY for multi-instance session signing..."
+        AUTH_SECRET_KEY="$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")"
+    fi
+    
+    ENV_LIST+=("GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}")
+    ENV_LIST+=("GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}")
+    ENV_LIST+=("AUTH_SECRET_KEY=${AUTH_SECRET_KEY}")
+    
     if [[ -n "${ALLOWED_DOMAINS}" ]]; then
-        ENV_VARS="${ENV_VARS},ALLOWED_DOMAINS=${ALLOWED_DOMAINS}"
+        ENV_LIST+=("ALLOWED_DOMAINS=${ALLOWED_DOMAINS}")
     fi
     if [[ -n "${ALLOWED_USERS}" ]]; then
-        ENV_VARS="${ENV_VARS},ALLOWED_USERS=${ALLOWED_USERS}"
+        ENV_LIST+=("ALLOWED_USERS=${ALLOWED_USERS}")
+    fi
+    
+    if [[ -z "${ALLOWED_DOMAINS}" && -z "${ALLOWED_USERS}" ]]; then
+        log_warn "Neither ALLOWED_DOMAINS nor ALLOWED_USERS is set! The app will deny logins by default until configured."
     fi
 else
-    ENV_VARS="${ENV_VARS},AUTH_ENFORCED_UPSTREAM=true"
+    ENV_LIST+=("AUTH_ENFORCED_UPSTREAM=true")
 fi
+
+# Join with @ delimiter
+JOINED_ENV_VARS=$(IFS="@"; echo "${ENV_LIST[*]}")
+ENV_FLAG="^@^${JOINED_ENV_VARS}"
 
 gcloud run deploy "${SERVICE_NAME}" \
     --image="${IMAGE_TAG}" \
@@ -240,7 +267,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --execution-environment="gen2" \
     --add-volume="name=cache,type=cloud-storage,bucket=${CACHE_BUCKET}" \
     --add-volume-mount="volume=cache,mount-path=/cache" \
-    --set-env-vars="${ENV_VARS}" \
+    --set-env-vars="${ENV_FLAG}" \
     --memory="2Gi" \
     --cpu="1" \
     --min-instances="0" \
@@ -278,6 +305,15 @@ gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
     --role="roles/run.invoker" \
     --quiet &>/dev/null || true
 
+if [[ "${IS_OAUTH_DEPLOY}" != "true" ]]; then
+    log_info "Enabling native Cloud Run Identity-Aware Proxy (IAP) on ${SERVICE_NAME}..."
+    gcloud beta run services update "${SERVICE_NAME}" \
+        --project="${PROJECT_ID}" \
+        --region="${REGION}" \
+        --iap \
+        --quiet &>/dev/null || true
+fi
+
 # Grant IAP access to configured allowed domains / users if specified
 if [[ -n "${ALLOWED_DOMAINS}" ]]; then
     IFS=',' read -ra DOMAINS <<< "${ALLOWED_DOMAINS}"
@@ -311,6 +347,11 @@ fi
 
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format="value(status.url)")
 
+AUTH_DESC="Secured (IAM / IAP enabled)"
+if [[ "${IS_OAUTH_DEPLOY}" == "true" ]]; then
+    AUTH_DESC="Google OAuth 2.0 (Direct Browser Login)"
+fi
+
 echo ""
 echo -e "${GREEN}=================================================================="
 echo "🎉 Deployment Complete!"
@@ -319,25 +360,35 @@ echo -e "${NC}"
 echo "Service URL      : ${SERVICE_URL}"
 echo "Cache Mount      : gs://${CACHE_BUCKET} -> /cache"
 echo "Execution Env    : Cloud Run Gen 2 (gcsfuse enabled)"
-echo "Authentication   : Secured (IAM / IAP enabled)"
+echo "Authentication   : ${AUTH_DESC}"
 echo ""
-echo -e "${YELLOW}=================================================================="
-echo "🔐 Step 1: Turn on Identity-Aware Proxy (IAP) (1 minute)"
-echo "==================================================================${NC}"
-echo "1. Open the Identity-Aware Proxy Console:"
-echo "   👉 https://console.cloud.google.com/security/iap?project=${PROJECT_ID}"
-echo ""
-echo "2. If prompted for OAuth Consent Screen:"
-echo "   - User type : Internal"
-echo "   - App name  : BigQuery FinOps Optimizer"
-echo "   - Save & Continue"
-echo ""
-echo "3. In the IAP resources table, locate '${SERVICE_NAME}'."
-echo "4. Click the toggle switch under the IAP column to turn it ON (confirm in popup)."
-echo ""
-echo -e "${GREEN}Once enabled, open the application directly in Chrome:${NC}"
-echo "👉 ${SERVICE_URL}"
-echo ""
-echo "Or test via authenticated CLI proxy:"
-echo "  gcloud run services proxy ${SERVICE_NAME} --region ${REGION} --project ${PROJECT_ID}"
-echo ""
+
+if [[ "${IS_OAUTH_DEPLOY}" == "true" ]]; then
+    echo -e "${GREEN}Open the application directly in Chrome to log in:${NC}"
+    echo "👉 ${SERVICE_URL}"
+    echo ""
+    echo "Allowed Domains  : ${ALLOWED_DOMAINS:-<None>}"
+    echo "Allowed Users    : ${ALLOWED_USERS:-<None>}"
+    echo ""
+else
+    echo -e "${YELLOW}=================================================================="
+    echo "🔐 Step 1: Turn on Identity-Aware Proxy (IAP) (1 minute)"
+    echo "==================================================================${NC}"
+    echo "1. Open the Identity-Aware Proxy Console:"
+    echo "   👉 https://console.cloud.google.com/security/iap?project=${PROJECT_ID}"
+    echo ""
+    echo "2. If prompted for OAuth Consent Screen:"
+    echo "   - User type : Internal"
+    echo "   - App name  : BigQuery FinOps Optimizer"
+    echo "   - Save & Continue"
+    echo ""
+    echo "3. In the IAP resources table, locate '${SERVICE_NAME}'."
+    echo "4. Click the toggle switch under the IAP column to turn it ON (confirm in popup)."
+    echo ""
+    echo -e "${GREEN}Once enabled, open the application directly in Chrome:${NC}"
+    echo "👉 ${SERVICE_URL}"
+    echo ""
+    echo "Or test via authenticated CLI proxy:"
+    echo "  gcloud run services proxy ${SERVICE_NAME} --region ${REGION} --project ${PROJECT_ID}"
+    echo ""
+fi
