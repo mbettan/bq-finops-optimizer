@@ -198,6 +198,10 @@ if _log_level <= logging.DEBUG:
         "Do not leave this enabled in a shared or production deployment."
     )
 
+# Resolve analysis-scope env at import so ALLOWED_ANALYSIS_SCOPES typos
+# warn at deploy/startup, not on the first user request.
+_allowed_analysis_scopes()
+
 STATIC_DIR = Path(BASE_DIR) / "static"
 
 @lru_cache(maxsize=64)
@@ -988,7 +992,7 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, p
         for row in results:
             return row['option_value']
     except Exception as e:
-        raw_scope = getattr(params, "analysis_scope", None) if params is not None else None
+        raw_scope = getattr(params, "analysis_scope", None)
         scope = (raw_scope.strip().lower() if isinstance(raw_scope, str) else "") or "organization"
         if scope == "folder":
             logger.warning(

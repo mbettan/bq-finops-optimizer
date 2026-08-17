@@ -1394,7 +1394,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const newRegion = elements.cfgRegion.value;
-        const allowedScopes = ['organization', 'folder', 'project'];
+        const allowedScopes = Object.keys(ANALYSIS_SCOPE_META);
         const newAnalysisScope = elements.cfgAnalysisScope
             ? elements.cfgAnalysisScope.value
             : 'organization';
