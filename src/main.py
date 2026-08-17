@@ -988,7 +988,8 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, p
         for row in results:
             return row['option_value']
     except Exception as e:
-        scope = analysis_scope_from_params(params) if params is not None else "organization"
+        raw_scope = getattr(params, "analysis_scope", None) if params is not None else None
+        scope = (raw_scope.strip().lower() if isinstance(raw_scope, str) else "") or "organization"
         if scope == "folder":
             logger.warning(
                 "ORGANIZATION_OPTIONS unavailable in folder scope (%s). "

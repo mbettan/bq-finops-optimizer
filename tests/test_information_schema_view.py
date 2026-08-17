@@ -7,6 +7,8 @@ from src.utils import (
     information_schema_view,
     validate_analysis_scope,
     analysis_scope_from_params,
+    _allowed_analysis_scopes,
+    ANALYSIS_SCOPES,
 )
 
 
@@ -100,3 +102,17 @@ def test_validate_analysis_scope_respects_allowed_env(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         validate_analysis_scope("organization")
     assert exc_info.value.status_code == 400
+
+
+def test_allowed_analysis_scopes_ignores_unknown_values(monkeypatch):
+    monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "folder,organsation")
+    assert _allowed_analysis_scopes() == frozenset({"folder"})
+    assert validate_analysis_scope("folder") == "folder"
+    with pytest.raises(HTTPException):
+        validate_analysis_scope("organization")
+
+
+def test_allowed_analysis_scopes_falls_back_when_all_unknown(monkeypatch):
+    monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "organsation")
+    assert _allowed_analysis_scopes() == ANALYSIS_SCOPES
+    assert validate_analysis_scope("organization") == "organization"

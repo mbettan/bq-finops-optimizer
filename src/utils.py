@@ -114,8 +114,21 @@ def _allowed_analysis_scopes() -> frozenset:
     raw = os.environ.get("ALLOWED_ANALYSIS_SCOPES", "").strip()
     if not raw:
         return ANALYSIS_SCOPES
-    allowed = frozenset(s.strip().lower() for s in raw.split(",") if s.strip())
-    return allowed or ANALYSIS_SCOPES
+    requested = frozenset(s.strip().lower() for s in raw.split(",") if s.strip())
+    unknown = requested - ANALYSIS_SCOPES
+    if unknown:
+        logger.warning(
+            "Ignoring unknown ALLOWED_ANALYSIS_SCOPES values: %s",
+            ", ".join(sorted(unknown)),
+        )
+    allowed = requested & ANALYSIS_SCOPES
+    if not allowed:
+        logger.warning(
+            "ALLOWED_ANALYSIS_SCOPES has no valid scopes; using %s",
+            ", ".join(sorted(ANALYSIS_SCOPES)),
+        )
+        return ANALYSIS_SCOPES
+    return allowed
 
 
 def _default_analysis_scope() -> str:
@@ -414,6 +427,10 @@ def init_bq_client_and_resolve_project(params) -> tuple[bigquery.Client, str]:
 
     Jobs are created in BQ_EXECUTION_PROJECT when that env is set; the returned
     project id remains the Settings/org anchor used in INFORMATION_SCHEMA SQL.
+
+    Mutates ``params.org_project_id`` to the resolved INFORMATION_SCHEMA
+    anchor when that attribute exists, so later SQL builders on the same
+    object stay consistent with the returned project id.
     """
     org_project_id = getattr(params, "org_project_id", None)
     project_override = org_project_id.strip() if (org_project_id and org_project_id.strip()) else None

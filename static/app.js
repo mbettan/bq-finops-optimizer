@@ -7040,7 +7040,13 @@ write_client.append_rows(iter([request]))`;
                     elements.cfgAnalysisScope.disabled = true;
                     const help = document.getElementById('cfg-analysis-scope-help');
                     if (help) {
-                        help.textContent = 'This deployment is locked to folder-wide INFORMATION_SCHEMA views (JOBS_BY_FOLDER and related). Organization-wide and project-only are disabled.';
+                        const labels = {
+                            folder: 'folder-wide',
+                            organization: 'organization-wide',
+                            project: 'project-only',
+                        };
+                        const locked = allowed[0];
+                        help.textContent = `This deployment is locked to ${labels[locked] || locked} INFORMATION_SCHEMA views. Other analysis scopes are disabled.`;
                     }
                 }
             }
