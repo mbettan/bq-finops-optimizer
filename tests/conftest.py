@@ -24,11 +24,13 @@ from src.main import app
 @pytest.fixture(autouse=True)
 def _reset_bq_client_pool():
     from src import utils
+    utils._allowed_analysis_scopes.cache_clear()
     with utils._bq_clients_lock:
         utils._bq_clients.clear()
     with utils._adc_lock:
         utils._adc = None
     yield
+    utils._allowed_analysis_scopes.cache_clear()
     with utils._bq_clients_lock:
         utils._bq_clients.clear()
     with utils._adc_lock:

@@ -890,6 +890,12 @@ const VIEW_TO_ENDPOINT = {
     'ai-reviewer': '/api/ai/analyze',
 };
 
+const ANALYSIS_SCOPE_META = {
+    folder: { label: 'folder-wide', badge: '📁 Folder-wide' },
+    organization: { label: 'organization-wide', badge: '🌐 Organization-wide' },
+    project: { label: 'project-only', badge: '📦 Project only' },
+};
+
 // Update scope badge based on active view and focusProjects state
 function updateScopeBadge(viewName) {
     const container = document.getElementById('scope-badge-container');
@@ -901,11 +907,8 @@ function updateScopeBadge(viewName) {
     const projects = state.focusProjects || [];
 
     const analysis = (typeof state !== 'undefined' && state.analysisScope) || 'organization';
-    const analysisLabel = {
-        folder: '📁 Folder-wide',
-        project: '📦 Project only',
-        organization: '🌐 Organization-wide',
-    }[analysis] || `🌐 ${analysis}`;
+    const analysisLabel = (ANALYSIS_SCOPE_META[analysis] && ANALYSIS_SCOPE_META[analysis].badge)
+        || `🌐 ${analysis}`;
 
     container.style.display = '';
     if (projects.length > 0 && scope === 'focus') {
@@ -7040,13 +7043,9 @@ write_client.append_rows(iter([request]))`;
                     elements.cfgAnalysisScope.disabled = true;
                     const help = document.getElementById('cfg-analysis-scope-help');
                     if (help) {
-                        const labels = {
-                            folder: 'folder-wide',
-                            organization: 'organization-wide',
-                            project: 'project-only',
-                        };
                         const locked = allowed[0];
-                        help.textContent = `This deployment is locked to ${labels[locked] || locked} INFORMATION_SCHEMA views. Other analysis scopes are disabled.`;
+                        const label = (ANALYSIS_SCOPE_META[locked] && ANALYSIS_SCOPE_META[locked].label) || locked;
+                        help.textContent = `This deployment is locked to ${label} INFORMATION_SCHEMA views. Other analysis scopes are disabled.`;
                     }
                 }
             }

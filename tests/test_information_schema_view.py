@@ -116,3 +116,11 @@ def test_allowed_analysis_scopes_falls_back_when_all_unknown(monkeypatch):
     monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "organsation")
     assert _allowed_analysis_scopes() == ANALYSIS_SCOPES
     assert validate_analysis_scope("organization") == "organization"
+
+
+def test_allowed_analysis_scopes_warns_once_when_cached(monkeypatch, caplog):
+    monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "folder,organsation")
+    caplog.set_level("WARNING")
+    assert _allowed_analysis_scopes() == frozenset({"folder"})
+    assert _allowed_analysis_scopes() == frozenset({"folder"})
+    assert caplog.text.count("Ignoring unknown ALLOWED_ANALYSIS_SCOPES") == 1

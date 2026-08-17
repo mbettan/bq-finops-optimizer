@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+import functools
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
@@ -110,6 +111,7 @@ _INFORMATION_SCHEMA_VIEWS = {
 }
 
 
+@functools.lru_cache(maxsize=None)
 def _allowed_analysis_scopes() -> frozenset:
     raw = os.environ.get("ALLOWED_ANALYSIS_SCOPES", "").strip()
     if not raw:
