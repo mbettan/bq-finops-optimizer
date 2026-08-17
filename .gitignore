@@ -37,4 +37,11 @@ Thumbs.db
 # Local PRD drafts
 roadmap.md
 
+# Terraform (local state, providers, and private tfvars)
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+
 
