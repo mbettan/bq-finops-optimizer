@@ -229,6 +229,80 @@ In the browser, open the **Settings** panel (gear icon) and set:
 
 ---
 
+## ☁️ Deploy with Terraform + Cloud Build
+
+Terraform provisions APIs, the runtime service account, least-privilege IAM, Artifact Registry, and an authenticated Cloud Run service. Cloud Build builds the repo `Dockerfile`, pushes the image, and rolls out a revision. The service is **not** publicly invokable (`--no-allow-unauthenticated`).
+
+### Prerequisites
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+```
+
+Terraform providers use Application Default Credentials (no key file).
+
+### Apply infrastructure
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# edit project_id, org_id or folder_id, invoker_members, deployer_members
+
+terraform init
+terraform apply
+```
+
+Organization-scoped runtime IAM (default):
+
+```bash
+terraform apply \
+  -var='project_id=YOUR_PROJECT_ID' \
+  -var='org_id=YOUR_ORG_ID' \
+  -var='iam_scope=organization' \
+  -var='invoker_members=["user:you@example.com"]'
+```
+
+Folder-scoped runtime IAM (use when the app analyzes a folder):
+
+```bash
+terraform apply \
+  -var='project_id=YOUR_PROJECT_ID' \
+  -var='folder_id=YOUR_FOLDER_ID' \
+  -var='iam_scope=folder' \
+  -var='invoker_members=["user:you@example.com"]'
+```
+
+The first apply may use a placeholder Cloud Run image. Subsequent applies ignore container image changes so Cloud Build revisions are not rolled back.
+
+### Build and deploy the app
+
+From the repo root:
+
+```bash
+gcloud builds submit --project=YOUR_PROJECT_ID --region=us-central1 \
+  --config=cloudbuild.yaml .
+```
+
+### Verify access
+
+Direct browser hits to the Cloud Run URL return **403** without IAP, even with `roles/run.invoker`. Use an identity token or a local proxy:
+
+```bash
+URL="$(cd terraform && terraform output -raw cloud_run_url)"
+
+curl -sS -o /dev/null -w "%{http_code}\n" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$URL/"
+
+gcloud run services proxy bq-finops-optimizer \
+  --region=us-central1 --project=YOUR_PROJECT_ID --port=8081
+# then open http://localhost:8081/
+```
+
+---
+
 ## 🧪 Testing
 
 The project has a comprehensive test suite that validates input boundaries, security controls, business logic, and endpoint contracts **without requiring live BigQuery credentials**.

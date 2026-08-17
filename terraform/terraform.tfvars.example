@@ -1,0 +1,27 @@
+project_id = "YOUR_PROJECT_ID"
+org_id     = "YOUR_ORG_ID"
+# folder_id = "YOUR_FOLDER_ID"
+iam_scope  = "organization"
+region     = "us-central1"
+
+# Leave unset to create bq-finops-optimizer-runtime. Set to reuse an existing SA.
+# runtime_service_account_email = "runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+
+# Optional Cloud Run env. AUTH_ENFORCED_UPSTREAM is required for the app to start.
+# cloud_run_env = {
+#   AUTH_ENFORCED_UPSTREAM  = "true"
+#   DEFAULT_ANALYSIS_SCOPE  = "folder"
+#   ALLOWED_ANALYSIS_SCOPES = "folder"
+#   DEFAULT_ORG_PROJECT_ID  = "YOUR_FOLDER_ANCHOR_PROJECT"
+#   BQ_EXECUTION_PROJECT    = "YOUR_CLOUD_RUN_PROJECT"
+#   ANALYSIS_FOLDER_ID      = "YOUR_FOLDER_ID"
+#   ANALYSIS_FOLDER_NAME    = "YOUR_FOLDER_NAME"
+# }
+
+invoker_members = [
+  "user:you@example.com",
+]
+
+deployer_members = [
+  "user:you@example.com",
+]
