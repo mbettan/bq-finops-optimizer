@@ -28,6 +28,9 @@ FORBIDDEN_SUBSTRINGS = [
     "prftgcpdemo.ai",
     "vbe-bq-finops-optimizer",
     "967244177276",
+    "sysco",
+    "syy-df",
+    "848210481602",
 ]
 
 
