@@ -80,16 +80,16 @@ def test_analysis_scope_from_params_reads_field():
 def test_runtime_config_includes_folder_when_env_set(monkeypatch, test_client):
     monkeypatch.setenv("DEFAULT_ANALYSIS_SCOPE", "folder")
     monkeypatch.setenv("ALLOWED_ANALYSIS_SCOPES", "folder")
-    monkeypatch.setenv("ANALYSIS_FOLDER_ID", "848210481602")
-    monkeypatch.setenv("ANALYSIS_FOLDER_NAME", "syy-df")
+    monkeypatch.setenv("ANALYSIS_FOLDER_ID", "123456789012")
+    monkeypatch.setenv("ANALYSIS_FOLDER_NAME", "example-folder")
 
     response = test_client.get("/api/runtime-config")
     assert response.status_code == 200
     body = response.json()
     assert body["default_analysis_scope"] == "folder"
     assert body["allowed_analysis_scopes"] == ["folder"]
-    assert body["analysis_folder_id"] == "848210481602"
-    assert body["analysis_folder_name"] == "syy-df"
+    assert body["analysis_folder_id"] == "123456789012"
+    assert body["analysis_folder_name"] == "example-folder"
 
 
 def test_validate_analysis_scope_respects_allowed_env(monkeypatch):
