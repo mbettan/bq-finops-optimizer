@@ -66,6 +66,40 @@ def test_resolve_raises_if_empty():
         assert exc_info.value.status_code == 400
         assert "GCP Project ID must be specified" in exc_info.value.detail
 
+def test_resolve_replaces_job_project_with_default_org_anchor(monkeypatch):
+    monkeypatch.setenv("BQ_EXECUTION_PROJECT", "cloud-run-jobs")
+    monkeypatch.setenv("DEFAULT_ORG_PROJECT_ID", "folder-anchor-project")
+    params = MockParams(org_project_id="cloud-run-jobs")
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client.project = "cloud-run-jobs"
+        mock_client_class.return_value = mock_client
+
+        client, resolved_project = init_bq_client_and_resolve_project(params)
+
+        assert mock_client_class.call_args[1]["project"] == "cloud-run-jobs"
+        assert resolved_project == "folder-anchor-project"
+        assert params.org_project_id == "folder-anchor-project"
+        assert client is mock_client
+
+
+def test_resolve_splits_job_project_from_org_anchor(monkeypatch):
+    monkeypatch.setenv("BQ_EXECUTION_PROJECT", "cloud-run-jobs")
+    params = MockParams(org_project_id="folder-anchor-project")
+    with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \
+         patch("src.utils.bigquery.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client.project = "cloud-run-jobs"
+        mock_client_class.return_value = mock_client
+
+        client, resolved_project = init_bq_client_and_resolve_project(params)
+
+        assert mock_client_class.call_args[1]["project"] == "cloud-run-jobs"
+        assert resolved_project == "folder-anchor-project"
+        assert client is mock_client
+
+
 def test_resolve_raises_if_dummy():
     params = MockParams(org_project_id="mbettan-sandbox")
     with patch("src.utils.google.auth.default", return_value=(MagicMock(), "adc-project")), \

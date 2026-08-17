@@ -9,6 +9,8 @@ from .utils import (
     get_max_bytes_billed,
     FocusMixin,
     validate_focus_projects,
+    analysis_scope_from_params,
+    information_schema_view,
     build_project_filter,
     log_endpoint_start,
     log_endpoint_end,
@@ -99,7 +101,7 @@ def analyze_hbo(params: HBOAnalyzeParams):
           TIMESTAMP_DIFF(end_time, start_time, MILLISECOND) AS duration_ms,
           total_slot_ms,
           query_info.performance_insights.avg_previous_execution_ms AS prev_exec_ms
-        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
@@ -456,7 +458,7 @@ def get_hbo_summary(params: HBOCommonParams):
               SELECT 1 FROM UNNEST(query_info.performance_insights.stage_performance_change_insights)
               WHERE input_data_change.records_read_diff_percentage > 0
             ) AS has_data_increase
-          FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+          FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
           WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
             AND job_type = 'QUERY'
             AND state = 'DONE'
@@ -533,7 +535,7 @@ def get_performance_insights(params: HBOCommonParams):
           user_email,
           query_info.query_hashes.normalized_literals AS query_hash,
           TO_JSON_STRING(query_info.performance_insights) AS perf_insights
-        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+        FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
         WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
           AND job_type = 'QUERY'
           AND state = 'DONE'
@@ -626,7 +628,7 @@ def check_hbo_status(params: HBOStatusParams):
             # Org mode: discover active projects from jobs in the lookback period
             sql_projects = f"""
             SELECT DISTINCT project_id
-            FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION
+            FROM `{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
             ORDER BY project_id
             LIMIT {params.limit + 1}

@@ -1,5 +1,9 @@
 // BigQuery FinOps Optimizer - Frontend Logic
 
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) window.location.reload();
+});
+
 // Global API response XSS sanitizer
 (() => {
     const nativeFetch = window.fetch.bind(window);
@@ -138,6 +142,7 @@ const state = {
     orgProject: localStorage.getItem('bq_org_project') || '',
     adminProject: localStorage.getItem('bq_admin_project') || '',
     region: localStorage.getItem('bq_region') || 'region-us',
+    analysisScope: localStorage.getItem('bq_analysis_scope') || 'organization',
     maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
     focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
     storageData: [],
@@ -855,11 +860,15 @@ function buildPayload(endpoint, basePayload) {
         // causes a hard 422. Defaulting to 'org' is the safer fallback.
         console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — defaulting to org scope`);
     }
+    const withAnalysisScope = {
+        analysis_scope: (typeof state !== 'undefined' && state.analysisScope) || 'organization',
+        ...basePayload,
+    };
     if (scope !== 'focus') {
-        const { focus_projects, ...rest } = basePayload;
+        const { focus_projects, ...rest } = withAnalysisScope;
         return rest;
     }
-    return basePayload;
+    return withAnalysisScope;
 }
 
 /** Maps navigation view names to their primary POST endpoint for badge display. */
@@ -881,6 +890,12 @@ const VIEW_TO_ENDPOINT = {
     'ai-reviewer': '/api/ai/analyze',
 };
 
+const ANALYSIS_SCOPE_META = {
+    folder: { label: 'folder-wide', badge: '📁 Folder-wide' },
+    organization: { label: 'organization-wide', badge: '🌐 Organization-wide' },
+    project: { label: 'project-only', badge: '📦 Project only' },
+};
+
 // Update scope badge based on active view and focusProjects state
 function updateScopeBadge(viewName) {
     const container = document.getElementById('scope-badge-container');
@@ -891,16 +906,17 @@ function updateScopeBadge(viewName) {
     const scope = endpoint ? FOCUS_SCOPE_MAP[endpoint] : undefined;
     const projects = state.focusProjects || [];
 
+    const analysis = (typeof state !== 'undefined' && state.analysisScope) || 'organization';
+    const analysisLabel = (ANALYSIS_SCOPE_META[analysis] && ANALYSIS_SCOPE_META[analysis].badge)
+        || `🌐 ${analysis}`;
+
     container.style.display = '';
-    if (scope === 'org') {
-        badge.textContent = '🌐 Organization-wide';
-        badge.style.color = '#9ca3af';
-    } else if (projects.length > 0) {
+    if (projects.length > 0 && scope === 'focus') {
         badge.textContent = `🎯 Focused: ${projects.length} project${projects.length > 1 ? 's' : ''}`;
         badge.style.color = 'var(--accent-primary)';
     } else {
-        badge.textContent = '🌐 Organization-wide';
-        badge.style.color = '#9ca3af';
+        badge.textContent = analysisLabel;
+        badge.style.color = analysis === 'organization' ? '#9ca3af' : 'var(--accent-primary)';
     }
 }
 
@@ -1209,11 +1225,16 @@ document.addEventListener('DOMContentLoaded', () => {
         currentProject: document.getElementById('current-project'),
         currentAdminProject: document.getElementById('current-admin-project'),
         currentRegion: document.getElementById('current-region'),
+        currentFolder: document.getElementById('current-folder'),
+        currentFolderContainer: document.getElementById('current-folder-container'),
         
         // Settings Form
         cfgOrgProject: document.getElementById('cfg-org-project'),
         cfgAdminProject: document.getElementById('cfg-admin-project'),
         cfgRegion: document.getElementById('cfg-region'),
+        cfgAnalysisScope: document.getElementById('cfg-analysis-scope'),
+        cfgFolderGroup: document.getElementById('cfg-folder-group'),
+        cfgFolderName: document.getElementById('cfg-folder-name'),
         saveSettingsBtn: document.getElementById('save-settings-btn'),
         cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
         cfgFocusProjects: document.getElementById('cfg-focus-projects'),
@@ -1316,6 +1337,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.cfgOrgProject.value = state.orgProject;
         if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
         elements.cfgRegion.value = state.region;
+        if (elements.cfgAnalysisScope) elements.cfgAnalysisScope.value = state.analysisScope || 'organization';
         if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
         if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
         updateScopeBadge(Router.getCurrentViewId());
@@ -1372,6 +1394,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const newRegion = elements.cfgRegion.value;
+        const allowedScopes = Object.keys(ANALYSIS_SCOPE_META);
+        const newAnalysisScope = elements.cfgAnalysisScope
+            ? elements.cfgAnalysisScope.value
+            : 'organization';
+        if (!allowedScopes.includes(newAnalysisScope)) {
+            validationErrors.push(`Invalid Analysis scope "${newAnalysisScope}".`);
+        }
 
         let newMaxBytes = null;
         if (elements.cfgMaxBytesBilled) {
@@ -1398,6 +1427,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- Commit validated values to state and localStorage ---
         state.orgProject = newOrg;
         state.region = newRegion;
+        state.analysisScope = newAnalysisScope;
         if (elements.cfgAdminProject) {
             state.adminProject = newAdmin;
             localStorage.setItem('bq_admin_project', newAdmin);
@@ -1420,11 +1450,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         localStorage.setItem('bq_org_project', state.orgProject);
         localStorage.setItem('bq_region', state.region);
+        localStorage.setItem('bq_analysis_scope', state.analysisScope);
 
         // Flush ALL scope-dependent caches. Use an allow-list of
         // scope-independent keys rather than a fragile deny-list.
         const SCOPE_INDEPENDENT = new Set([
-            'bq_org_project', 'bq_admin_project', 'bq_region',
+            'bq_org_project', 'bq_admin_project', 'bq_region', 'bq_analysis_scope',
             'bq_max_bytes_billed_gb', 'bq_focus_projects',
             'bq_version_dismissed',
         ]);
@@ -6988,9 +7019,57 @@ write_client.append_rows(iter([request]))`;
     const reportGenEmptyBtn = document.getElementById('btn-report-generate-empty');
     if (reportGenEmptyBtn) reportGenEmptyBtn.addEventListener('click', () => ReportModule.onClick());
 
+    const applyRuntimeConfig = async () => {
+        try {
+            const res = await fetch('/api/runtime-config');
+            if (!res.ok) return;
+            const cfg = await res.json();
+            const allowed = cfg.allowed_analysis_scopes || [];
+            if (allowed.length === 1) {
+                state.analysisScope = allowed[0];
+                try { localStorage.setItem('bq_analysis_scope', state.analysisScope); } catch (_) {}
+            } else if (!localStorage.getItem('bq_analysis_scope') && cfg.default_analysis_scope) {
+                state.analysisScope = cfg.default_analysis_scope;
+            }
+            if (cfg.default_org_project_id) {
+                state.orgProject = cfg.default_org_project_id;
+                try { localStorage.setItem('bq_org_project', state.orgProject); } catch (_) {}
+            }
+            if (elements.cfgAnalysisScope && allowed.length) {
+                [...elements.cfgAnalysisScope.options].forEach((opt) => {
+                    if (!allowed.includes(opt.value)) opt.remove();
+                });
+                if (allowed.length === 1) {
+                    elements.cfgAnalysisScope.disabled = true;
+                    const help = document.getElementById('cfg-analysis-scope-help');
+                    if (help) {
+                        const locked = allowed[0];
+                        const label = (ANALYSIS_SCOPE_META[locked] && ANALYSIS_SCOPE_META[locked].label) || locked;
+                        help.textContent = `This deployment is locked to ${label} INFORMATION_SCHEMA views. Other analysis scopes are disabled.`;
+                    }
+                }
+            }
+            const folderId = (cfg.analysis_folder_id || '').trim();
+            const folderName = (cfg.analysis_folder_name || '').trim();
+            const folderLabel = [folderName, folderId ? `folders/${folderId}` : '']
+                .filter(Boolean)
+                .join(' · ');
+            if (folderLabel && elements.cfgFolderName) {
+                elements.cfgFolderName.value = folderLabel;
+                if (elements.cfgFolderGroup) elements.cfgFolderGroup.hidden = false;
+                if (elements.currentFolder) elements.currentFolder.textContent = folderLabel;
+                if (elements.currentFolderContainer) elements.currentFolderContainer.style.display = '';
+            }
+        } catch (_) {
+            // Keep compiled defaults when the endpoint is unavailable.
+        }
+    };
+
     // App Start
-    initUI();
-    ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
+    applyRuntimeConfig().then(() => {
+        initUI();
+        ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
+    });
 });
 
 /* ============================================================

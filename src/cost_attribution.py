@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, Dict, Literal
 from datetime import datetime, timedelta
 from google.cloud import bigquery
-from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
+from .utils import init_bq_client_and_resolve_project, _safe_ident, _normalize_region, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, analysis_scope_from_params, information_schema_view, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
 from collections import defaultdict
 import json
 import os
@@ -150,7 +150,7 @@ def calculate_cost_attribution(params: CostAttributionParams):
         # params.admin_project_id or resolved_project, validated by _safe_ident
         # and reject_dummy_project. The else branch (region-scoped
         # INFORMATION_SCHEMA.JOBS) was unreachable dead code.
-        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
+        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.{information_schema_view('JOBS', analysis_scope_from_params(params))}"
             
         end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
         exclusive_end_date = end_date + timedelta(days=1)

@@ -274,6 +274,14 @@ class TestFluidSimBounds:
         response = client.post(self.ENDPOINT, json={**self.BASE, "cooldown_window": 301})
         assert response.status_code == 422
 
+    def test_invalid_analysis_scope_rejected(self):
+        response = client.post(
+            self.ENDPOINT,
+            json={**self.BASE, "analysis_scope": "team"},
+        )
+        assert response.status_code == 400
+        assert "analysis_scope" in response.json()["detail"]
+
     def test_edition_slot_hr_rate_zero_rejected(self):
         response = client.post(self.ENDPOINT, json={**self.BASE, "edition_slot_hr_rate": 0})
         assert response.status_code == 422
@@ -281,6 +289,15 @@ class TestFluidSimBounds:
     def test_edition_slot_hr_rate_negative_rejected(self):
         response = client.post(self.ENDPOINT, json={**self.BASE, "edition_slot_hr_rate": -0.06})
         assert response.status_code == 422
+
+
+def test_runtime_config_defaults_are_unrestricted():
+    response = client.get("/api/runtime-config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["default_analysis_scope"] == "organization"
+    assert "folder" in body["allowed_analysis_scopes"]
+    assert "organization" in body["allowed_analysis_scopes"]
 
 
 # ---------------------------------------------------------------------------
