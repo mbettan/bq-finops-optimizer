@@ -1,0 +1,127 @@
+# FinOps Optimizer for BigQuery — custom IAM role definition
+#
+# Create at the ORGANIZATION node (recommended) or at a folder/project:
+#   gcloud iam roles create bqFinOpsReader \
+#     --organization=ORGANIZATION_ID \
+#     --file=deploy/roles/bq_finops_reader.yaml
+#
+# Verify what was actually granted (this is the reviewer's artifact):
+#   gcloud iam roles describe bqFinOpsReader --organization=ORGANIZATION_ID
+#
+# Every permission below is read-only. The role cannot read a single row of
+# table data, and cannot create, modify or delete any BigQuery resource.
+# The view -> permission mapping is enumerated in deploy/check_permissions.py,
+# which also verifies this role against a live identity.
+
+title: "FinOps Optimizer for BigQuery — Read-Only Telemetry"
+description: >-
+  Organization-scoped INFORMATION_SCHEMA telemetry access for the FinOps
+  Optimizer for BigQuery. Reads job, storage, reservation and dataset METADATA only.
+  Cannot read table contents and cannot mutate any resource.
+stage: GA
+
+includedPermissions:
+  # --- Query execution ------------------------------------------------------
+  # Required to submit the diagnostic queries themselves. Verified: the JOBS
+  # view documentation lists bigquery.jobs.create as a required permission.
+  # https://cloud.google.com/bigquery/docs/information-schema-jobs
+  - bigquery.jobs.create
+
+  # --- Job telemetry (compute, cost, slot-ms, anti-patterns, AI Doctor) ------
+  # Verified required for INFORMATION_SCHEMA.JOBS / JOBS_BY_PROJECT /
+  # JOBS_BY_ORGANIZATION / JOBS_TIMELINE_BY_ORGANIZATION.
+  # SCOPE NOTE: This role cannot read a TABLE, but it can read what everyone
+  # ASKED of every table via the full SQL text of every job run in the org.
+  # Query text routinely embeds literal predicate values (emails, IDs, keys).
+  # Treat the service account credentials and app.log as carrying that sensitivity.
+  - bigquery.jobs.listAll
+
+  # Reading back a submitted job's own status while the client polls for
+  # completion. NOT independently verified as strictly required — the
+  # predefined roles/bigquery.jobUser does not contain it and query polling
+  # works in practice. Kept because it is read-only and removing it is the
+  # safer failure mode to discover in a test project, not in production.
+  - bigquery.jobs.get
+
+  # --- Table / partition / column METADATA ----------------------------------
+  # Verified required for INFORMATION_SCHEMA.TABLES, TABLE_STORAGE,
+  # TABLE_STORAGE_BY_ORGANIZATION, PARTITIONS, COLUMNS, TABLE_OPTIONS.
+  # https://cloud.google.com/bigquery/docs/information-schema-tables
+  # https://cloud.google.com/bigquery/docs/information-schema-table-storage
+  # https://cloud.google.com/bigquery/docs/information-schema-partitions
+  # These return row counts, byte sizes, partitioning and clustering
+  # definitions — never cell values.
+  - bigquery.tables.list
+  - bigquery.tables.get
+
+  # --- Dataset METADATA -----------------------------------------------------
+  # Verified required for INFORMATION_SCHEMA.SCHEMATA and (by the same
+  # dataset-scoped mechanism) SCHEMATA_OPTIONS, which is how the storage
+  # billing model (LOGICAL vs PHYSICAL) is detected.
+  # https://cloud.google.com/bigquery/docs/information-schema-datasets-schemata
+  - bigquery.datasets.get
+
+  # --- Project / organization default configuration -------------------------
+  # Verified required for INFORMATION_SCHEMA.PROJECT_OPTIONS. The same
+  # permission is ASSUMED (not verified) for EFFECTIVE_PROJECT_OPTIONS and
+  # ORGANIZATION_OPTIONS, which the app also reads.
+  # https://cloud.google.com/bigquery/docs/information-schema-project-options
+  - bigquery.config.get
+
+  # --- Reservations & commitments (read-only) -------------------------------
+  # Verified required for INFORMATION_SCHEMA.RESERVATIONS and
+  # RESERVATION_CHANGES (bigquery.reservations.list) and
+  # CAPACITY_COMMITMENT_CHANGES (bigquery.capacityCommitments.list).
+  # RESERVATION_TIMELINE_BY_PROJECT is ASSUMED to use reservations.list.
+  # https://cloud.google.com/bigquery/docs/information-schema-reservations
+  # https://cloud.google.com/bigquery/docs/information-schema-reservation-changes
+  # https://cloud.google.com/bigquery/docs/information-schema-capacity-commitment-changes
+  - bigquery.reservations.list
+  - bigquery.capacityCommitments.list
+  # Singular .get companions: read-only, included so a reviewer inspecting a
+  # single reservation from the UI does not hit a 403. Not independently
+  # verified as required by any INFORMATION_SCHEMA view.
+  - bigquery.reservations.get
+  - bigquery.capacityCommitments.get
+
+# ==========================================================================
+# DELIBERATELY EXCLUDED — this is the data-plane boundary.
+#
+# The single line a security reviewer needs is the first one: without
+# bigquery.tables.getData this role cannot return one row of customer data,
+# no matter what SQL the application sends. That is independently verifiable
+# with `gcloud iam roles describe` and with deploy/check_permissions.py.
+#
+#   bigquery.tables.getData            <- CANNOT read any table/view contents
+#   bigquery.tables.getIamPolicy       <- no ACL enumeration
+#   bigquery.tables.create
+#   bigquery.tables.update
+#   bigquery.tables.updateData
+#   bigquery.tables.delete
+#   bigquery.tables.export
+#   bigquery.datasets.create
+#   bigquery.datasets.update
+#   bigquery.datasets.delete
+#   bigquery.datasets.getIamPolicy
+#   bigquery.models.getData
+#   bigquery.routines.get / .list      <- ROUTINES view is not queried
+#   bigquery.reservations.create / .update / .delete
+#   bigquery.reservationAssignments.*  (create / delete / search)
+#   bigquery.capacityCommitments.create / .update / .delete
+#   bigquery.config.update             <- cannot change project defaults
+#   bigquery.jobs.delete / .update
+#
+# NOT IN THIS ROLE — granted separately, and only if the module is used:
+#
+#   roles/recommender.bigqueryPartitionClusterViewer
+#       Needed for INFORMATION_SCHEMA.RECOMMENDATIONS and
+#       RECOMMENDATIONS_BY_ORGANIZATION (Active Assist module). Google's own
+#       documentation for that view defers to "the required permissions for
+#       the corresponding recommender" rather than naming a permission
+#       string, so the predefined role is used rather than guessing one.
+#
+#   roles/aiplatform.user  (AI Doctor only, execution project only)
+#       Never bundle this into an organization-level binding.
+#
+# NEVER grant roles/bigquery.admin at the organization node.
+# ==========================================================================

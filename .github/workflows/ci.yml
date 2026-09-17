@@ -1,0 +1,325 @@
+# Continuous integration for FinOps Optimizer for BigQuery.
+#
+# Job matrix:
+#   test         ubuntu-latest   pytest + coverage                         always
+#   bundle-sync  ubuntu-latest   static/ vs docs/static/ byte identity     always
+#   windows      windows-latest  pytest + run.bat smoke test               gated on Windows launchers
+#   visual       ubuntu-latest   Playwright dual-theme snapshots           gated on light theme
+#   contrast     ubuntu-latest   WCAG AA over computed styles              gated on light theme
+#
+# The last three are defined here but conditionally skipped: the artifacts they
+# exercise (`run.bat`, the light theme) are delivered by subsequent specs
+# respectively. Those enable their job by setting the matching repository
+# variable to "true" under Settings -> Secrets and variables -> Actions:
+#
+#   ENABLE_WINDOWS_CI    -> unblocks `windows`   (requires run.bat)
+#   ENABLE_VISUAL_CI     -> unblocks `visual`    (requires light theme)
+#   ENABLE_CONTRAST_CI   -> unblocks `contrast`  (requires light theme)
+#
+# Each gated job carries its skip reason in its displayed name, so a skipped
+# check in the PR UI states *why* it skipped rather than just "skipped".
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push to the same ref supersedes the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Matches the Dockerfile base image (python:3.11-slim).
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ---------------------------------------------------------------- test ----
+  test:
+    name: test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest -v -m "not integration" --strict-markers --cov=src --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-ubuntu
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------- bundle-sync ----
+  bundle-sync:
+    name: bundle-sync (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # tests/conftest.py imports `src.main` at collection time, which pulls in
+      # fastapi and pandas — so the runtime requirements are needed here too,
+      # even though this job only asserts on file hashes.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Fast, dependency-free signal that names the remedy in its own output.
+      - name: Check static/ and docs/static/ agree
+        run: ./scripts/sync_docs_bundle.sh --check
+
+      - name: Run the bundle sync test
+        run: pytest tests/test_bundle_sync.py -v
+
+      # Belt and braces: running the sync must leave the tree untouched.
+      - name: Verify the sync script is a no-op on a synced tree
+        run: |
+          ./scripts/sync_docs_bundle.sh
+          # The interesting failure is a *newly created* mirror file, which
+          # `git diff` does not report.
+          if [ -n "$(git status --porcelain --untracked-files=all -- docs/static)" ]; then
+            echo "::error::docs/static changed after running the sync script." \
+                 "Run scripts/sync_docs_bundle.sh locally and commit the result."
+            git --no-pager status --short --untracked-files=all -- docs/static
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------- lint ----
+  lint:
+    name: lint (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run Ruff
+        # Scoped to syntax errors to avoid failing the build on 542 existing violations.
+        # Widen the --select set once the backlog is burnt down.
+        run: ruff check --select E9,F63,F7,F82 .
+
+      - name: Run ShellCheck
+        run: shellcheck run.sh scripts/*.sh deploy/*.sh
+  # ------------------------------------------------------------- windows ----
+  windows:
+    name: "windows (windows-latest)"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest -v -m "not integration" --strict-markers
+
+      # Boot run.bat, confirm the app answers, shut it
+      # down. The app requires no environment variable to start.
+      - name: run.bat smoke test
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'run.bat')) {
+            Write-Error 'run.bat is missing.'
+            exit 1
+          }
+          $proc = Start-Process -FilePath 'cmd.exe' `
+                                -ArgumentList '/c', 'run.bat' `
+                                -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            foreach ($attempt in 1..30) {
+              Start-Sleep -Seconds 2
+              try {
+                $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:8080/' `
+                                          -UseBasicParsing -TimeoutSec 5
+                if ($resp.StatusCode -eq 200) { $ok = $true; break }
+              } catch {
+                Write-Host "waiting for app to boot (attempt $attempt/30)..."
+              }
+            }
+            if (-not $ok) { Write-Error 'run.bat did not serve on 127.0.0.1:8080'; exit 1 }
+            Write-Host 'run.bat smoke test passed.'
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+  # -------------------------------------------------------------- visual ----
+  visual:
+    name: "${{ vars.ENABLE_VISUAL_CI == 'true' && 'visual (ubuntu)' || 'visual — SKIPPED: awaiting light theme; set ENABLE_VISUAL_CI=true to enable' }}"
+    if: vars.ENABLE_VISUAL_CI == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # Cache key includes the resolved Playwright version so a version bump
+      # invalidates the browser cache automatically.
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
+      - name: Start the application
+        run: |
+          python -m uvicorn src.main:app --host 127.0.0.1 --port 8080 &
+          echo $! > /tmp/app.pid
+          for attempt in $(seq 1 30); do
+            if curl -sSf http://127.0.0.1:8080/ >/dev/null 2>&1; then
+              echo "app is up"; exit 0
+            fi
+            echo "waiting for app to boot (attempt $attempt/30)..."
+            sleep 2
+          done
+          echo "::error::application failed to start"; exit 1
+
+      - name: Run dual-theme snapshot tests
+        run: pytest tests/test_visual_themes.py -v
+
+      - name: Stop the application
+        if: always()
+        run: '[ -f /tmp/app.pid ] && kill "$(cat /tmp/app.pid)" || true'
+
+      - name: Upload snapshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-snapshot-diffs
+          path: test-results/
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------ contrast ----
+  contrast:
+    name: "${{ vars.ENABLE_CONTRAST_CI == 'true' && 'contrast (ubuntu)' || 'contrast — SKIPPED: awaiting light theme; set ENABLE_CONTRAST_CI=true to enable' }}"
+    if: vars.ENABLE_CONTRAST_CI == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
+      - name: Start the application
+        run: |
+          python -m uvicorn src.main:app --host 127.0.0.1 --port 8080 &
+          echo $! > /tmp/app.pid
+          for attempt in $(seq 1 30); do
+            if curl -sSf http://127.0.0.1:8080/ >/dev/null 2>&1; then
+              echo "app is up"; exit 0
+            fi
+            echo "waiting for app to boot (attempt $attempt/30)..."
+            sleep 2
+          done
+          echo "::error::application failed to start"; exit 1
+
+      - name: Assert WCAG AA contrast over computed styles
+        run: pytest tests/test_contrast.py -v
+
+      - name: Stop the application
+        if: always()
+        run: '[ -f /tmp/app.pid ] && kill "$(cat /tmp/app.pid)" || true'

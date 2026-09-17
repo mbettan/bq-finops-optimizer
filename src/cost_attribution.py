@@ -1,0 +1,336 @@
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Dict, Literal
+from datetime import datetime, timedelta
+from google.cloud import bigquery
+from .constants import normalize_region
+from .utils import init_bq_client_and_resolve_project, _safe_ident, reject_dummy_project, handle_endpoint_exception, get_max_bytes_billed, FocusMixin, AppliedScope, validate_focus_projects, build_project_filter, log_endpoint_start, log_endpoint_end, run_query_and_log as _run_and_log
+from collections import defaultdict
+import json
+import os
+import tempfile
+import logging
+import time
+
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/cost-attribution", tags=["cost-attribution"])
+
+CONFIG_FILE = Path(__file__).parent / "cost_attribution_config.json"
+
+# _MAX_BYTES_BILLED removed — now resolved dynamically via get_max_bytes_billed(params)
+
+
+
+
+class ReservationConfig(BaseModel):
+    sku_rate: float = Field(ge=0, allow_inf_nan=False)
+    total_admin_bill: float = Field(ge=0, allow_inf_nan=False)
+
+class CostAttributionConfig(BaseModel):
+    waste_rule: Literal["A", "B"] = "A"  # "A" = Proportional, "B" = Central Dump
+    central_cost_center_project: Optional[str] = None
+    borrowing_rule: str = "lender_pays" # "lender_pays", "borrower_pays"
+    reservations: Dict[str, ReservationConfig] = {}
+
+class CostAttributionParams(FocusMixin):
+    billing_month_start: str
+    billing_month_end: str
+    org_project_id: Optional[str] = None
+    region: str = "region-us"
+    admin_project_id: Optional[str] = None
+    max_bytes_billed_gb: Optional[int] = None
+
+    @field_validator('billing_month_start', 'billing_month_end')
+    @classmethod
+    def validate_date_format(cls, v: str) -> str:
+        try:
+            parsed = datetime.strptime(v, '%Y-%m-%d').date()
+            return parsed.strftime('%Y-%m-%d')
+        except ValueError:
+            raise ValueError("Date parameters must be in YYYY-MM-DD format")
+
+    @model_validator(mode='after')
+    def validate_date_range(self):
+        """Ensure billing_month_start <= billing_month_end to prevent silent empty results."""
+        start_d = datetime.strptime(self.billing_month_start, '%Y-%m-%d').date()
+        end_d = datetime.strptime(self.billing_month_end, '%Y-%m-%d').date()
+        if start_d > end_d:
+            raise ValueError(
+                f"billing_month_start ({self.billing_month_start}) must be on or before "
+                f"billing_month_end ({self.billing_month_end})"
+            )
+        return self
+
+def load_config() -> CostAttributionConfig:
+    """Load the saved config, or defaults if none has been saved yet.
+
+    A missing file is a legitimate initial state (returns defaults). A file
+    that exists but fails to parse/validate is a real problem — callers must
+    handle that explicitly rather than have it silently masked as defaults,
+    which would make every reservation appear "unconfigured" with no
+    indication that the stored config was actually lost/corrupted.
+    """
+    if not os.path.exists(CONFIG_FILE):
+        return CostAttributionConfig()
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return CostAttributionConfig(**data)
+
+def save_config(config: CostAttributionConfig):
+    try:
+        # Atomic write — temp file + os.replace prevents truncation on
+        # concurrent writes or SIGTERM between open() and flush().
+        fd, tmp_path = tempfile.mkstemp(
+            dir=CONFIG_FILE.parent, suffix=".tmp", prefix=".cost_attr_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(config.model_dump(), f, indent=2)
+            os.replace(tmp_path, CONFIG_FILE)
+        except BaseException:
+            # Clean up the temp file on any failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save configuration")
+
+@router.get("/config", response_model=CostAttributionConfig)
+def get_config():
+    try:
+        return load_config()
+    except Exception as e:
+        logger.error(f"Failed to load cost attribution config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load cost attribution configuration; check server logs.")
+
+@router.post("/config")
+def update_config(config: CostAttributionConfig):
+    # borrowing_rule is not implemented — reject non-default with 501.
+    if config.borrowing_rule != "lender_pays":
+        raise HTTPException(
+            501,
+            f"borrowing_rule='{config.borrowing_rule}' is not yet implemented. "
+            "Only 'lender_pays' is currently supported."
+        )
+    save_config(config)
+    return {"message": "Configuration updated successfully"}
+
+@router.post("/calculate")
+def calculate_cost_attribution(params: CostAttributionParams):
+    params.focus_projects = validate_focus_projects(params.focus_projects)
+    t0 = log_endpoint_start("Cost Attribution", params, _logger=logger)
+    try:
+        config = load_config()
+
+        # Rule B requires central_cost_center_project — fail fast before
+        # running the expensive BigQuery scan.
+        if config.waste_rule == "B" and not config.central_cost_center_project:
+            raise HTTPException(
+                400,
+                "Cost attribution with waste_rule='B' (Central Dump) requires "
+                "central_cost_center_project to be configured."
+            )
+
+        scoped_client, resolved_project = init_bq_client_and_resolve_project(params)
+        
+        # Determine table name based on admin_project_id
+        target_project_raw = params.admin_project_id.strip() if (params.admin_project_id and params.admin_project_id.strip()) else resolved_project
+        target_project = _safe_ident(target_project_raw, "admin_project_id")
+        reject_dummy_project(target_project)
+        region = _safe_ident(normalize_region(params.region), "region")
+        # Always query all projects — waste computation needs the full denominator.
+        # Focus is applied to the DISPLAY, not the computation.
+
+        # F17b: target_project is always truthy here — it is set from
+        # params.admin_project_id or resolved_project, validated by _safe_ident
+        # and reject_dummy_project. The else branch (region-scoped
+        # INFORMATION_SCHEMA.JOBS) was unreachable dead code.
+        table_name = f"`{target_project}`.`{region}`.INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION"
+            
+        end_date = datetime.strptime(params.billing_month_end, '%Y-%m-%d')
+        exclusive_end_date = end_date + timedelta(days=1)
+        exclusive_end_str = exclusive_end_date.strftime('%Y-%m-%d')
+        
+        query = f"""
+            SELECT
+              project_id,
+              reservation_id,
+              SUM(IFNULL(total_slot_ms, 0)) AS total_slot_ms
+            FROM
+              {table_name}
+            WHERE
+              creation_time >= TIMESTAMP(@start_date)
+              AND creation_time < TIMESTAMP(@end_date)
+              AND job_type = 'QUERY'
+              AND (statement_type IS NULL OR statement_type <> 'SCRIPT')
+              AND reservation_id IS NOT NULL
+              AND state = 'DONE'
+            GROUP BY
+              project_id,
+              reservation_id
+        """
+        
+        all_params = [
+            bigquery.ScalarQueryParameter("start_date", "STRING", params.billing_month_start),
+            bigquery.ScalarQueryParameter("end_date", "STRING", exclusive_end_str),
+        ]
+        job_results = _run_and_log(scoped_client, query, "Cost Attribution", params=params, query_parameters=all_params)
+        
+        # Process Raw Data and group by configured reservation or unconfigured
+        unconfigured = {}  # {reservation_id: total_slot_hours}
+        usage_by_cfg = defaultdict(list)
+        total_slots_by_cfg = defaultdict(float)
+
+        def _resolve_config_key(res_id: str) -> tuple[Optional[str], Optional[ReservationConfig]]:
+            if res_id in config.reservations:
+                return res_id, config.reservations[res_id]
+            short = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
+            if short in config.reservations:
+                return short, config.reservations[short]
+            for cfg_k, cfg_v in config.reservations.items():
+                cfg_short = cfg_k.split('.')[-1] if '.' in cfg_k else (cfg_k.split(':')[-1] if ':' in cfg_k else cfg_k)
+                if cfg_short == short or cfg_short == res_id:
+                    return cfg_k, cfg_v
+            return None, None
+
+        for row in job_results:
+            slot_hours = (row.total_slot_ms or 0) / 3600000.0
+            res_id = row.reservation_id
+            cfg_key, res_config = _resolve_config_key(res_id)
+            if not res_config:
+                unconfigured[res_id] = unconfigured.get(res_id, 0.0) + slot_hours
+                short_res_id = res_id.split('.')[-1] if '.' in res_id else (res_id.split(':')[-1] if ':' in res_id else res_id)
+                logger.warning(
+                    "No configuration found for reservation %s (short: %s) — "
+                    "%.2f slot-hours unattributed",
+                    res_id, short_res_id, slot_hours,
+                )
+            else:
+                usage_by_cfg[cfg_key].append({
+                    "project": row.project_id,
+                    "reservation": res_id,
+                    "slot_hours": slot_hours
+                })
+                total_slots_by_cfg[cfg_key] += slot_hours
+
+        final_attributions = []
+
+        # Iterate over all configured reservations as the outer loop to ensure
+        # 100% idle paid reservations are attributed rather than silently vanishing.
+        for cfg_res_id, res_config in config.reservations.items():
+            sku_rate = res_config.sku_rate
+            total_admin_bill = res_config.total_admin_bill
+            usages = usage_by_cfg.get(cfg_res_id, [])
+            total_used_slots = total_slots_by_cfg.get(cfg_res_id, 0.0)
+
+            total_res_direct_cost = total_used_slots * sku_rate
+            waste_cost = total_admin_bill - total_res_direct_cost
+            if waste_cost < 0:
+                waste_cost = 0.0  # C1a: No negative waste when usage exceeds bill
+
+            if total_used_slots > 0:
+                # Active usage on this reservation
+                for usage in usages:
+                    proj_id = usage["project"]
+                    res_id = usage["reservation"]
+                    slot_hours = usage["slot_hours"]
+                    direct_cost = slot_hours * sku_rate
+                    allocated_waste = 0.0
+
+                    if config.waste_rule == "A":
+                        project_share_percentage = slot_hours / total_used_slots
+                        allocated_waste = waste_cost * project_share_percentage
+                    elif config.waste_rule == "B":
+                        allocated_waste = 0.0
+
+                    total_charge = direct_cost + allocated_waste
+                    rounded_total = round(total_charge, 2)
+                    rounded_direct = round(direct_cost, 2)
+                    rounded_waste = round(rounded_total - rounded_direct, 2)
+
+                    final_attributions.append({
+                        "project_id": proj_id,
+                        "reservation_id": res_id,
+                        "direct_usage_cost_usd": rounded_direct,
+                        "allocated_waste_cost_usd": rounded_waste,
+                        "total_cost_attribution_usd": rounded_total,
+                        "slot_hours": round(slot_hours, 2)
+                    })
+
+                # Rule B: central dump of waste
+                if config.waste_rule == "B" and waste_cost > 0:
+                    final_attributions.append({
+                        "project_id": config.central_cost_center_project,
+                        "reservation_id": cfg_res_id,
+                        "direct_usage_cost_usd": 0.0,
+                        "allocated_waste_cost_usd": round(waste_cost, 2),
+                        "total_cost_attribution_usd": round(waste_cost, 2),
+                        "slot_hours": 0.0
+                    })
+            else:
+                # 100% idle reservation (0 qualifying job slot-hours in billing month)
+                # Emit row for any 0-slot project usages (cache hits)
+                for usage in usages:
+                    proj_id = usage["project"]
+                    res_id = usage["reservation"]
+                    final_attributions.append({
+                        "project_id": proj_id,
+                        "reservation_id": res_id,
+                        "direct_usage_cost_usd": 0.0,
+                        "allocated_waste_cost_usd": 0.0,
+                        "total_cost_attribution_usd": 0.0,
+                        "slot_hours": 0.0
+                    })
+
+                # Entire bill is waste for an idle reservation
+                if waste_cost > 0:
+                    recipient_project = config.central_cost_center_project if config.waste_rule == "B" else (config.central_cost_center_project or target_project)
+                    final_attributions.append({
+                        "project_id": recipient_project,
+                        "reservation_id": cfg_res_id,
+                        "direct_usage_cost_usd": 0.0,
+                        "allocated_waste_cost_usd": round(waste_cost, 2),
+                        "total_cost_attribution_usd": round(waste_cost, 2),
+                        "slot_hours": 0.0
+                    })
+            
+        # Tier 1.5: compute org-wide, filter display to focused projects
+        total_org_projects = len(set(a["project_id"] for a in final_attributions))
+        if params.focus_projects:
+            focus_set = set(params.focus_projects)
+            final_attributions = [a for a in final_attributions if a["project_id"] in focus_set]
+
+        scope = AppliedScope(
+            mode="focused" if params.focus_projects else "org",
+            projects=params.focus_projects,
+            total_org_projects=total_org_projects if params.focus_projects else None,
+        )
+
+        logger.info("Returning %d attribution records (scope: %s).", len(final_attributions), scope.mode)
+        if unconfigured:
+            logger.warning(
+                "%d reservation(s) unconfigured — %.2f slot-hours unattributed: %s",
+                len(unconfigured),
+                sum(unconfigured.values()),
+                list(unconfigured.keys()),
+            )
+        log_endpoint_end("Cost Attribution", t0, _logger=logger)
+        return {
+            "scope": scope.model_dump(),
+            "attributions": final_attributions,
+            "unattributed_reservations": [
+                {"reservation_id": rid, "slot_hours": round(sh, 2)}
+                for rid, sh in unconfigured.items()
+            ],
+            "total_unattributed_slot_hours": round(sum(unconfigured.values()), 2),
+            "is_complete": len(unconfigured) == 0,
+        }
+        
+    except Exception as e:
+        handle_endpoint_exception(e, "Cost attribution")

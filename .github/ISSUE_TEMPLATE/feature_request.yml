@@ -1,0 +1,51 @@
+name: "🚀 Feature Request"
+description: "Suggest an idea, simulation metric, or optimization capability for FinOps Optimizer for BigQuery"
+title: "[Feature] "
+labels: ["feature-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature to make FinOps Optimizer for BigQuery better!
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Is your feature request related to a problem? Please describe."
+      description: "A clear and concise description of what the operational challenge or FinOps frustration is."
+      placeholder: "e.g., I'm always frustrated when BigQuery autoscaling cooldown leads to unallocated spend across my teams..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Describe the solution you'd like"
+      description: "A clear and concise description of what capability, metric, simulation, or DDL generator you want added."
+      placeholder: "e.g., Add an interactive play axes slider to simulate queueing delay..."
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: "Which area/module does this apply to?"
+      options:
+        - "Slots Optimizer & Capacity Simulation"
+        - "AI Doctor & SQL Rewriting"
+        - "Cost Attribution & Waste Distribution"
+        - "Interactive vs. Batch Prioritization"
+        - "Storage Hygiene & Time Travel"
+        - "Governance & Partition Guardrails"
+        - "Top Spenders & Dollarized Waste"
+        - "Settings & Project Scoping"
+        - "General UI / UX"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Describe alternatives you've considered"
+      description: "A clear and concise description of any workarounds or alternatives you've considered (e.g. manual queries, spreadsheets, Active Assist)."
+  - type: textarea
+    id: context
+    attributes:
+      label: "Additional Context"
+      description: "Add any other context, mockup screenshots, sample SQL patterns, or documentation links here."

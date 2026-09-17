@@ -1,0 +1,23 @@
+User-agent: *
+Allow: /
+
+# Explicitly allow AI Search & Answer Engine crawlers
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://mbettan.github.io/bq-finops-optimizer/sitemap.xml

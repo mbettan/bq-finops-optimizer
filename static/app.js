@@ -1,0 +1,9680 @@
+// FinOps Optimizer for BigQuery - Frontend Logic
+
+// Global API response XSS sanitizer
+(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function (...args) {
+        const response = await nativeFetch(...args);
+        
+        let urlStr = '';
+        if (typeof args[0] === 'string') {
+            urlStr = args[0];
+        } else if (args[0] && typeof args[0] === 'object' && args[0].url) {
+            urlStr = args[0].url;
+        } else if (args[0] && typeof args[0].toString === 'function') {
+            urlStr = args[0].toString();
+        }
+
+        if (urlStr && (urlStr.includes('/api/') || urlStr.includes('api/'))) {
+            return new Proxy(response, {
+                get(target, prop, receiver) {
+                    if (prop === 'json') {
+                        return async function () {
+                            const data = await target.json();
+                            return sanitizeData(data);
+                        };
+                    }
+                    // Crucial: Do NOT pass the receiver to Reflect.get for native host getters
+                    // (like .ok, .status, .headers) to avoid "Illegal invocation" errors.
+                    const val = Reflect.get(target, prop);
+                    return typeof val === 'function' ? val.bind(target) : val;
+                }
+            });
+        }
+        return response;
+    };
+
+    function escapeHtml(str) {
+        if (str == null) return '';
+        return String(str)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+    }
+
+    function sanitizeData(data) {
+        if (data === null || data === undefined) return data;
+        if (typeof data === 'string') {
+            return escapeHtml(data);
+        }
+        if (Array.isArray(data)) {
+            return data.map(item => sanitizeData(item));
+        }
+        if (typeof data === 'object') {
+            const sanitized = {};
+            for (const key in data) {
+                if (Object.prototype.hasOwnProperty.call(data, key)) {
+                    // Keys that are consumed as raw text (clipboard, textarea,
+                    // <pre>.textContent, or POST body) must NOT be HTML-escaped
+                    // by the global proxy — doing so corrupts SQL operators,
+                    // quoted identifiers, and YAML.  Escape at the render sink.
+                    const RAW_KEYS = new Set(['ddl', 'optimized_query', 'query', 'migration_applied_yaml']);
+                    if (RAW_KEYS.has(key)) {
+                        sanitized[key] = data[key];
+                    } else {
+                        sanitized[key] = sanitizeData(data[key]);
+                    }
+                }
+            }
+            return sanitized;
+        }
+        return data;
+    }
+
+    // Exposed so other code paths that bypass fetch() (e.g. Snapshot import,
+    // which loads data from a file straight into localStorage) can apply the
+    // same escaping before that data ever reaches the DOM.
+    window.sanitizeData = sanitizeData;
+})();
+
+// Guards against a corrupted/malicious localStorage value (e.g. from a bad
+// Snapshot import) breaking script execution for the rest of this file.
+function safeParseJSON(raw, fallback) {
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[localStorage] Corrupted JSON value, using fallback:', e);
+        return fallback;
+    }
+}
+
+// Extracts a human-readable message from FastAPI error details.
+// FastAPI 422 returns {detail: [{loc: [...], msg: "..."}, ...]}, which
+// renders as [object Object] if used directly. This handles string,
+// array-of-{loc,msg}, and absent cases.
+function detailToMessage(detail, fallback = 'Unknown error') {
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+        return detail.map(d => {
+            if (typeof d === 'string') return d;
+            if (d && d.msg) {
+                const loc = Array.isArray(d.loc) ? d.loc.join(' → ') : '';
+                return loc ? `${loc}: ${d.msg}` : d.msg;
+            }
+            return String(d);
+        }).join('; ');
+    }
+    return String(detail);
+}
+
+// Clipboard helper with fallback for non-HTTPS contexts (e.g. local dev on 0.0.0.0)
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+    }
+    // Fallback: hidden textarea + execCommand
+    return new Promise((resolve, reject) => {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            resolve();
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Storage risk model
+// ---------------------------------------------------------------------------
+// The Storage Optimizer table is ALREADY pre-filtered by the backend to tables
+// missing partitioning OR clustering (src/main.py, the storage audit query's
+// `COALESCE(s.total_partitions, 0) = 0 OR c.clustering_fields IS NULL` clause).
+// The old badge then graded purely on size, so every listed row came back
+// "High Risk" or "Critical Risk" — a severity scale where nothing is ever low
+// tells the user nothing. These thresholds are exported so the tooltip and the
+// glossary modal render the same numbers the classifier uses.
+const RISK_GIB = 1024 ** 3;
+const RISK_THRESHOLDS = {
+    largeGiB: 1024,     // > 1 TiB is "large"
+    largeRows: 1e9,     // > 1 billion rows is "large"
+    minGiB: 1,          // < 1 GiB has negligible storage cost impact
+};
+
+const RISK_LEVELS = {
+    critical: {
+        label: 'Critical Risk',
+        icon: 'fa-triangle-exclamation',
+        blurb: 'Large table with neither partitioning nor clustering — full-scan blowout risk and the highest remediation ROI.',
+    },
+    high: {
+        label: 'High Risk',
+        icon: 'fa-circle-exclamation',
+        blurb: 'Large table with only one of partitioning or clustering in place.',
+    },
+    medium: {
+        label: 'Medium Risk',
+        icon: 'fa-circle-info',
+        blurb: 'Mid-sized table with neither partitioning nor clustering. Worth fixing opportunistically.',
+    },
+    low: {
+        label: 'Low Risk',
+        icon: 'fa-circle-check',
+        blurb: 'Negligible storage cost impact at this size. Listed for completeness.',
+    },
+};
+
+/**
+ * Classify a Storage Optimizer row.
+ * @returns {'critical'|'high'|'medium'|'low'}
+ */
+function classifyStorageRisk(row) {
+    // Note: Missing size telemetry (null/undefined/NaN) defaults to 0 and becomes 'low' risk.
+    // This is load-bearing on the backend COALESCE(s.size_bytes, 0) filter in src/main.py:657
+    // which prevents truly missing data from presenting as a false negative "safe".
+    const sizeGiB = (Number(row.size_bytes) || 0) / RISK_GIB;
+    const rows = Number(row.row_count) || 0;
+    const managed = (row.is_partitioned ? 1 : 0) + (row.is_clustered ? 1 : 0);
+    const isLarge = sizeGiB > RISK_THRESHOLDS.largeGiB || rows > RISK_THRESHOLDS.largeRows;
+
+    // Currently unreachable given the backend prefilter `AND COALESCE(s.size_bytes, 0) > 1073741824` (src/main.py:676).
+    // Kept as defense-in-depth if the backend filter ever changes.
+    if (sizeGiB < RISK_THRESHOLDS.minGiB) return 'low';
+    if (isLarge && managed === 0) return 'critical';
+    if (isLarge) return 'high';
+    if (managed === 0) return 'medium';
+    return 'low';
+}
+
+/** Human-readable explanation of which threshold fired, for the (?) tooltip. */
+function explainStorageRisk(row) {
+    const sizeGiB = (Number(row.size_bytes) || 0) / RISK_GIB;
+    const rows = Number(row.row_count) || 0;
+    const level = classifyStorageRisk(row);
+    const reasons = [];
+
+    if (sizeGiB < RISK_THRESHOLDS.minGiB) {
+        reasons.push(`under ${RISK_THRESHOLDS.minGiB} GiB`);
+    } else {
+        if (sizeGiB > RISK_THRESHOLDS.largeGiB) reasons.push(`over ${RISK_THRESHOLDS.largeGiB} GiB`);
+        if (rows > RISK_THRESHOLDS.largeRows) reasons.push('over 1 billion rows');
+        if (!row.is_partitioned) reasons.push('not partitioned');
+        if (!row.is_clustered) reasons.push('not clustered');
+    }
+
+    const why = reasons.length ? ` (${reasons.join(', ')})` : '';
+    return `${RISK_LEVELS[level].blurb}${why}`;
+}
+
+/** Render the risk badge. Uses CSS classes so both themes can style it. */
+function renderStorageRiskBadge(row) {
+    const level = classifyStorageRisk(row);
+    const meta = RISK_LEVELS[level];
+    const tip = escapeHtmlAttr(explainStorageRisk(row));
+    return `<span class="risk-badge risk-badge--${level}" title="${tip}">` +
+           `<i class="fa-solid ${meta.icon}"></i>${meta.label}</span>`;
+}
+
+// State
+const state = {
+    orgProject: localStorage.getItem('bq_org_project') || '',
+    adminProject: localStorage.getItem('bq_admin_project') || '',
+    region: localStorage.getItem('bq_region') || 'region-us',
+    maxBytesBilledGb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb')) || null,
+    focusProjects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
+    storageData: [],
+    slotsData: [],
+    slotsChart: null,
+    actualProvisioningChart: null,
+    jobsScatterChart: null,
+    // Logs fetch params (project IDs, region, focus_projects) to the console
+    // when true. Keep this off by default — screenshots/screen-shares/HAR
+    // exports of the console can leak org topology otherwise.
+    debugMode: false
+};
+
+// Quota-safe localStorage helper available globally
+function safeSetLocalStorage(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (e) {
+        console.warn(`[localStorage] Failed to write key "${key}" (possibly quota exceeded):`, e);
+        try { localStorage.removeItem(key); } catch (_) {}
+        return false;
+    }
+}
+
+/* ============================================================
+   CORE UI UTILITIES
+   Shared table/formatting helpers used by every module. Defined at
+   top level (the script tag sits at the end of <body>, so the DOM is
+   already parsed) and exported on `window` so the DOMContentLoaded
+   block below and inline handlers can both reach them.
+   ============================================================ */
+
+/**
+ * Format numbers into compact k/m/b strings for table columns.
+ * E.g. 1900090541 -> "1.90b", 42500 -> "42.5k"
+ */
+function formatCompact(num) {
+    if (num == null || isNaN(num)) return '0';
+    const abs = Math.abs(num);
+    if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+    if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+    if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+    if (abs >= 1e3) return (num / 1e3).toFixed(2) + 'k';
+    return num.toLocaleString();
+}
+window.formatCompact = formatCompact;
+
+/**
+ * DataTables column renderer that sorts on an embedded `data-order` value.
+ *
+ * DataTables only reads a `data-order` attribute off the <td> itself, and
+ * only for DOM-sourced tables. Tables built with `row.add([...])` hand
+ * DataTables an HTML string, so the attribute is invisible to the sorter and
+ * "$1,000.00" ends up ordered lexically. This renderer digs the raw number
+ * back out for the sort/type passes and leaves the display pass untouched.
+ * The filter pass gets the tag-stripped text so a search for "span" or
+ * "order" doesn't match the wrapper markup instead of the value.
+ */
+function orderByDataAttr(data, type) {
+    if (type === 'filter') return String(data).replace(/<[^>]*>/g, '');
+    if (type !== 'sort' && type !== 'type') return data;
+    const match = /data-order="([^"]*)"/.exec(String(data));
+    const raw = match ? match[1] : String(data).replace(/[^0-9.eE+-]/g, '');
+    const n = parseFloat(raw);
+    return isNaN(n) ? 0 : n;
+}
+window.orderByDataAttr = orderByDataAttr;
+
+/**
+ * Format a dollar amount to whole dollars.
+ *
+ * Intl puts the sign ahead of the symbol ("-$1,234"), which hand-rolled
+ * `'$' + Math.round(n).toLocaleString()` gets wrong ("$-1,234"). Amounts
+ * under a dollar keep two decimals so a real-but-small saving doesn't
+ * collapse to "$0" and read as "nothing to do here".
+ */
+function formatWholeDollars(amount) {
+    const n = Number(amount);
+    if (!isFinite(n)) return '$0';
+    const abs = Math.abs(n);
+    const digits = abs > 0 && abs < 1 ? 2 : 0;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    }).format(n);
+}
+window.formatWholeDollars = formatWholeDollars;
+
+/** Escape a value for safe interpolation into an HTML attribute or text node. */
+function escapeHtmlAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+window.escapeHtmlAttr = escapeHtmlAttr;
+
+/**
+ * Build a Google Cloud Console deep-link URL.
+ * `location` accepts either a metadata region ("region-us") or a plain
+ * location ("us") — the "region-" prefix is stripped for the Console.
+ */
+function buildConsoleUrl(type, opts = {}) {
+    const proj = encodeURIComponent(opts.project || '');
+    const rawLoc = (opts.location || (typeof state !== 'undefined' ? state.region : '') || 'region-us').replace(/^region-/, '');
+    const loc = encodeURIComponent(rawLoc);
+    switch (type) {
+        case 'job':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&j=bq:${loc}:${encodeURIComponent(opts.jobId || '')}&page=queryresults`;
+        case 'dataset':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m4!1m3!3m2!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}`;
+        case 'table':
+            return `https://console.cloud.google.com/bigquery?project=${proj}&ws=!1m5!1m4!4m3!1s${proj}!2s${encodeURIComponent(opts.dataset || '')}!3s${encodeURIComponent(opts.table || '')}`;
+        case 'project':
+            return `https://console.cloud.google.com/bigquery?project=${proj}`;
+        case 'reservation':
+            return `https://console.cloud.google.com/bigquery/admin/capacity-management?project=${proj}`;
+        case 'user': {
+            const userEmail = opts.user || opts.email || '';
+            const scope = opts.scope || (typeof state !== 'undefined' && state.scopeMode === 'single' ? 'PROJECT' : 'ORGANIZATION');
+            const lookback = opts.lookback || 'P14D';
+            const filterState = [null, null, scope, rawLoc, null, null, userEmail ? [userEmail] : null, null, null, null, null, null, null, null, lookback];
+            let encodedFilter = '';
+            try {
+                encodedFilter = btoa(unescape(encodeURIComponent(JSON.stringify(filterState))));
+            } catch (e) {
+                console.warn('Failed to encode Jobs Explorer filter', e);
+            }
+            const jhParam = encodedFilter ? `;bqmon.jh=${encodedFilter}` : '';
+            return `https://console.cloud.google.com/bigquery/admin/jobs-explorer;region=${loc}${jhParam}?project=${proj}&region=${loc}`;
+        }
+        case 'interactive_translation':
+            return `https://console.cloud.google.com/bigquery?interactiveTranslation=true&project=${proj}`;
+        default:
+            return '#';
+    }
+}
+window.buildConsoleUrl = buildConsoleUrl;
+
+/** Render a project ID with a Console deep-link. */
+function renderProjectLink(project, label) {
+    if (!project) return '—';
+    const url = buildConsoleUrl('project', { project });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open project in Console">${escapeHtmlAttr(label || project)}</a>`;
+}
+window.renderProjectLink = renderProjectLink;
+
+/** Render a reservation ID with a Console capacity-management link. */
+function renderReservationLink(reservation, project, label) {
+    if (!reservation) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.adminProject || state.orgProject) : '');
+    const url = buildConsoleUrl('reservation', { project: proj });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open reservation in Capacity Management">${escapeHtmlAttr(label || reservation)}</a>`;
+}
+window.renderReservationLink = renderReservationLink;
+
+/** Render a user email with a Console Jobs Explorer deep-link. */
+function renderUserLink(userEmail, project, label) {
+    if (!userEmail) return '—';
+    const proj = project || (typeof state !== 'undefined' ? (state.orgProject || state.adminProject) : '');
+    const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+    const url = buildConsoleUrl('user', { user: userEmail, project: proj, location: loc });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open user's jobs in BigQuery Jobs Explorer">${escapeHtmlAttr(label || userEmail)}</a>`;
+}
+window.renderUserLink = renderUserLink;
+
+/** Check whether an email belongs to a GCP Service Account. */
+function isServiceAccount(email) {
+    if (!email) return false;
+    const lower = String(email).toLowerCase();
+    return lower.endsWith('.gserviceaccount.com') ||
+           lower.endsWith('.iam.gserviceaccount.com') ||
+           lower.includes('gserviceaccount.com') ||
+           lower.includes('-compute@developer.gserviceaccount.com') ||
+           lower.startsWith('service-') ||
+           lower.includes('serviceaccount') ||
+           lower.includes('svc-') ||
+           lower.includes('-svc@') ||
+           lower.includes('-sa@');
+}
+window.isServiceAccount = isServiceAccount;
+
+/** Render an identity badge (Service Account vs Human User) matching the Anti-Pattern styling. */
+function renderIdentityBadge(email) {
+    const sa = isServiceAccount(email);
+    return `<span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; white-space: nowrap;">${sa ? 'Service Account' : 'Human'}</span>`;
+}
+window.renderIdentityBadge = renderIdentityBadge;
+
+/**
+ * Render a Job ID cell with monospace ellipsis, copy button and Console
+ * deep-link. Returns a complete <td> so callers can drop it straight into
+ * a row template.
+ */
+function renderJobId(jobId, project, region) {
+    if (!jobId) return '<td class="job-id-cell">—</td>';
+    const proj = project || (typeof state !== 'undefined' ? state.orgProject : '');
+    const loc = region || (typeof state !== 'undefined' ? state.region : 'region-us');
+    const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId });
+    const safeJobId = escapeHtmlAttr(jobId);
+    return `<td class="job-id-cell" data-order="${safeJobId}" title="${safeJobId}">` +
+        `<span class="job-id-text">${safeJobId}</span>` +
+        `<span class="job-id-actions">` +
+        `<a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` +
+        `<button class="btn-action copy-job-id-btn" data-job-id="${safeJobId}" title="Copy Job ID"><i class="fa-solid fa-copy"></i></button>` +
+        `</span>` +
+        `</td>`;
+}
+window.renderJobId = renderJobId;
+
+/** Render a dataset name with a Console deep-link. */
+function renderDatasetLink(dataset, project, label) {
+    if (!dataset) return '—';
+    const url = buildConsoleUrl('dataset', { project, dataset });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open dataset in Console">${escapeHtmlAttr(label || dataset)}</a>`;
+}
+window.renderDatasetLink = renderDatasetLink;
+
+/** Render a table name with a Console deep-link. */
+function renderTableLink(table, dataset, project, label) {
+    if (!table) return '—';
+    if (!dataset) return escapeHtmlAttr(label || table);
+    const url = buildConsoleUrl('table', { project, dataset, table });
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open table in Console">${escapeHtmlAttr(label || table)}</a>`;
+}
+window.renderTableLink = renderTableLink;
+
+/* ------------------------------------------------------------------
+   Empty-table marking
+   ------------------------------------------------------------------ */
+
+/**
+ * Tag a DataTable's container with .dt-empty when it holds no data at all.
+ *
+ * This distinguishes "the analysis has not run yet" (recordsTotal === 0) from
+ * "the current search or filter pill matched nothing" (recordsTotal > 0 but
+ * recordsDisplay === 0). Only the former is collapsed by the stylesheet:
+ * hiding a filtered-to-zero table would take its own search box — and, for
+ * the AI Doctor panel, the #aidoc-filters pills — with it, leaving the user
+ * no way to undo the filter short of a page reload.
+ *
+ * Registered as a delegated document handler so it covers tables initialised
+ * directly via $().DataTable() as well as those going through
+ * safeInitDataTable().
+ */
+function markEmptyTables(settings) {
+    try {
+        const api = new $.fn.dataTable.Api(settings);
+        const container = api.table().container();
+        if (container) {
+            $(container).toggleClass('dt-empty', api.page.info().recordsTotal === 0);
+        }
+    } catch (err) {
+        console.warn('[dt-empty] Could not inspect DataTable state:', err);
+    }
+}
+window.markEmptyTables = markEmptyTables;
+
+if (window.jQuery && $.fn && $.fn.dataTable) {
+    $(document).on('init.dt draw.dt', (e, settings) => markEmptyTables(settings));
+}
+
+/* ------------------------------------------------------------------
+   Chart theming
+
+   Chart.js paints its labels onto a <canvas>. There is no DOM node, so
+   the `.light-theme [style*="color: #hex"]` rescue layer in style.css
+   cannot reach them and a hardcoded hex in a chart config survives every
+   theme switch. Axis, tick, legend and annotation colours therefore have
+   to be read from the theme tokens.
+   ------------------------------------------------------------------ */
+
+/** Resolve the live theme tokens Chart.js needs. */
+function chartPalette() {
+    const css = getComputedStyle(document.documentElement);
+    const read = (token, fallback) => css.getPropertyValue(token).trim() || fallback;
+    return {
+        // Axis titles carry more weight than ticks, so they get the stronger token.
+        title: read('--text-primary', '#f8fafc'),
+        tick: read('--text-secondary', '#94a3b8'),
+        grid: read('--glass-border', 'rgba(148, 163, 184, 0.2)'),
+        // Non-data annotations: break-even lines, thresholds, guides.
+        guide: read('--text-tertiary', 'rgba(148, 163, 184, 0.5)'),
+    };
+}
+window.chartPalette = chartPalette;
+
+/**
+ * Push the current palette into Chart.js' global defaults.
+ *
+ * Must run at startup, not only on theme toggle: theme-boot.js picks the
+ * theme before first paint (and may follow the OS without persisting a
+ * choice), so a chart built during the initial render would otherwise
+ * inherit Chart.js' stock #666 instead of the theme's tokens.
+ */
+function syncChartDefaults() {
+    if (!window.Chart) return;
+    const palette = chartPalette();
+    Chart.defaults.color = palette.tick;
+    Chart.defaults.borderColor = palette.grid;
+}
+window.syncChartDefaults = syncChartDefaults;
+
+/**
+ * Re-tint one chart's axis/legend colours in place, for an existing instance.
+ *
+ * Per-chart options outrank Chart.defaults, so a chart that declares its own
+ * tick/title/legend colours ignores syncChartDefaults() forever. Datasets
+ * tagged `_themeRole: 'guide'` are re-tinted too — those are annotation lines
+ * whose colour is chrome, not data.
+ *
+ * Caller is responsible for the follow-up chart.update().
+ */
+function retintChart(chart) {
+    if (!chart || !chart.options) return;
+    const palette = chartPalette();
+
+    Object.values(chart.options.scales || {}).forEach(scale => {
+        if (!scale) return;
+        if (scale.ticks) scale.ticks.color = palette.tick;
+        if (scale.title) scale.title.color = palette.title;
+        if (scale.grid) scale.grid.color = palette.grid;
+    });
+
+    const legend = chart.options.plugins && chart.options.plugins.legend;
+    if (legend && legend.labels) legend.labels.color = palette.tick;
+
+    (chart.data?.datasets || []).forEach(dataset => {
+        if (dataset && dataset._themeRole === 'guide') dataset.borderColor = palette.guide;
+    });
+}
+window.retintChart = retintChart;
+
+/**
+ * Format an axis tick as money.
+ *
+ * Chart.js' default numeric formatter falls back to exponent notation for
+ * small magnitudes, so a per-job cost axis renders "1.00000E-5" under a title
+ * that promises dollars. Per-job costs genuinely are sub-cent, so the fix is
+ * to widen the decimals rather than round them away to a column of "$0.00".
+ */
+function formatMoneyTick(value) {
+    if (!isFinite(value)) return '';
+    if (value === 0) return '$0';
+    const magnitude = Math.abs(value);
+    if (magnitude < 0.01) {
+        // toPrecision keeps the significant digits; Number() strips the
+        // trailing zeros it pads with. Below ~1e-7 JS returns exponent
+        // notation regardless, which is the honest rendering at that scale.
+        return `$${Number(value.toPrecision(2))}`;
+    }
+    return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+window.formatMoneyTick = formatMoneyTick;
+
+
+
+/* ------------------------------------------------------------------
+   Universal CSV export engine
+   ------------------------------------------------------------------ */
+
+/**
+ * Download the visible/filtered rows of an HTML <table> as a CSV file.
+ * Exports ALL DataTables rows matching the current search/filter — not
+ * just the active page. Strips HTML, escapes per RFC 4180 and prefixes a
+ * UTF-8 BOM so Excel opens it with the right encoding.
+ */
+function downloadTableAsCSV(tableId, filename) {
+    const tableEl = document.getElementById(tableId);
+    if (!tableEl) {
+        if (typeof showNotification === 'function') {
+            showNotification('No table data to export.', 'warning');
+        }
+        return;
+    }
+
+    const _decodeEntities = (() => {
+        const ta = document.createElement('textarea');
+        return (html) => { ta.innerHTML = html; return ta.value; };
+    })();
+
+    function cellText(cell) {
+        // Allow cells to declare an explicit CSV-clean value
+        if (cell.dataset && cell.dataset.csv !== undefined) return cell.dataset.csv;
+        let raw = cell.textContent || '';
+        if (!raw.trim() && cell.innerHTML) {
+            raw = _decodeEntities(cell.innerHTML.replace(/<[^>]*>/g, ' '));
+        }
+        return raw.replace(/\s+/g, ' ').trim();
+    }
+
+    function escapeCSV(val) {
+        if (val == null) return '';
+        const s = String(val);
+        if (/[",\n\r]/.test(s)) {
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+    }
+
+    const thead = tableEl.querySelector('thead');
+    if (!thead) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table has no header row — cannot export.', 'warning');
+        }
+        return;
+    }
+
+    const headerRows = thead.querySelectorAll('tr');
+    const lastHeaderRow = headerRows[headerRows.length - 1];
+    const headerCells = lastHeaderRow ? lastHeaderRow.querySelectorAll('th') : [];
+    const headers = Array.from(headerCells).map(th => escapeCSV(cellText(th)));
+
+    const rows = [];
+    if (typeof $ !== 'undefined' && $.fn && $.fn.DataTable && $.fn.DataTable.isDataTable('#' + tableId)) {
+        const dt = $('#' + tableId).DataTable();
+        const tempDiv = document.createElement('div');
+        dt.rows({ search: 'applied', order: 'applied' }).every(function () {
+            const node = this.node();
+            if (node) {
+                const cells = node.querySelectorAll('td');
+                rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+            } else {
+                const rowData = this.data();
+                if (Array.isArray(rowData)) {
+                    const cells = rowData.map(cellHtml => {
+                        tempDiv.innerHTML = typeof cellHtml === 'string' ? cellHtml : String(cellHtml ?? '');
+                        return escapeCSV(cellText(tempDiv));
+                    });
+                    rows.push(cells);
+                }
+            }
+        });
+    } else {
+        const tbody = tableEl.querySelector('tbody');
+        if (tbody) {
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length) {
+                    rows.push(Array.from(cells).map(td => escapeCSV(cellText(td))));
+                }
+            });
+        }
+    }
+
+    if (rows.length === 0) {
+        if (typeof showNotification === 'function') {
+            showNotification('Table is empty — nothing to export.', 'warning');
+        }
+        return;
+    }
+
+    const csvLines = [headers.join(',')];
+    rows.forEach(r => csvLines.push(r.join(',')));
+    // Leading BOM so Excel detects UTF-8 instead of mangling non-ASCII.
+    const blob = new Blob(['﻿' + csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `${tableId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (typeof showNotification === 'function') {
+        showNotification(`Exported ${rows.length} rows to ${a.download}`, 'success');
+    }
+}
+window.downloadTableAsCSV = downloadTableAsCSV;
+
+// Global delegated handler for CSV export buttons
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-csv-export');
+    if (!btn) return;
+    const tableId = btn.getAttribute('data-table-id');
+    const filename = btn.getAttribute('data-filename') || `${tableId}.csv`;
+    downloadTableAsCSV(tableId, filename);
+});
+
+/**
+ * Attach an "Export CSV" button above every result table that doesn't
+ * already have one. Auto-injection keeps the button contract in one place
+ * instead of hand-editing 30+ markup blocks (and keeps new tables covered).
+ */
+function injectCsvExportButtons(root = document) {
+    root.querySelectorAll('table[id]').forEach(tableEl => {
+        const tableId = tableEl.id;
+        if (!tableEl.querySelector('thead')) return;
+        // Skip layout/helper tables and anything already wired up.
+        if (tableEl.closest('.no-csv-export')) return;
+        if (document.querySelector(`.btn-csv-export[data-table-id="${tableId}"]`)) return;
+
+        const anchor = tableEl.closest('.table-responsive') || tableEl;
+        const parent = anchor.parentElement;
+        if (!parent) return;
+
+        const bar = document.createElement('div');
+        bar.className = 'csv-export-bar';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-action btn-csv-export';
+        btn.setAttribute('data-table-id', tableId);
+        btn.setAttribute('data-filename', `${tableId.replace(/-table$/, '')}.csv`);
+        btn.title = 'Download the filtered rows of this table as CSV';
+        btn.innerHTML = '<i class="fa-solid fa-file-csv"></i> Export CSV';
+        bar.appendChild(btn);
+        parent.insertBefore(bar, anchor);
+    });
+}
+window.injectCsvExportButtons = injectCsvExportButtons;
+
+/* ------------------------------------------------------------------
+   Persistent Notification Center (bell icon)
+   Toasts are ephemeral; this keeps the last N of them in a dropdown.
+   Ongoing tasks (from setLoading) appear with a spinner + elapsed time.
+   ------------------------------------------------------------------ */
+
+const MAX_NOTIFICATION_HISTORY = 50;
+const notificationHistory = [];
+let notifUnreadCount = 0;
+
+/** Human-readable labels keyed by button id. Nine buttons display generic
+ *  "Run scan" text — this map ensures ongoing entries are distinguishable. */
+const TASK_LABELS = {
+    'analyze-linter-btn':             'Query Optimization',
+    'analyze-dml-btn':                'DML Abuse Scan',
+    'analyze-batch-btn':              'Batch Candidates',
+    'analyze-expiration-btn':         'Expiration Policy',
+    'analyze-filter-btn':             'Partition Guardrail',
+    'analyze-mv-btn':                 'MV Candidates',
+    'analyze-mv-rejections-btn':      'MV Rejections',
+    'analyze-skew-btn':               'Data Skew',
+    'analyze-warnings-btn':           'Query Warnings',
+    'analyze-hygiene-btn':            'Storage Hygiene',
+    'analyze-time-travel-btn':        'Time Travel Scan',
+    'analyze-shard-btn':              'Shard Scan',
+    'analyze-storage-btn':            'Storage Analysis',
+    'analyze-bi-btn':                 'BI Engine Analysis',
+    'analyze-hbo-btn':                'HBO Insights',
+    'analyze-performance-btn':        'Performance Scan',
+    'analyze-profiler-btn':           'Workload Profiler',
+    'analyze-users-btn':              'Top Spenders',
+    'analyze-slots-btn':              'Slots Optimizer',
+    'analyze-jobs-btn':               'Job Analysis',
+    'calculate-cost-attribution-btn': 'Cost Attribution',
+    'run-ai-analysis-btn':            'AI Doctor',
+    'run-simulation-btn':             'Edition Simulation',
+    'run-active-assist-btn':          'Active Assist Sync',
+    'run-static-audit-btn':           'Schema Audit',
+    'analyze-fluid-btn':              'Fluid Scaling',
+};
+
+const NotificationCenter = (() => {
+    let notifBadge, notifDropdown, notifHistoryList, notifBellBtn, notifClearBtn;
+    let elapsedInterval = null;
+
+    /** Active in-flight tasks. button.id → { label, startTime } */
+    const activeTasks = new Map();
+    /** Auto-expire stuck tasks (e.g. throw between setLoading and try). */
+    let maxTaskAgeMs = 10 * 60 * 1000; // 10 minutes
+
+    function cacheEls() {
+        notifBadge = document.getElementById('notification-badge');
+        notifDropdown = document.getElementById('notification-dropdown');
+        notifHistoryList = document.getElementById('notification-history-list');
+        notifBellBtn = document.getElementById('btn-notification-bell');
+        notifClearBtn = document.getElementById('btn-clear-notifications');
+    }
+
+    /** Expire stale tasks AND recover their buttons (disabled + Processing). */
+    function sweepStaleTasks() {
+        const now = Date.now();
+        for (const [id, t] of activeTasks) {
+            if (now - t.startTime <= maxTaskAgeMs) continue;
+            activeTasks.delete(id);
+            const btn = document.getElementById(id);
+            if (btn && btn.disabled && btn.dataset.originalText) {
+                btn.disabled = false;
+                btn.innerHTML = btn.dataset.originalText;
+            }
+        }
+    }
+
+    function updateNotifBadge() {
+        sweepStaleTasks();
+        if (!notifBadge) return;
+        const totalBadge = notifUnreadCount + activeTasks.size;
+        if (totalBadge > 0) {
+            notifBadge.textContent = totalBadge > 99 ? '99+' : totalBadge;
+            notifBadge.style.display = '';
+        } else {
+            notifBadge.style.display = 'none';
+        }
+    }
+
+    function formatNotifTime(date) {
+        const diffSec = Math.floor((new Date() - date) / 1000);
+        if (diffSec < 60) return 'just now';
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `${diffMin}m ago`;
+        const diffHr = Math.floor(diffMin / 60);
+        if (diffHr < 24) return `${diffHr}h ago`;
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatElapsed(startTime) {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (elapsed < 60) return elapsed + 's';
+        return Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+    }
+
+    function renderNotifHistory() {
+        if (!notifHistoryList) return;
+        // Guard: show empty state only when there are no active tasks AND no history
+        if (!activeTasks.size && notificationHistory.length === 0) {
+            notifHistoryList.innerHTML = '<div class="notif-dropdown__empty">No notifications yet.</div>';
+            return;
+        }
+
+        // --- Ongoing tasks (newest-first, consistent with history) ---
+        const ongoingHtml = activeTasks.size ? Array.from(activeTasks.entries()).reverse().map(([, t]) => {
+            return '<div class="notif-item ongoing">' +
+                '<div class="notif-item__icon ongoing"><i class="fa-solid fa-spinner fa-spin"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(t.label) + '\u2026</div>' +
+                    '<div class="notif-item__time"><span data-task-start="' + t.startTime + '">' + formatElapsed(t.startTime) + '</span></div>' +
+                '</div>' +
+            '</div>';
+        }).join('') : '';
+
+        // Divider between ongoing and completed
+        const divider = (activeTasks.size && notificationHistory.length)
+            ? '<div class="notif-divider">RECENT</div>'
+            : '';
+
+        // --- Completed history (newest first) ---
+        const iconMap = {
+            success: 'fa-circle-check',
+            error: 'fa-circle-exclamation',
+            warning: 'fa-triangle-exclamation',
+            info: 'fa-circle-info'
+        };
+        // Messages can carry user-supplied text (project IDs,
+        // API error bodies) so they are escaped, never interpolated raw.
+        const historyHtml = notificationHistory.slice().reverse().map(n => {
+            const icon = iconMap[n.type] || iconMap.info;
+            const safeType = iconMap[n.type] ? n.type : 'info';
+            return '<div class="notif-item">' +
+                '<div class="notif-item__icon ' + safeType + '"><i class="fa-solid ' + icon + '"></i></div>' +
+                '<div class="notif-item__body">' +
+                    '<div class="notif-item__message">' + escapeHtmlAttr(n.message) + '</div>' +
+                    '<div class="notif-item__time">' + formatNotifTime(n.time) + '</div>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+        notifHistoryList.innerHTML = ongoingHtml + divider + historyHtml;
+    }
+
+    /** Record a toast into the persistent history. */
+    function record(message, type) {
+        if (type === undefined) type = 'info';
+        notificationHistory.push({ message: message, type: type, time: new Date() });
+        if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
+        notifUnreadCount++;
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Register an in-flight task. Resets startTime if already tracked. */
+    function startTask(buttonId, label) {
+        activeTasks.set(buttonId, { label: label, startTime: Date.now() });
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Remove a completed task. Does NOT call record() — showNotification
+     *  already archives the result via record(). Tolerates unknown ids. */
+    function completeTask(buttonId) {
+        activeTasks.delete(buttonId);
+        updateNotifBadge();
+        if (notifDropdown && notifDropdown.style.display !== 'none') renderNotifHistory();
+    }
+
+    /** Open or close the dropdown. Consolidates both close paths
+     *  (bell toggle + click-outside) to manage the elapsed-time interval. */
+    function setDropdownOpen(open) {
+        if (!notifDropdown) return;
+        if (open) {
+            renderNotifHistory();
+            notifDropdown.style.display = '';
+            notifUnreadCount = 0;
+            updateNotifBadge();
+            // Start elapsed-time ticker — only updates [data-task-start]
+            // spans' textContent. Does NOT rebuild innerHTML (that would
+            // restart fa-spin animations). Accepted trade-off: completed
+            // entries' relative times ("2m ago") freeze while panel is open.
+            clearInterval(elapsedInterval);
+            elapsedInterval = setInterval(function() {
+                // cacheEls() can leave this null if the bell markup is absent
+                // (embedded/simulator layouts), and the ticker outlives the
+                // element on re-render.
+                if (!notifHistoryList) return;
+                var spans = notifHistoryList.querySelectorAll('[data-task-start]');
+                spans.forEach(function(span) {
+                    var elapsed = Math.floor((Date.now() - parseInt(span.dataset.taskStart, 10)) / 1000);
+                    span.textContent = elapsed < 60
+                        ? elapsed + 's'
+                        : Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+                });
+            }, 1000);
+        } else {
+            notifDropdown.style.display = 'none';
+            clearInterval(elapsedInterval);
+            elapsedInterval = null;
+        }
+    }
+
+    function init() {
+        cacheEls();
+        // sweepStaleTasks() only ran as a side effect of updateNotifBadge(),
+        // so a task that stalled with no further notifications kept its badge
+        // count and its button stuck on "Processing…" indefinitely. Poll at a
+        // fraction of maxTaskAgeMs so expiry happens on its own.
+        setInterval(updateNotifBadge, 30 * 1000);
+        if (notifBellBtn) {
+            notifBellBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                var isOpen = notifDropdown && notifDropdown.style.display !== 'none';
+                setDropdownOpen(!isOpen);
+            });
+        }
+        if (notifClearBtn) {
+            notifClearBtn.addEventListener('click', function() {
+                // Clear history only — ongoing tasks remain visible
+                notificationHistory.length = 0;
+                notifUnreadCount = 0;
+                updateNotifBadge();
+                renderNotifHistory();
+            });
+        }
+        document.addEventListener('click', function(e) {
+            if (!notifDropdown || notifDropdown.style.display === 'none') return;
+            if (e.target.closest('#notification-center')) return;
+            setDropdownOpen(false);
+        });
+
+        // Replay any notification staged before a full-page reload (e.g. Snapshot Import)
+        try {
+            var pending = sessionStorage.getItem('pending_notification');
+            if (pending) {
+                var item = JSON.parse(pending);
+                if (item && item.message) {
+                    record(item.message, item.type || 'info');
+                }
+                sessionStorage.removeItem('pending_notification');
+            }
+        } catch (_) {}
+
+        updateNotifBadge();
+    }
+
+    return {
+        init: init,
+        record: record,
+        render: renderNotifHistory,
+        startTask: startTask,
+        completeTask: completeTask,
+        __setMaxAge: function(ms) { maxTaskAgeMs = ms; }
+    };
+})();
+window.NotificationCenter = NotificationCenter;
+
+// ---------------------------------------------------------------------------
+// Scope classification — derived from backend, not hand-maintained
+// ---------------------------------------------------------------------------
+
+/** Populated at startup from GET /api/meta/scope-map.
+ *  Keys are real route paths (e.g. '/api/cost-attribution/calculate'),
+ *  values are 'focus' or 'org'. */
+let FOCUS_SCOPE_MAP = {};
+
+/** Fetch the scope map once at startup so buildPayload and the badge work. */
+async function loadScopeMap() {
+    try {
+        const res = await fetch('/api/meta/scope-map');
+        if (res.ok) {
+            FOCUS_SCOPE_MAP = await res.json();
+        } else {
+            console.error('[ScopeMap] Non-OK response:', res.status);
+        }
+    } catch (e) {
+        console.error('[ScopeMap] Failed to load — falling back to pass-through', e);
+    }
+}
+
+/**
+ * Strip focus_projects from the payload for org-only endpoints.
+ * Warns on unmapped endpoints so missing entries surface during dev.
+ */
+function buildPayload(endpoint, basePayload) {
+    const scope = FOCUS_SCOPE_MAP[endpoint];
+    if (!scope) {
+        // Default to 'org' (strip focus_projects) for unmapped endpoints.
+        // When the scope map fails to load (502, timeout), every endpoint is
+        // unmapped. Passing focus_projects to endpoints with extra='forbid'
+        // causes a hard 422. Defaulting to 'org' is the safer fallback.
+        console.warn(`[ScopeMap] Unmapped endpoint: ${endpoint} — defaulting to org scope`);
+    }
+    if (scope !== 'focus') {
+        const { focus_projects, ...rest } = basePayload;
+        return rest;
+    }
+    return basePayload;
+}
+
+/** Maps navigation view names to their primary POST endpoint for badge display. */
+const VIEW_TO_ENDPOINT = {
+    'storage': '/api/storage/analyze',
+    'schema-optimizer': '/api/storage/static_audit',
+    'jobs': '/api/jobs/analyze',
+    'slots': '/api/slots/analyze',
+    'fluid-scaling': '/api/fluid-scaling/estimate',
+    'slots-simulator': '/api/slots/simulate',
+    'cost-attribution': '/api/cost-attribution/calculate',
+    'profiler': '/api/slots/profiler',
+    'users': '/api/users/top_spenders',
+    'hbo': '/api/hbo/analyze',
+    'storage-hygiene': '/api/storage/hygiene',
+    'antipatterns': '/api/antipatterns/dml',
+    'performance-insights': '/api/hbo/performance_insights',
+    'bi-optimizer': '/api/bi/analyze',
+    'ai-reviewer': '/api/ai/analyze',
+};
+
+// Update scope badge based on active view and focusProjects state
+function updateScopeBadge(viewName) {
+    const container = document.getElementById('scope-badge-container');
+    const badge = document.getElementById('scope-badge');
+    if (!container || !badge) return;
+
+    const endpoint = VIEW_TO_ENDPOINT[viewName];
+    const scope = endpoint ? FOCUS_SCOPE_MAP[endpoint] : undefined;
+    const projects = state.focusProjects || [];
+
+    container.style.display = '';
+    if (scope === 'org') {
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
+    } else if (projects.length > 0) {
+        badge.textContent = `🎯 Focused: ${projects.length} project${projects.length > 1 ? 's' : ''}`;
+        badge.style.color = 'var(--accent-primary)';
+    } else {
+        badge.textContent = '🌐 Organization-wide';
+        badge.style.color = '#9ca3af';
+    }
+}
+
+
+/**
+ * Clear stale module data instantly when a user clicks a fetch button.
+ * Removes the specified localStorage keys and empties the tbody of each table selector.
+ * @param {string[]} keys - localStorage keys to remove
+ * @param {string[]} tableSelectors - CSS selectors for table elements whose tbody should be cleared
+ */
+function clearModuleCache(keys = [], tableSelectors = []) {
+    keys.forEach(k => localStorage.removeItem(k));
+    tableSelectors.forEach(sel => {
+        const tbody = document.querySelector(`${sel} tbody`);
+        if (tbody) tbody.innerHTML = '';
+    });
+}
+
+/* ============================================================
+   SNAPSHOT EXPORT / IMPORT
+   Bundles all bq_* localStorage keys into a single shareable JSON.
+   ============================================================ */
+const Snapshot = (() => {
+
+  const SCHEMA_VERSION = 1;
+  // Only export keys we own. Never sweep all of localStorage (avoids leaking
+  // unrelated keys and keeps the file deterministic).
+  const KEY_PREFIX = 'bq_';
+
+  function collectKeys(redact) {
+    const out = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(KEY_PREFIX)) {
+        const val = localStorage.getItem(key);
+        if (redact) {
+          out[key] = redactValue(val);
+        } else {
+          out[key] = val;
+        }
+      }
+    }
+    return out;
+  }
+
+  // Matching on key names alone is not enough: an address can sit under any
+  // key. The batch priority scan reports a workload under `workload_name`,
+  // which is the operator's email whenever the workload carries no lineage
+  // label — a key-name rule would export those verbatim from a *redacted*
+  // snapshot. This pass only ever removes more, never less.
+  const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const scrubString = (s) => s.replace(EMAIL_RE, 'redacted@example.com');
+
+  function redactValue(raw) {
+    try {
+      const obj = JSON.parse(raw);
+      const scrub = (o) => {
+        if (!o) return;
+        if (Array.isArray(o)) {
+          o.forEach((item, i) => {
+            if (typeof item === 'string') o[i] = scrubString(item);
+            else scrub(item);
+          });
+        } else if (typeof o === 'object') {
+          for (const k of Object.keys(o)) {
+            const val = o[k];
+            if (val === null || val === undefined) continue;
+            if (/email/i.test(k) && typeof val === 'string') {
+              o[k] = 'redacted@example.com';
+            } else if (/^query$|^query_text$|^query_snippet$/i.test(k) && typeof val === 'string') {
+              o[k] = '-- [redacted query]';
+            } else if (typeof val === 'string') {
+              o[k] = scrubString(val);
+            } else if (typeof val === 'object') {
+              scrub(val);
+            }
+          }
+        }
+      };
+      scrub(obj);
+      return JSON.stringify(obj);
+    } catch {
+      if (typeof raw === 'string' && raw.includes('@') && !raw.includes(' ')) {
+        return 'redacted@example.com';
+      }
+      return raw;
+    }
+  }
+
+  function buildSnapshot(redact) {
+    return {
+      _meta: {
+        schema_version: SCHEMA_VERSION,
+        app: 'bq-finops-optimizer',
+        exported_at: new Date().toISOString(),
+        org_project: localStorage.getItem('bq_org_project') || null,
+        admin_project: localStorage.getItem('bq_admin_project') || null,
+        region: localStorage.getItem('bq_region') || null,
+        user_agent: navigator.userAgent,
+        redacted: !!redact
+      },
+      data: collectKeys(redact),
+    };
+  }
+
+  function countEmails(data) {
+    const emails = new Set();
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    for (const key of Object.keys(data)) {
+      const val = data[key];
+      if (typeof val === 'string') {
+        const matches = val.match(emailRegex);
+        if (matches) {
+          matches.forEach(m => emails.add(m.toLowerCase()));
+        }
+      }
+    }
+    return emails.size;
+  }
+
+  function exportSnapshot() {
+    const redactChecked = document.getElementById('chk-redact-snapshot')?.checked;
+    const snapshot = buildSnapshot(redactChecked);
+    const keyCount = Object.keys(snapshot.data).length;
+
+    if (keyCount === 0) {
+      showNotification('No analysis data to export yet. Run an analysis first.', 'warning');
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const proj = (snapshot._meta.org_project || 'snapshot').replace(/[^a-zA-Z0-9_-]/g, '');
+    const filename = `finops-snapshot_${proj}_${ts}${redactChecked ? '_redacted' : ''}.json`;
+    triggerDownload(blob, filename);
+    showNotification(`Exported ${keyCount} result set(s).`, 'success');
+  }
+
+  // Data imported from a snapshot file bypasses the fetch() response
+  // sanitizer entirely (it's loaded straight from a file, never through
+  // window.fetch), so it must be re-escaped here before it ever reaches
+  // localStorage / the DOM — otherwise a crafted snapshot shared via the
+  // app's own "share with your team" export/import feature is a stored XSS
+  // vector requiring no BigQuery access at all. Falls back to the raw
+  // string for plain (non-JSON) scalar values, e.g. a bare project id.
+  function sanitizeImportedValue(raw) {
+    if (typeof raw !== 'string') return raw;
+    try {
+      const parsed = JSON.parse(raw);
+      const sanitize = window.sanitizeData || (v => v);
+      return JSON.stringify(sanitize(parsed));
+    } catch {
+      // Bare strings (e.g. project IDs from scalar settings keys)
+      // must also be escaped — they bypass the JSON parse above and were
+      // returned raw, which is the XSS delivery path for H1.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      return escHtml(raw);
+    }
+  }
+
+  const MAX_SNAPSHOT_BYTES = 15 * 1024 * 1024; // 15 MB
+
+  function importSnapshot(file) {
+    if (!file) return;
+    if (file.size > MAX_SNAPSHOT_BYTES) {
+      showNotification('File too large: snapshot files must be under 15 MB.', 'error');
+      const input = document.getElementById('import-snapshot-input');
+      if (input) input.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(e.target.result);
+      } catch (err) {
+        showNotification('Invalid file: not valid JSON.', 'error');
+        const input = document.getElementById('import-snapshot-input');
+        if (input) input.value = '';
+        return;
+      }
+
+      if (!parsed || parsed._meta?.app !== 'bq-finops-optimizer' || !parsed.data) {
+        showNotification('This does not look like a FinOps snapshot file.', 'error');
+        const input = document.getElementById('import-snapshot-input');
+        if (input) input.value = '';
+        return;
+      }
+      if (parsed._meta.schema_version > SCHEMA_VERSION) {
+        showNotification(
+          `Snapshot was made with a newer app version (schema ${parsed._meta.schema_version}). Some data may not load correctly.`, 'warning'
+        );
+      }
+
+      const keys = Object.keys(parsed.data);
+
+      // ⚠️ quota safety: clear existing bq_* keys first for a clean replace
+      const keysToClear = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(KEY_PREFIX)) {
+          keysToClear.push(k);
+        }
+      }
+      keysToClear.forEach(k => localStorage.removeItem(k));
+
+      // Sanitize imported data to prevent XSS via snapshot hydration.
+      // The global fetch-proxy sanitizer only covers network responses;
+      // imported snapshots bypass it entirely, so we must sanitize here.
+      const escHtml = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+      function sanitizeImport(data) {
+          if (data === null || data === undefined) return data;
+          if (typeof data === 'string') return escHtml(data);
+          if (Array.isArray(data)) return data.map(sanitizeImport);
+          if (typeof data === 'object') {
+              const out = {};
+              for (const k2 in data) {
+                  if (Object.prototype.hasOwnProperty.call(data, k2)) {
+                      out[k2] = sanitizeImport(data[k2]);
+                  }
+              }
+              return out;
+          }
+          return data;
+      }
+
+      let written = 0;
+      keys.forEach(k => {
+        if (k.startsWith(KEY_PREFIX)) {
+          const ok = safeSetLocalStorage(k, sanitizeImportedValue(parsed.data[k]));
+          if (ok) written++;
+        }
+      });
+
+      try {
+        sessionStorage.setItem('pending_notification', JSON.stringify({
+          message: `Imported ${written} result set(s) from snapshot.`,
+          type: 'success'
+        }));
+      } catch (_) {}
+
+      showNotification(
+        `Imported ${written} result set(s). Reloading to render…`, 'success'
+      );
+      setTimeout(() => window.location.reload(), 600);
+    };
+    reader.onerror = () => showNotification('Failed to read file.', 'error');
+    reader.readAsText(file);
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return { exportSnapshot, importSnapshot };
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+
+    // Shared chrome: bell-icon notification history + per-table CSV buttons.
+    NotificationCenter.init();
+    injectCsvExportButtons();
+
+    const debug_log = (...args) => {
+        if (state.debugMode) {
+            console.log("[DEBUG]", ...args);
+        }
+    };
+
+    // Global button click logger
+    document.addEventListener('click', (e) => {
+        if (e.target && e.target.tagName === 'BUTTON') {
+            debug_log("Button clicked:", e.target.id || e.target.innerText || e.target.className);
+        }
+    });
+
+    // Global copy button handler
+    document.addEventListener('click', (e) => {
+        const copyBtn = e.target.closest('.copy-job-id-btn');
+        if (copyBtn) {
+            const jobId = copyBtn.getAttribute('data-job-id');
+            if (jobId) {
+                copyToClipboard(jobId).then(() => {
+                    showNotification('Job ID copied to clipboard', 'success');
+                }).catch(err => {
+                    console.error('Failed to copy Job ID', err);
+                    showNotification('Failed to copy Job ID', 'error');
+                });
+            }
+        }
+    });
+
+    // DOM Elements
+    const elements = {
+
+        
+        // Top Bar
+        currentProject: document.getElementById('current-project'),
+        currentAdminProject: document.getElementById('current-admin-project'),
+        currentRegion: document.getElementById('current-region'),
+        
+        // Settings Form
+        cfgOrgProject: document.getElementById('cfg-org-project'),
+        cfgAdminProject: document.getElementById('cfg-admin-project'),
+        cfgRegion: document.getElementById('cfg-region'),
+        saveSettingsBtn: document.getElementById('save-settings-btn'),
+        cfgMaxBytesBilled: document.getElementById('cfg-max-bytes-billed'),
+        cfgFocusProjects: document.getElementById('cfg-focus-projects'),
+        
+        // Storage Form & Elements
+        btnAnalyzeStorage: document.getElementById('analyze-storage-btn'),
+        stActLog: document.getElementById('st-act-log'),
+        stLtLog: document.getElementById('st-lt-log'),
+        stActPhy: document.getElementById('st-act-phy'),
+        stLtPhy: document.getElementById('st-lt-phy'),
+        stTtRescale: document.getElementById('st-tt-rescale'),
+        stTtHours: document.getElementById('st-tt-hours'),
+        stMinSave: document.getElementById('st-min-save'),
+        stMinSavePct: document.getElementById('st-min-save-pct'),
+        stTotalSavings: document.getElementById('st-total-savings'),
+        stDatasetCount: document.getElementById('st-dataset-count'),
+        stOppCount: document.getElementById('st-opp-count'),
+        
+
+        
+        // Slots Form & Elements
+        btnAnalyzeSlots: document.getElementById('analyze-slots-btn'),
+        slLookback: document.getElementById('sl-lookback'),
+        slWindow: document.getElementById('sl-window'),
+        slResolution: document.getElementById('sl-resolution'),
+        slPercentile: document.getElementById('sl-percentile'),
+        
+        notificationContainer: document.getElementById('notification-container'),
+        
+        // Cost Attribution
+
+        
+        // Workload Profiler
+
+        btnAnalyzeProfiler: document.getElementById('analyze-profiler-btn'),
+        btnCalculateCostAttribution: document.getElementById('calculate-cost-attribution-btn'),
+        cbWasteRule: document.getElementById('cb-waste-rule'),
+        cbCentralProject: document.getElementById('cb-central-project'),
+        cbBorrowingRule: document.getElementById('cb-borrowing-rule'),
+        cbMonthStart: document.getElementById('cb-month-start'),
+        cbMonthEnd: document.getElementById('cb-month-end'),
+        cbReservationsContainer: document.getElementById('cb-reservations-container'),
+        cbAddReservationBtn: document.getElementById('cb-add-reservation-btn'),
+        
+        // Top Spenders
+
+        btnAnalyzeUsers: document.getElementById('analyze-users-btn'),
+        
+        // HBO Analyzer
+
+        btnAnalyzeHbo: document.getElementById('analyze-hbo-btn'),
+        hboStatusPanel: document.getElementById('hbo-status-panel'),
+        hboStatusList: document.getElementById('hbo-status-tbody'),
+        hboStatusSummary: document.getElementById('hbo-status-summary'),
+        hboStatusPagination: document.getElementById('hbo-status-pagination'),
+        
+        // Storage Hygiene
+
+        btnAnalyzeHygiene: document.getElementById('analyze-hygiene-btn'),
+        btnAnalyzeTimeTravel: document.getElementById('analyze-time-travel-btn'),
+        btnAnalyzeShard: document.getElementById('analyze-shard-btn'),
+        // Anti-Patterns
+        btnAnalyzeLinter: document.getElementById('analyze-linter-btn'),
+        btnAnalyzeDml: document.getElementById('analyze-dml-btn'),
+        btnAnalyzeMv: document.getElementById('analyze-mv-btn'),
+        btnAnalyzeSkew: document.getElementById('analyze-skew-btn'),
+        btnAnalyzeBatch: document.getElementById('analyze-batch-btn'),
+        btnAnalyzeExpiration: document.getElementById('analyze-expiration-btn'),
+        btnAnalyzeFilter: document.getElementById('analyze-filter-btn'),
+        btnAnalyzeMvRejections: document.getElementById('analyze-mv-rejections-btn'),
+        btnAnalyzeWarnings: document.getElementById('analyze-warnings-btn'),
+        
+        // BI Optimizer
+
+        btnAnalyzeBi: document.getElementById('analyze-bi-btn'),
+        
+        // AI Doctor
+
+        btnRunAiAnalysis: document.getElementById('run-ai-analysis-btn'),
+        aiLimit: document.getElementById('ai-limit'),
+        aiDiscoveryStrategy: document.getElementById('ai-discovery-strategy'),
+        aiLookback: document.getElementById('ai-lookback'),
+        aiModel: document.getElementById('ai-model')
+    };
+
+    // Custom Filter for DataTables
+    $.fn.dataTable.ext.search.push(
+        function( settings, data, dataIndex ) {
+            if (settings.nTable.id !== 'top-jobs-table') {
+                return true;
+            }
+            const filterValue = $('#profile-filter').val();
+            if (!filterValue) return true;
+            
+            const profile = data[4] || ''; // Column 4 is Profile
+            return profile.includes(filterValue);
+        }
+    );
+
+    // Keep a user's exotic/custom region selectable.
+    // The dropdown is generated from src/constants.py BQ_REGIONS, so a region
+    // that predates the registry (or one Google has only just launched) would
+    // otherwise be silently dropped and reset to the first option.
+    // Built with DOM APIs, never innerHTML: the value comes from localStorage.
+    const ensureRegionOption = (select, region) => {
+        if (!select || !region) return;
+        const exists = Array.from(select.options).some(o => o.value === region);
+        if (exists) return;
+
+        let group = select.querySelector('optgroup[data-custom="true"]');
+        if (!group) {
+            group = document.createElement('optgroup');
+            group.label = 'Custom';
+            group.dataset.custom = 'true';
+            select.appendChild(group);
+        }
+        const opt = document.createElement('option');
+        opt.value = region;
+        opt.textContent = `${region} (custom)`;
+        group.appendChild(opt);
+    };
+
+    // ── Regional Pricing Input Sync ───────────────────────────────────
+    // Fetches the resolved pricing for the given region from the backend
+    // and updates all pricing input fields across the app. Called on
+    // init and whenever the user changes the region in settings.
+    const refreshPricingInputs = (region) => {
+        const url = `/api/pricing?region=${encodeURIComponent(region)}`;
+        fetch(url)
+            .then(r => r.ok ? r.json() : Promise.reject(r.status))
+            .then(data => {
+                // Storage Optimizer inputs
+                if (elements.stActLog) elements.stActLog.value = data.active_logical_gib_mo;
+                if (elements.stLtLog)  elements.stLtLog.value  = data.long_term_logical_gib_mo;
+                if (elements.stActPhy) elements.stActPhy.value = data.active_physical_gib_mo;
+                if (elements.stLtPhy)  elements.stLtPhy.value  = data.long_term_physical_gib_mo;
+
+                // Query Cost Optimizer — On-Demand Rate ($/TiB) & Editions Rate
+                const odEl = document.getElementById('jb-od-rate');
+                if (odEl) odEl.value = data.on_demand_usd_per_tib;
+                const jbEdEl = document.getElementById('jb-ed-rate');
+                if (jbEdEl) jbEdEl.value = data.editions_slot_hr_rate;
+
+                // Slot Simulation — Editions PAYG rate ($/slot-hr)
+                const paygEl = document.getElementById('sim-payg-price');
+                if (paygEl) paygEl.value = data.editions_slot_hr_rate;
+            })
+            .catch(err => {
+                console.warn('[Pricing] Failed to refresh regional pricing inputs:', err);
+            });
+    };
+
+    // Initialize UI from state
+    const initUI = () => {
+        elements.cfgOrgProject.value = state.orgProject;
+        if (elements.cfgAdminProject) elements.cfgAdminProject.value = state.adminProject;
+        ensureRegionOption(elements.cfgRegion, state.region);
+        elements.cfgRegion.value = state.region;
+        if (elements.cfgMaxBytesBilled) elements.cfgMaxBytesBilled.value = state.maxBytesBilledGb || '';
+        if (elements.cfgFocusProjects) elements.cfgFocusProjects.value = (state.focusProjects || []).join(', ');
+        updateScopeBadge(Router.getCurrentViewId());
+        
+        elements.currentProject.textContent = state.orgProject || 'Not Set';
+        if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
+        elements.currentRegion.textContent = state.region.replace(/^region-/i, '');
+
+        // Set default dates for cost attribution (previous month)
+        const now = new Date();
+        const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+        
+        const formatDate = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+        
+        if (elements.cbMonthStart) elements.cbMonthStart.value = formatDate(prevMonthStart);
+        if (elements.cbMonthEnd) elements.cbMonthEnd.value = formatDate(prevMonthEnd);
+
+        if (!state.orgProject) {
+            showNotification('Please configure GCP Settings first.', 'warning');
+            Router.navigate('settings');
+        }
+
+        // Populate pricing inputs with the correct regional rates
+        refreshPricingInputs(state.region);
+    };
+
+
+
+
+    // Save Settings
+    elements.saveSettingsBtn.addEventListener('click', () => {
+        // GCP project ID regex: starts with lowercase letter, 6-30 chars, [a-z0-9-]
+        const PROJECT_ID_RE = /^[a-z][a-z0-9\-]{5,29}$/;
+        const validationErrors = [];
+
+        // --- Validate into local variables FIRST, return before
+        // touching state or localStorage to prevent half-mutated scope. ---
+        const newOrg = elements.cfgOrgProject.value.trim();
+        elements.cfgOrgProject.value = newOrg;
+        if (newOrg && !PROJECT_ID_RE.test(newOrg)) {
+            validationErrors.push(`Invalid Organization Project ID "${newOrg}". Must be 6-30 lowercase chars, starting with a letter (a-z, 0-9, hyphens only).`);
+        }
+
+        let newAdmin = '';
+        if (elements.cfgAdminProject) {
+            newAdmin = elements.cfgAdminProject.value.trim();
+            elements.cfgAdminProject.value = newAdmin;
+            if (newAdmin && !PROJECT_ID_RE.test(newAdmin)) {
+                validationErrors.push(`Invalid Admin Project ID "${newAdmin}". Must be 6-30 lowercase chars, starting with a letter.`);
+            }
+        }
+
+        const newRegion = elements.cfgRegion.value;
+
+        let newMaxBytes = null;
+        if (elements.cfgMaxBytesBilled) {
+            const val = parseInt(elements.cfgMaxBytesBilled.value);
+            newMaxBytes = (val && val > 0) ? val : null;
+        }
+
+        let newFocus = [];
+        if (elements.cfgFocusProjects) {
+            const raw = elements.cfgFocusProjects.value;
+            newFocus = raw.split(',').map(s => s.trim()).filter(Boolean);
+            const invalidProjects = newFocus.filter(p => !PROJECT_ID_RE.test(p));
+            if (invalidProjects.length > 0) {
+                validationErrors.push(`Invalid Focus Project ID(s): ${invalidProjects.map(p => `"${p}"`).join(', ')}. Each must be 6-30 lowercase chars, starting with a letter.`);
+            }
+        }
+
+        // --- Abort on validation errors (before any state mutation) ---
+        if (validationErrors.length > 0) {
+            showNotification(validationErrors.join('\n'), 'error');
+            return;
+        }
+
+        // --- Commit validated values to state and localStorage ---
+        state.orgProject = newOrg;
+        state.region = newRegion;
+        if (elements.cfgAdminProject) {
+            state.adminProject = newAdmin;
+            localStorage.setItem('bq_admin_project', newAdmin);
+        }
+        state.maxBytesBilledGb = newMaxBytes;
+        if (newMaxBytes) {
+            localStorage.setItem('bq_max_bytes_billed_gb', newMaxBytes);
+        } else {
+            localStorage.removeItem('bq_max_bytes_billed_gb');
+        }
+        state.focusProjects = newFocus;
+        if (elements.cfgFocusProjects) {
+            elements.cfgFocusProjects.value = newFocus.join(', ');
+        }
+        if (newFocus.length > 0) {
+            safeSetLocalStorage('bq_focus_projects', JSON.stringify(newFocus));
+        } else {
+            localStorage.removeItem('bq_focus_projects');
+        }
+
+        localStorage.setItem('bq_org_project', state.orgProject);
+        localStorage.setItem('bq_region', state.region);
+
+        // Flush ALL scope-dependent caches. Use an allow-list of
+        // scope-independent keys rather than a fragile deny-list.
+        const SCOPE_INDEPENDENT = new Set([
+            'bq_org_project', 'bq_admin_project', 'bq_region',
+            'bq_max_bytes_billed_gb', 'bq_focus_projects',
+            'bq_version_dismissed',
+        ]);
+        const allKeys = Object.keys(localStorage);
+        allKeys.filter(k => k.startsWith('bq_') && !SCOPE_INDEPENDENT.has(k))
+            .forEach(k => localStorage.removeItem(k));
+
+        elements.currentProject.textContent = state.orgProject || 'Not Set';
+        if (elements.currentAdminProject) elements.currentAdminProject.textContent = state.adminProject || 'Not Set';
+        elements.currentRegion.textContent = state.region.replace(/^region-/i, '');
+        updateScopeBadge(Router.getCurrentViewId());
+
+        // Refresh all pricing input fields for the (possibly new) region
+        refreshPricingInputs(state.region);
+
+        showNotification('Settings saved. Cached results were cleared for the new scope — re-run any analysis you need.', 'success');
+        Router.navigate('storage');
+    });
+
+    // Event Listeners for Recommendation Cards
+    document.querySelectorAll('.recommendation-card').forEach(card => {
+        card.addEventListener('click', (e) => {
+            const tier = card.getAttribute('data-tier');
+            selectTier(tier);
+        });
+    });
+
+    // Copy Editions DDL
+    if (elements.copyEdDdlBtn) {
+        elements.copyEdDdlBtn.addEventListener('click', () => {
+            if (elements.edDdlOutput && elements.edDdlOutput.value) {
+                copyToClipboard(elements.edDdlOutput.value).then(() => {
+                    showNotification('DDL copied to clipboard!', 'success');
+                }).catch(err => {
+                    logger_error(err);
+                    showNotification('Failed to copy DDL.', 'error');
+                });
+            }
+        });
+    }
+
+    const copyOrgDdlBtn = document.getElementById('copy-org-ddl-btn');
+    if (copyOrgDdlBtn) {
+        copyOrgDdlBtn.addEventListener('click', () => {
+            const output = document.getElementById('org-ddl-output');
+            if (output && output.value) {
+                copyToClipboard(output.value).then(() => {
+                    showNotification('Organization DDL copied to clipboard!', 'success');
+                }).catch(err => {
+                    console.error(err);
+                    showNotification('Failed to copy DDL.', 'error');
+                });
+            }
+        });
+    }
+
+    // Analyze Storage
+    elements.btnAnalyzeStorage.addEventListener('click', async () => {
+        if (!state.orgProject) {
+            showNotification('Please configure settings first.', 'error');
+            Router.navigate('settings');
+            return;
+        }
+
+        setLoading(elements.btnAnalyzeStorage, true);
+        clearModuleCache(['bq_storage_results', 'bq_active_assist_results', 'bq_static_audit_results'], ['#storage-results-table', '#active-assist-table', '#static-audit-table']);
+
+        const ttDays = parseFloat(document.getElementById('st-tt-days').value) || 7;
+        const params = {
+            active_logical_price: parseFloat(elements.stActLog.value),
+            long_term_logical_price: parseFloat(elements.stLtLog.value),
+            active_physical_price: parseFloat(elements.stActPhy.value),
+            long_term_physical_price: parseFloat(elements.stLtPhy.value),
+            time_travel_rescale: ttDays / 7.0,
+            time_travel_hours: ttDays * 24,
+            min_monthly_saving: parseFloat(elements.stMinSave.value),
+            min_monthly_saving_pct: parseFloat(elements.stMinSavePct.value),
+            region: state.region,
+            focus_projects: state.focusProjects,
+            org_project_id: state.orgProject,
+            max_bytes_billed_gb: state.maxBytesBilledGb
+        };
+
+        try {
+            debug_log("Fetching storage analysis with params:", params);
+            const response = await fetch('/api/storage/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildPayload('/api/storage/analyze', params))
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(detailToMessage(errorData.detail, 'Failed to analyze storage'));
+            }
+
+            const responseData = await response.json();
+            state.storageData = responseData.datasets;
+            renderStorageResults(responseData);
+            renderOrgStatus(responseData.org_status);
+            safeSetLocalStorage('bq_storage_results', JSON.stringify(responseData));
+            
+            showNotification('Storage analysis completed.', 'success');
+        } catch (error) {
+            logger_error(error);
+            showNotification(error.message, 'error');
+        } finally {
+            setLoading(elements.btnAnalyzeStorage, false);
+        }
+    });
+
+    // Sync Active Assist Recommendations Button
+    const btnSyncActiveAssist = document.getElementById('run-active-assist-btn');
+    if (btnSyncActiveAssist) {
+        btnSyncActiveAssist.addEventListener('click', () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+            fetchActiveAssistRecommendations(true);
+        });
+    }
+
+    // Static Schema Auditor Button
+    const btnSyncStaticAudit = document.getElementById('run-static-audit-btn');
+    if (btnSyncStaticAudit) {
+        btnSyncStaticAudit.addEventListener('click', () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+            fetchStaticAuditResults(true);
+        });
+    }
+
+    // Analyze Jobs
+    const btnAnalyzeJobs = document.getElementById('analyze-jobs-btn');
+    if (btnAnalyzeJobs) {
+        btnAnalyzeJobs.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(btnAnalyzeJobs, true);
+            clearModuleCache(['bq_job_results'], ['#job-summary-table', '#top-jobs-table']);
+
+            const params = {
+                on_demand_rate_per_tb: parseFloat(document.getElementById('jb-od-rate').value),
+                edition_slot_hr_rate: parseFloat(document.getElementById('jb-ed-rate').value),
+                slot_step_size: parseInt(document.getElementById('jb-slot-step').value),
+                lookback_days: parseInt(document.getElementById('jb-lookback').value),
+                region: state.region,
+                focus_projects: state.focusProjects,
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                min_bytes_billed: parseInt(document.getElementById('jb-min-size').value) * 1024 * 1024,
+                limit_jobs: parseInt(document.getElementById('jb-limit').value),
+                fluid_scaling: document.getElementById('jb-fluid-scaling').checked
+            };
+
+            try {
+                debug_log("Fetching job analysis with params:", params);
+                const response = await fetch('/api/jobs/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/jobs/analyze', params))
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze jobs'));
+                }
+
+                const responseData = await response.json();
+                renderJobResults(responseData);
+                safeSetLocalStorage('bq_job_results', JSON.stringify(responseData));
+                showNotification('Job analysis completed.', 'success');
+            } catch (error) {
+                console.error("Job Analysis Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(btnAnalyzeJobs, false);
+            }
+        });
+    }
+
+    const hideOptimizedToggle = document.getElementById('hide-optimized-jobs');
+    if (hideOptimizedToggle) {
+        hideOptimizedToggle.addEventListener('change', () => {
+            const cached = localStorage.getItem('bq_job_results');
+            if (cached) {
+                renderJobResults(JSON.parse(cached));
+            }
+        });
+    }
+
+    const renderJobResults = (data) => {
+        const summaryTbody = document.querySelector('#job-summary-table tbody');
+        const jobsTbody = document.querySelector('#top-jobs-table tbody');
+        
+        if (summaryTbody) summaryTbody.innerHTML = '';
+        if (jobsTbody) jobsTbody.innerHTML = '';
+
+        // Render Scatter Plot
+        const scatterCtx = document.getElementById('jobs-scatter-chart');
+        if (scatterCtx && data.top_jobs) {
+            const scatterData = data.top_jobs.map(job => ({
+                x: job.on_demand_cost,
+                y: job.editions_cost,
+                label: job.job_id
+            }));
+
+            const maxCost = Math.max(...data.top_jobs.flatMap(j => [j.on_demand_cost, j.editions_cost])) || 10;
+
+            if (state.jobsScatterChart) {
+                state.jobsScatterChart.destroy();
+            }
+
+            const palette = chartPalette();
+
+            state.jobsScatterChart = new Chart(scatterCtx, {
+                type: 'scatter',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Queries',
+                            data: scatterData,
+                            backgroundColor: 'rgba(56, 189, 248, 0.6)',
+                            borderColor: '#38bdf8',
+                            pointRadius: 5
+                        },
+                        {
+                            label: 'Break-even Line',
+                            data: [{x: 0, y: 0}, {x: maxCost, y: maxCost}],
+                            type: 'line',
+                            // Annotation, not data: retintChart() follows this tag.
+                            _themeRole: 'guide',
+                            borderColor: palette.guide,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Projected On-Demand Cost ($)', color: palette.title },
+                            type: 'linear',
+                            position: 'bottom',
+                            ticks: { color: palette.tick, callback: formatMoneyTick },
+                            grid: { color: palette.grid }
+                        },
+                        y: {
+                            title: { display: true, text: 'Projected Editions Cost ($)', color: palette.title },
+                            ticks: { color: palette.tick, callback: formatMoneyTick },
+                            grid: { color: palette.grid }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: { color: palette.tick }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const job = context.raw;
+                                    if (context.dataset.label === 'Break-even Line') return 'Break-even';
+                                    return `Job: ${job.label.substring(0,8)}... (OD: $${job.x.toFixed(2)}, ED: $${job.y.toFixed(2)})`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Render Project Summaries
+        if (data.project_summaries) {
+            let totalOd = 0;
+            let totalEd = 0;
+            let totalSavings = 0;
+
+            data.project_summaries.forEach(row => {
+                totalOd += row.total_on_demand_cost || 0;
+                totalEd += row.total_editions_cost || 0;
+                totalSavings += row.reservation_savings || 0;
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${renderProjectLink(row.project_id)}</td>
+                    <td>${formatCurrency(row.total_on_demand_cost)}</td>
+                    <td>${formatCurrency(row.total_editions_cost)}</td>
+                    <td>${formatCurrency(row.editions_error_tax)}</td>
+                    <td><strong style="color: ${row.reservation_savings >= 0 ? '#4ade80' : '#f87171'}">${formatCurrency(row.reservation_savings)}</strong></td>
+                `;
+                summaryTbody.appendChild(tr);
+            });
+
+            // Update KPI tiles
+            const odTile = document.getElementById('jb-total-od');
+            const edTile = document.getElementById('jb-total-ed');
+            const savTile = document.getElementById('jb-total-savings');
+
+            if (odTile) odTile.textContent = formatCurrency(totalOd);
+            if (edTile) edTile.textContent = formatCurrency(totalEd);
+            if (savTile) savTile.textContent = formatCurrency(totalSavings);
+
+            // Update savings KPI tile: label, color, icon and tooltip based on sign
+            const isFluid = document.getElementById('jb-fluid-scaling')?.checked;
+            const savCard = document.getElementById('jb-savings-card');
+            const savIcon = document.getElementById('jb-savings-icon');
+            const savLabel = savCard?.querySelector('.kpi-label');
+            const isNegative = totalSavings < 0;
+
+            if (savCard) {
+                savCard.classList.toggle('kpi-savings--positive', !isNegative);
+                savCard.classList.toggle('kpi-savings--negative', isNegative);
+                savCard.title = isNegative
+                    ? 'Editions is more expensive than On-Demand for these workloads. Keeping On-Demand is cheaper by this amount.'
+                    : 'Switching these workloads to Editions would save this amount.';
+            }
+            if (savIcon) {
+                savIcon.className = isNegative
+                    ? 'fa-solid fa-triangle-exclamation kpi-icon'
+                    : 'fa-solid fa-piggy-bank kpi-icon';
+            }
+            if (savLabel) {
+                if (isNegative) {
+                    savLabel.textContent = isFluid ? 'Additional Cost (Fluid Scaling)' : 'Additional Cost (Legacy Mode)';
+                } else {
+                    savLabel.textContent = isFluid ? 'Potential Savings (Fluid Scaling Enabled)' : 'Potential Savings (Legacy Mode)';
+                }
+            }
+        }
+
+        // Render Top Jobs
+        if (data.top_jobs) {
+            const hideOptimized = document.getElementById('hide-optimized-jobs')?.checked;
+            data.top_jobs.forEach(row => {
+                const betterOn = row.on_demand_cost <= row.editions_cost ? 'On-Demand' : 'Editions';
+                const currentModel = row.current_model || 'On-Demand';
+                
+                if (hideOptimized && currentModel === betterOn) {
+                    return; // Skip rendering already optimized jobs
+                }
+                
+                const tr = document.createElement('tr');
+                const betterColor = betterOn === 'On-Demand' ? '#38bdf8' : '#a855f7';
+                
+                const maxCost = Math.max(row.on_demand_cost, row.editions_cost) || 1;
+                const savingsPct = (row.waste_savings > 0 ? row.waste_savings / maxCost : 0) * 100;
+                
+                // Color for category badge
+                let categoryColor = '#94a3b8'; // gray
+                let categoryBg = 'rgba(148, 163, 184, 0.15)';
+                
+                if (row.category.includes('Reservation')) {
+                    categoryColor = '#4ade80'; // green
+                    categoryBg = 'rgba(74, 222, 128, 0.15)';
+                } else if (row.category.includes('On-Demand')) {
+                    categoryColor = '#facc15'; // yellow
+                    categoryBg = 'rgba(250, 204, 21, 0.15)';
+                }
+                
+                let warningHtml = '';
+                if (row.performance_warning) {
+                    warningHtml = `<span class="badge" style="background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.25); margin-top: 0.35rem; display: block; white-space: normal; text-align: left; font-size: 0.75rem; line-height: 1.2; padding: 0.35rem 0.5rem;"><i class="fa-solid fa-triangle-exclamation" style="margin-right: 5px; color: #fbbf24;"></i>${row.performance_warning}</span>`;
+                }
+
+                const currentColor = currentModel === 'On-Demand' ? '#38bdf8' : '#a855f7';
+                
+                tr.innerHTML = `
+                    <td>${renderProjectLink(row.project_id)}</td>
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td><span class="badge" style="background: ${currentModel === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${currentColor}; font-weight: 600;">${currentModel}</span></td>
+                    <td><span class="badge" style="background: ${betterOn === 'On-Demand' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(168, 85, 247, 0.15)'}; color: ${betterColor}; font-weight: 600;">${betterOn}</span></td>
+                    <td><span class="badge" style="background: ${categoryBg}; color: ${categoryColor};">${row.category}</span>${warningHtml}</td>
+                    <td data-order="${row.waste_savings || 0}"><span style="color: ${row.waste_savings > 0 ? '#f8fafc' : row.waste_savings < 0 ? '#f87171' : '#94a3b8'}">${formatCurrency(row.waste_savings || 0)}</span></td>
+                    <td data-order="${savingsPct || 0}">${Math.round(savingsPct)}%</td>
+                    <td>
+                        <button class="btn-action copy-job-btn" data-id="${row.job_id}">Copy ID</button>
+                    </td>
+                `;
+                jobsTbody.appendChild(tr);
+            });
+        }
+
+        document.querySelectorAll('.copy-job-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const jobId = e.target.getAttribute('data-id');
+                if (jobId) {
+                    copyToClipboard(jobId).then(() => {
+                        showNotification('Job ID copied!', 'success');
+                    }).catch(err => {
+                        console.error(err);
+                        showNotification('Failed to copy ID.', 'error');
+                    });
+                }
+            });
+        });
+
+        // Initialize DataTables if not already init
+        safeInitDataTable('#job-summary-table', { pageLength: 5, order: [[4, 'desc']], responsive: true });
+
+        const table = safeInitDataTable('#top-jobs-table', { pageLength: 10, order: [[5, 'desc']], responsive: true });
+        
+        // Profile filter
+        const filterSelect = document.getElementById('profile-filter');
+        if (filterSelect) {
+            // Apply current filter
+            if (table) table.draw();
+            
+            // Add listener
+            $('#profile-filter').off('change').on('change', function() {
+                table.draw();
+            });
+
+            // Apply filter on change is handled by custom filter triggering draw()
+        }
+    };
+
+    // Render Storage Results
+    const renderStorageResults = (data) => {
+        const datasets = data.datasets || [];
+        // Calculate KPIs
+        const totalSavings = datasets.reduce((sum, row) => sum + (row.monthly_savings || 0), 0);
+        const datasetCount = new Set(datasets.map(row => `${row.project_name}.${row.dataset_name}`)).size;
+        const oppCount = datasets.length;
+
+        elements.stTotalSavings.textContent = formatCurrency(totalSavings);
+        elements.stDatasetCount.textContent = datasetCount;
+        elements.stOppCount.textContent = oppCount;
+        
+        const effPricingTile = document.getElementById('st-eff-pricing');
+        if (effPricingTile) {
+            effPricingTile.textContent = `$${(data.effective_pricing_ratio || 0).toFixed(5)}`;
+        }
+
+        // Populate Table
+        const tbody = document.querySelector('#storage-results-table tbody');
+        tbody.innerHTML = '';
+
+        const renderModelBadge = (model) => {
+            if (!model) return '—';
+            const isPhysical = String(model).toUpperCase() === 'PHYSICAL';
+            return isPhysical
+                ? `<span class="badge badge-physical"><i class="fa-solid fa-hard-drive" style="margin-right: 0.25rem;" aria-hidden="true"></i>PHYSICAL</span>`
+                : `<span class="badge badge-logical"><i class="fa-solid fa-layer-group" style="margin-right: 0.25rem;" aria-hidden="true"></i>LOGICAL</span>`;
+        };
+
+        datasets.forEach((row, index) => {
+            const tr = document.createElement('tr');
+            const savings = Number(row.monthly_savings) || 0;
+            // Displayed rounded, sorted on the float — so give tied-looking rows
+            // a tooltip that explains why one sorts above the other.
+            const savingsPct = (Number(row.monthly_savings_pct) || 0) * 100;
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_name)}</td>
+                <td>${renderDatasetLink(row.dataset_name, row.project_name, row.dataset_name)}</td>
+                <td>${renderModelBadge(row.currently_on)}</td>
+                <td>${renderModelBadge(row.better_on)}</td>
+                <td data-order="${savings}" title="${savings.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/month">${formatWholeDollars(savings)}</td>
+                <td data-order="${savingsPct}" title="${savingsPct.toFixed(2)}%">${Math.round(savingsPct)}%</td>
+                <td>
+                    <button class="btn-action copy-ddl-btn" data-index="${index}">Copy DDL</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        safeInitDataTable('#storage-results-table', {
+            pageLength: 10,
+            order: [[4, 'desc']], // Sort by savings
+            responsive: true
+        });
+
+        // Add Event Listeners for Copy Buttons
+        document.querySelectorAll('.copy-ddl-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const index = e.target.getAttribute('data-index');
+                const rowData = state.storageData[index];
+                if (rowData && rowData.ddl) {
+                    copyToClipboard(rowData.ddl).then(() => {
+                        showNotification('DDL copied to clipboard!', 'success');
+                    }).catch(err => {
+                        logger_error(err);
+                        showNotification('Failed to copy DDL.', 'error');
+                    });
+                }
+            });
+        });
+    };
+
+    // Render Active Assist Results
+    const renderActiveAssistResults = (data) => {
+        // Must destroy DataTable BEFORE clearing innerHTML or appending rows
+
+        const tbody = document.querySelector('#active-assist-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 2rem;">
+                <div style="background: var(--warning-bg); border: 1px dashed var(--warning-border); border-radius: 8px; padding: 1.5rem; display: inline-block;">
+                    <h4 style="color: var(--text-primary); margin: 0 0 0.5rem 0; font-size: 1rem;"><i class="fa-solid fa-triangle-exclamation" style="color: var(--warning);"></i> No Active Assist Recommendations Found</h4>
+                    <div style="color: var(--text-secondary); font-size: 0.9rem; margin: 0; text-align: left;">
+                        <p style="margin: 0 0 0.5rem 0;">This can happen when:</p>
+                        <ul style="margin: 0 0 1rem 0; padding-left: 1.5rem;">
+                            <li>Tables are already well-optimized</li>
+                            <li>Query history is under 30 days (Recommender needs more data)</li>
+                            <li>Active tables with heavy DML may be intentionally excluded to prioritize compute efficiency</li>
+                        </ul>
+                        <p style="margin: 0;">Rely on the <strong>Static Schema Auditor</strong> below for structural governance.</p>
+                    </div>
+                </div>
+            </td></tr>`;
+            return;
+        }
+
+        const getRecBadge = (rec) => {
+            let bg, color, border;
+            if (rec.toLowerCase().includes('partition')) {
+                bg = 'rgba(56, 189, 248, 0.15)'; // Soft Blue
+                color = '#38bdf8';
+                border = 'rgba(56, 189, 248, 0.3)';
+            } else {
+                bg = 'rgba(16, 185, 129, 0.15)'; // Soft Green (Cluster)
+                color = '#10b981';
+                border = 'rgba(16, 185, 129, 0.3)';
+            }
+            return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${rec}</span>`;
+        };
+
+        const formatColumnsList = (cols) => {
+            if (!cols || cols.length === 0) return `<span style="color: #64748b;">None</span>`;
+            return cols.map(c => `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #cbd5e1; font-size: 0.8rem;">${c}</code>`).join(' ');
+        };
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
+                <td>${getRecBadge(row.recommendation)}</td>
+                <td>${formatColumnsList(row.cluster_columns)}</td>
+                <td>${row.partition_column ? `<code style="font-family: monospace; background: rgba(255,255,255,0.05); padding: 0.15rem 0.35rem; border-radius: 4px; color: #38bdf8; font-size: 0.8rem;">${row.partition_column}</code>` : '<span style="color: #64748b;">N/A</span>'}</td>
+                <td><strong style="color: #10b981; font-weight: 700;">${formatCurrency(row.on_demand_monthly_savings)}</strong></td>
+                <td><strong style="color: #38bdf8; font-weight: 700;">${formatCurrency(row.editions_monthly_savings)}</strong></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+
+        safeInitDataTable('#active-assist-table', {
+            pageLength: 10,
+            order: [[6, 'desc']], // Sort by On-Demand Savings descending
+            responsive: true
+        });
+    };
+
+    // Fetch Active Assist Recommendations
+    const fetchActiveAssistRecommendations = async (force = false) => {
+        const btn = document.getElementById('run-active-assist-btn');
+        if (btn) setLoading(btn, true);
+        clearModuleCache(['bq_active_assist_results'], ['#active-assist-table']);
+
+        const params = {
+            region: state.region,
+            focus_projects: state.focusProjects,
+            org_project_id: state.orgProject,
+            max_bytes_billed_gb: state.maxBytesBilledGb
+        };
+
+        try {
+            debug_log("Fetching Active Assist recommendations with params:", params);
+            const response = await fetch('/api/storage/active_assist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildPayload('/api/storage/active_assist', params))
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(detailToMessage(errorData.detail, 'Failed to fetch Active Assist recommendations'));
+            }
+
+            const data = await response.json();
+            state.activeAssistData = data;
+            renderActiveAssistResults(data);
+            safeSetLocalStorage('bq_active_assist_results', JSON.stringify(data));
+            if (force) showNotification('Active Assist recommendations synced.', 'success');
+        } catch (error) {
+            console.warn('Failed to fetch Active Assist recommendations:', error);
+            showNotification('Active Assist unavailable — BigQuery returned an internal error. Try again later.', 'warning');
+            // Show inline error in the results area so the user sees feedback
+            const tableEl = document.getElementById('active-assist-table');
+            if (tableEl) {
+                const tbody = tableEl.querySelector('tbody');
+                const cols = tableEl.tHead
+                    ? Array.from(tableEl.tHead.rows[tableEl.tHead.rows.length - 1].cells)
+                        .reduce((s, th) => s + (th.colSpan || 1), 0)
+                    : 1;
+                if (tbody) tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center; color: #facc15; padding: 1.5rem;">
+                    <i class="fa-solid fa-triangle-exclamation" style="margin-right: 0.5rem;"></i>
+                    Active Assist recommendations could not be loaded. BigQuery encountered an internal error. Please retry.
+                </td></tr>`;
+            }
+        } finally {
+            if (btn) setLoading(btn, false);
+        }
+    };
+
+    // Render Static Audit Results
+    const renderStaticAuditResults = (data) => {
+        // Destroy existing DataTables before modifying the DOM to prevent it from wiping our new rows
+
+        const tbody = document.querySelector('#static-audit-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const formatSize = (bytes) => {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+
+        const formatNumber = (num) => {
+            // Guard null/undefined/NaN from snapshot import
+            if (num == null || isNaN(num)) return '0';
+            const abs = Math.abs(num);
+            if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+            if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+            if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+            return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        };
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Risk Status — four states, driven by size AND the
+            // partitioning/clustering signals already present on every row.
+            const riskBadge = renderStorageRiskBadge(row);
+
+            // Suggestions string
+            let suggestedAction = '';
+            let columnsToSuggest = [];
+            const tblLower = row.table_id.toLowerCase();
+            const dsLower = row.dataset_id.toLowerCase();
+            
+            if (tblLower.includes('phone')) {
+                columnsToSuggest = ['PHONE_TYPE', 'PHONE_VALUE'];
+            } else if (tblLower.includes('email')) {
+                columnsToSuggest = ['EMAIL_TYPE', 'EMAIL_VALUE'];
+            } else if (tblLower.includes('master')) {
+                columnsToSuggest = ['PERSON_SOURCE', 'PERSON_ORIGIN_AUTHORITY_ID'];
+            } else if (tblLower.includes('visitor') || tblLower.includes('event') || dsLower.includes('analytics')) {
+                columnsToSuggest = ['VISITOR_ID', 'ACCOUNT_ID'];
+            } else if (tblLower.includes('address')) {
+                columnsToSuggest = ['ADDRESS_TYPE', 'COUNTRY_NAME'];
+            } else if (tblLower.includes('history') || tblLower.includes('usage')) {
+                columnsToSuggest = ['MEMBER_ID', 'PRODUCT_ID'];
+            } else if (tblLower.includes('partner_extract') || tblLower.includes('extract')) {
+                columnsToSuggest = ['CUSTOMER_KEY', 'PERIOD_ID'];
+            } else if (tblLower.includes('counter') || tblLower.includes('agg')) {
+                columnsToSuggest = ['EVENT_TYPE_ID', 'PERIOD_ID'];
+            } else if (tblLower.includes('xml')) {
+                columnsToSuggest = ['XML_TYPE', 'ARTICLE_ID'];
+            } else if (tblLower.includes('opportunity') || dsLower.includes('sales') || tblLower.includes('crm')) {
+                columnsToSuggest = ['ACCOUNT_ID', 'OPPORTUNITY_ID'];
+            } else {
+                columnsToSuggest = ['ACTIVE_FLAG', 'CREATED_DATE'];
+            }
+
+            const getPartitionStatus = (isPart) => {
+                return isPart 
+                    ? `<span style="color: #10b981;"><i class="fa-solid fa-circle-check" style="margin-right: 5px;"></i>${row.partition_column || 'Yes'}</span>` 
+                    : `<span style="color: #f87171;"><i class="fa-solid fa-circle-xmark" style="margin-right: 5px;"></i>Missing</span>`;
+            };
+
+            const getClusterStatus = (isClust) => {
+                return isClust 
+                    ? `<span style="color: #10b981;"><i class="fa-solid fa-circle-check" style="margin-right: 5px;"></i>${row.clustering_fields || 'Yes'}</span>` 
+                    : `<span style="color: #f87171;"><i class="fa-solid fa-circle-xmark" style="margin-right: 5px;"></i>Missing</span>`;
+            };
+
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_id, row.dataset_id, row.project_id, row.table_id)}</td>
+                <td data-order="${Number(row.row_count) || 0}" title="${(Number(row.row_count) || 0).toLocaleString()} rows"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem;">${formatNumber(row.row_count)}</span></td>
+                <td data-order="${Number(row.size_bytes) || 0}"><span style="color: #cbd5e1; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${formatSize(row.size_bytes)}</span></td>
+                <td>${getPartitionStatus(row.is_partitioned)}</td>
+                <td>${getClusterStatus(row.is_clustered)}</td>
+                <td><span style="color: #38bdf8; font-family: monospace; font-size: 0.85rem; font-weight: 500;">${columnsToSuggest.join(', ')}</span></td>
+                <td>${riskBadge}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        safeInitDataTable('#static-audit-table', {
+            pageLength: 10,
+            order: [[4, 'desc']], // Sort by Logical Size descending
+            responsive: true
+        });
+    };
+
+    // Fetch Static Audit Results
+    const fetchStaticAuditResults = async (force = false) => {
+        const btn = document.getElementById('run-static-audit-btn');
+        if (btn) setLoading(btn, true);
+        clearModuleCache(['bq_static_audit_results'], ['#static-audit-table']);
+
+        const params = {
+            region: state.region,
+            focus_projects: state.focusProjects,
+            org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb
+        };
+
+        try {
+            debug_log("Fetching Static Table Audit results with params:", params);
+            const response = await fetch('/api/storage/static_audit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildPayload('/api/storage/static_audit', params))
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(detailToMessage(errorData.detail, 'Failed to execute Static Table Audit'));
+            }
+
+            const data = await response.json();
+            state.staticAuditData = data;
+            renderStaticAuditResults(data);
+            safeSetLocalStorage('bq_static_audit_results', JSON.stringify(data));
+            if (force) showNotification('Static schema audit completed successfully.', 'success');
+        } catch (error) {
+            console.warn('Failed to execute Static Table Audit:', error);
+            if (force) showNotification('Failed to execute static schema audit.', 'warning');
+        } finally {
+            if (btn) setLoading(btn, false);
+        }
+    };
+
+    const renderOrgStatus = (orgStatus) => {
+        const panel = document.getElementById('org-rec-panel');
+        const text = document.getElementById('org-rec-text');
+        const output = document.getElementById('org-ddl-output');
+
+        if (!panel) return;
+
+        panel.style.display = 'block'; 
+
+        if (orgStatus.error_message) {
+            panel.style.borderColor = 'rgba(239, 68, 68, 0.5)'; // Red
+            text.innerHTML = `<i class="fa-solid fa-circle-xmark" style="color: #ef4444;"></i> <strong>Feature Not Enabled:</strong> ${orgStatus.error_message} Run the command below to enable it.`;
+            if (output && output.parentElement) {
+                output.parentElement.style.display = 'block';
+                output.value = orgStatus.ddl;
+            }
+        } else if (orgStatus.is_optimized) {
+            panel.style.borderColor = 'rgba(34, 197, 94, 0.5)'; 
+            text.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80;"></i> Your organization's default storage billing model for this region is already <strong>${orgStatus.current_model}</strong> No action needed.`;
+            if (output && output.parentElement) {
+                output.parentElement.style.display = 'none';
+            }
+        } else {
+            panel.style.borderColor = 'rgba(234, 179, 8, 0.5)'; 
+            text.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15;"></i> Your organization's default storage billing model for this region is <strong>${orgStatus.current_model}</strong>. We recommend setting it to <strong>PHYSICAL</strong> to optimize future datasets automatically.`;
+            if (output && output.parentElement) {
+                output.parentElement.style.display = 'block';
+                output.value = orgStatus.ddl;
+            }
+        }
+    };
+
+    
+
+
+    // Analyze Slots
+  // Analyze Slots (parallelized; chart no longer waits on analyze/tiered)
+  if (elements.btnAnalyzeSlots) {
+    elements.btnAnalyzeSlots.addEventListener('click', async () => {
+      if (!state.orgProject) {
+        showNotification('Please configure settings first.', 'error');
+        Router.navigate('settings');
+        return;
+      }
+
+      const tableEl = document.getElementById('slots-recommendations-table');
+      const container = tableEl ? tableEl.closest('.results-panel') : null;
+      const tierContainer = document.querySelector('.tier-cards-container');
+
+      if (tableEl && $.fn.DataTable.isDataTable('#slots-recommendations-table')) {
+        $('#slots-recommendations-table').DataTable().destroy();
+      }
+
+      if (tableEl) {
+        UIState.renderTableSkeleton(tableEl, 5);
+      }
+      if (tierContainer) {
+        UIState.renderTierCardsSkeleton(tierContainer);
+      }
+
+      const abortController = new AbortController();
+      let progress = null;
+
+      if (container) {
+        progress = UIState.startQueryProgress(container, {
+          message: 'Running slot analysis across organization (running 4 queries in parallel)...',
+          onCancel: () => abortController.abort()
+        });
+      }
+
+      setLoading(elements.btnAnalyzeSlots, true);
+
+      const lookbackDays = parseInt(elements.slLookback.value);
+      const percentile = parseInt(elements.slPercentile.value);
+
+      // --- Build the four request promises up front (no awaits between them) ---
+
+      const analyzeReq = fetch('/api/slots/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+          region: state.region,
+          lookback_days: lookbackDays,
+          window_minutes: parseInt(elements.slWindow.value),
+          percentile: percentile,
+          admin_project_id: state.adminProject
+        }),
+        signal: abortController.signal
+      });
+
+      const tieredReq = fetch('/api/slots/tiered_recommendations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+          region: state.region,
+          lookback_days: lookbackDays
+        }),
+        signal: abortController.signal
+      });
+
+      // Chart driver #1 — forced to HOUR resolution to keep the payload small
+      // (MINUTE over 7 days returned ~2.1 MB; HOUR is ~60x smaller and is
+      // plenty of detail for a 7-day overview chart).
+      const utilReq = fetch('/api/slots/utilization', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+          region: state.region,
+          lookback_days: lookbackDays,
+          timezone: 'America/New_York',
+          resolution: 'HOUR'
+        }),
+        signal: abortController.signal
+      });
+
+      // Chart driver #2 — provisioning timeline overlay
+      const actualReq = fetch('/api/slots/actual_provisioning', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+          region: state.region,
+          lookback_days: lookbackDays,
+          timezone: 'America/New_York',
+          edition: 'ENTERPRISE',
+          admin_project_id: state.adminProject
+        }),
+        signal: abortController.signal
+      });
+
+      // --- Render the CHART first, as soon as its two inputs resolve ---
+      // This is the whole point: the chart no longer waits on the slow
+      // analyze (~26s) or tiered (~6s) queries.
+      const chartReady = (async () => {
+        const [utilResult, actualResult] = await Promise.allSettled([utilReq, actualReq]);
+
+        let utilData = null;
+        let actualData = null;
+
+        if (utilResult.status === 'fulfilled' && utilResult.value.ok) {
+          utilData = await utilResult.value.json();
+          safeSetLocalStorage('bq_slots_utilization', JSON.stringify(utilData));
+        } else {
+          let detail = 'Failed to fetch slot utilization data';
+          try {
+            if (utilResult.status === 'fulfilled') {
+              detail = detailToMessage((await utilResult.value.json()).detail, detail);
+            }
+          } catch (_) {}
+          console.error('Slot utilization fetch failed:', detail);
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
+        }
+
+        if (actualResult.status === 'fulfilled' && actualResult.value.ok) {
+          actualData = await actualResult.value.json();
+          safeSetLocalStorage('bq_slots_actual_provisioning', JSON.stringify(actualData));
+          if (actualData.timeline) {
+            safeSetLocalStorage('bq_slots_provisioning_timeline', JSON.stringify(actualData.timeline));
+          } else {
+            try { localStorage.removeItem('bq_slots_provisioning_timeline'); } catch (_) {}
+          }
+        } else {
+          let detail = 'Failed to fetch actual provisioning data';
+          try {
+            if (actualResult.status === 'fulfilled') {
+              detail = detailToMessage((await actualResult.value.json()).detail, detail);
+            }
+          } catch (_) {}
+          console.error('Actual provisioning fetch failed:', detail);
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
+        }
+
+        renderSlotsUtilizationAndProvisioning(utilData, actualData);
+      })();
+
+      // --- Render the TABLES as their (slower) inputs resolve ---
+      const tablesReady = (async () => {
+        const [analyzeResult, tieredResult] = await Promise.allSettled([analyzeReq, tieredReq]);
+
+        if (analyzeResult.status === 'fulfilled' && analyzeResult.value.ok) {
+          const responseData = await analyzeResult.value.json();
+          renderSlotsResults(responseData, percentile);
+          safeSetLocalStorage('bq_slots_results', JSON.stringify(responseData));
+        } else {
+          let detail = 'Failed to analyze slots';
+          try {
+            if (analyzeResult.status === 'fulfilled') {
+              detail = detailToMessage((await analyzeResult.value.json()).detail, detail);
+            }
+          } catch (_) {}
+          console.error('Slots analyze fetch failed:', detail);
+          if (!abortController.signal.aborted) showNotification(detail, 'error');
+        }
+
+        if (tieredResult.status === 'fulfilled' && tieredResult.value.ok) {
+          const tieredData = await tieredResult.value.json();
+          renderTieredRecommendations(tieredData);
+          safeSetLocalStorage('bq_slots_tiered', JSON.stringify(tieredData));
+        } else {
+          console.warn('Failed to fetch tiered recommendations:', tieredResult.reason);
+        }
+      })();
+
+      // --- Wait for everything, then clean up the spinner/progress ---
+      try {
+        await Promise.allSettled([chartReady, tablesReady]);
+        if (abortController.signal.aborted) {
+          showNotification('Slots analysis cancelled.', 'warning');
+          if (tableEl) {
+            const tbody = tableEl.querySelector('tbody');
+            if (tbody) tbody.innerHTML = '';
+          }
+          if (tierContainer) {
+            tierContainer.innerHTML = '';
+          }
+          const cached = localStorage.getItem('bq_slots_results');
+          if (cached) {
+            try { renderSlotsResults(JSON.parse(cached), percentile); } catch (_) {}
+          }
+          const cachedTier = localStorage.getItem('bq_slots_tiered');
+          if (cachedTier) {
+            try { renderTieredRecommendations(JSON.parse(cachedTier)); } catch (_) {}
+          }
+        } else {
+          showNotification('Slots analysis completed.', 'success');
+        }
+      } catch (error) {
+        if (error.name === 'AbortError' || abortController.signal.aborted) {
+          showNotification('Slots analysis cancelled.', 'warning');
+        } else {
+          console.error('Slots Analysis Error:', error);
+          showNotification(error.message || 'Slots analysis failed.', 'error');
+        }
+      } finally {
+        if (progress) progress.stop();
+        setLoading(elements.btnAnalyzeSlots, false);
+      }
+    });
+  }
+    // Slot Simulator
+    const btnRunSimulation = document.getElementById('run-simulation-btn');
+    if (btnRunSimulation) {
+        btnRunSimulation.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(btnRunSimulation, true);
+
+            try {
+                document.getElementById('simulation-results-panel').style.display = 'none';
+                const response = await fetch('/api/slots/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                        region: state.region,
+                        lookback_days: parseInt(document.getElementById('sim-lookback-days').value),
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        max_baseline: parseInt(document.getElementById('sim-max-baseline').value),
+                        step_size: parseInt(document.getElementById('sim-step-size').value),
+                        payg_price: parseFloat(document.getElementById('sim-payg-price').value),
+                        commit_1yr_price: parseFloat(document.getElementById('sim-commit-1yr-price').value),
+                        commit_3yr_price: parseFloat(document.getElementById('sim-commit-3yr-price').value)
+                    })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Simulation failed'));
+                }
+
+                const data = await response.json();
+                safeSetLocalStorage('bq_slots_simulation_results', JSON.stringify(data));
+                renderSimulationResults(data);
+                document.getElementById('simulation-results-panel').style.display = 'block';
+                showNotification('Simulation completed successfully.', 'success');
+            } catch (error) {
+                console.error("Simulation Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(btnRunSimulation, false);
+            }
+        });
+    }
+
+    const renderSimulationResults = (data) => {
+        
+        // Guard against empty simulation response (brand-new reservation, no jobs).
+        if (!data || data.length === 0) {
+            showNotification('Simulation returned no results — the reservation may have no job history in this window.', 'warning');
+            return;
+        }
+
+        // Find optimums for the summary table
+        let bestPayg = data.reduce((prev, curr) => prev.total_payg < curr.total_payg ? prev : curr);
+        let best1Yr = data.reduce((prev, curr) => prev.total_1yr < curr.total_1yr ? prev : curr);
+        let best3Yr = data.reduce((prev, curr) => prev.total_3yr < curr.total_3yr ? prev : curr);
+
+        // Populate Summary Table
+        const summaryHtml = `
+            <tr>
+                <td style="padding: 10px;"><strong>PAYG (0 Commit)</strong></td>
+                <td style="padding: 10px;">${bestPayg.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${bestPayg.slots}</strong></td>
+                <td style="padding: 10px;">$${bestPayg.total_payg.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px;"><strong>1 Year Commit</strong></td>
+                <td style="padding: 10px;">${best1Yr.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${best1Yr.slots}</strong></td>
+                <td style="padding: 10px;">$${best1Yr.total_1yr.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px;"><strong>3 Year Commit</strong></td>
+                <td style="padding: 10px;">${best3Yr.autoscale_slot_months}</td>
+                <td style="padding: 10px; background: rgba(34, 197, 94, 0.05);"><strong>${best3Yr.slots}</strong></td>
+                <td style="padding: 10px;">$${best3Yr.total_3yr.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+        `;
+        const summaryTbody = document.getElementById('summary-tbody');
+        if (summaryTbody) summaryTbody.innerHTML = summaryHtml;
+
+        // Populate Matrix
+        const table = safeInitDataTable('#simulation-table', { 
+            pageLength: 15, 
+            responsive: true,
+            ordering: false // Usually disabled on matrix sheets to keep the natural 0->100 progression
+        });
+        if (!table) return;
+        table.clear();
+
+        const formatMoney = (val) => `$${val.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
+
+        data.forEach(row => {
+            table.row.add([
+                row.bucket,
+                row.minutes.toLocaleString(),
+                row.slots,
+                `${row.utilization_pct.toFixed(2)}%`,
+                row.autoscale_slot_hours.toLocaleString(),
+                row.autoscale_slot_months.toLocaleString(),
+                formatMoney(row.cost_autoscale_payg),
+                formatMoney(row.cost_base_payg),
+                formatMoney(row.cost_base_1yr),
+                formatMoney(row.cost_base_3yr),
+                formatMoney(row.total_payg),
+                formatMoney(row.total_1yr),
+                formatMoney(row.total_3yr)
+            ]).node();
+        });
+
+        table.draw();
+    };
+
+    const renderSlotsResults = (data, targetPercentile) => {
+        // Destroy existing DataTables before modifying the DOM to avoid Column Count mismatch errors
+
+        const container = document.querySelector('#current-reservations-container');
+        const recommendationsTbody = document.querySelector('#slots-recommendations-table tbody');
+        const recommendationsTfoot = document.querySelector('#slots-recommendations-table tfoot');
+        
+        if (container) container.innerHTML = '';
+        if (recommendationsTbody) recommendationsTbody.innerHTML = '';
+        if (recommendationsTfoot) recommendationsTfoot.innerHTML = '';
+
+        // Update label
+        const lblPercentile = document.getElementById('lbl-percentile');
+        if (lblPercentile) lblPercentile.textContent = targetPercentile;
+
+        // Create Current Reservations Table
+        if (container) {
+            const table = document.createElement('table');
+            table.id = 'current-reservations-table-new';
+            table.className = 'display nowrap';
+            table.style.width = '100%';
+
+            const thead = document.createElement('thead');
+            const trHead = document.createElement('tr');
+            const headers = [
+                "Reservation ID", "Admin Project ID", "Region", "Edition", 
+                "Baseline", "MAX SLOTS", "Use Idle Slots", 
+                "Scaling Mode", "Concurrency", "Fluid Scaling"
+            ];
+            headers.forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                trHead.appendChild(th);
+            });
+            thead.appendChild(trHead);
+            table.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            table.appendChild(tbody);
+            
+            if (data.current_reservations) {
+                data.current_reservations.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${renderReservationLink(row.reservation_id, row.admin_project_id, row.reservation_id)}</td>
+                        <td>${renderProjectLink(row.admin_project_id)}</td>
+                        <td>${row.region || ''}</td>
+                        <td>${row.edition}</td>
+                        <td data-order="${row.current_baseline || 0}">${formatNumber(row.current_baseline)}</td>
+                        <td data-order="${row.current_max_slots || 0}">${formatNumber(row.current_max_slots)}</td>
+                        <td>${row.ignore_idle_slots ? 'No' : 'Yes'}</td>
+                        <td>${row.scaling_mode || 'N/A'}</td>
+                        <td>${row.target_job_concurrency || 'Auto'}</td>
+                        <td>${row.fluid_scaling_enabled ? '<span class="badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e;">Enabled</span>' : '<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444;">Disabled</span>'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+            
+            container.appendChild(table);
+            // This table is built at render time, so the page-load sweep
+            // never saw it — give it an export button of its own.
+            injectCsvExportButtons(container);
+        }
+
+
+
+        // Render Recommendations
+        if (data.recommendations) {
+            data.recommendations.forEach(row => {
+                const tr = document.createElement('tr');
+                
+                // Clean up reservation ID to remove project and region prefix
+                let displayResId = row.reservation_id;
+                if (displayResId && displayResId.includes('.')) {
+                    displayResId = displayResId.split('.').pop();
+                }
+                
+                tr.innerHTML = `
+                    <td>${displayResId === 'MERGED (Simulated)' ? displayResId : renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
+                    <td data-order="${row.recommended_baseline || 0}"><strong>${formatNumber(row.recommended_baseline)}</strong></td>
+                    <td data-order="${row.recommended_max_p90 || 0}">${formatNumber(row.recommended_max_p90)}</td>
+                    <td data-order="${row.recommended_max_p99 || 0}">${formatNumber(row.recommended_max_p99)}</td>
+                    <td data-order="${row.recommended_max_peak || 0}">${formatNumber(row.recommended_max_peak)}</td>
+                `;
+                
+                if (displayResId === 'MERGED (Simulated)') {
+                    // Make it stand out slightly if it's the sum row
+                    tr.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                    if (recommendationsTfoot) {
+                        recommendationsTfoot.appendChild(tr);
+                    } else {
+                        recommendationsTbody.appendChild(tr);
+                    }
+                } else {
+                    recommendationsTbody.appendChild(tr);
+                }
+            });
+        }
+
+        // Render Configuration Recommendations
+        const configTbody = document.querySelector('#config-recommendations-table tbody');
+        if (configTbody) configTbody.innerHTML = '';
+
+        if (data.current_reservations && configTbody) {
+            data.current_reservations.forEach(row => {
+                const resId = row.reservation_id;
+                const adminProj = row.admin_project_id || '';
+                const region = row.region || '';
+                
+                // Recommend Fluid Scaling if disabled
+                if (!row.fluid_scaling_enabled) {
+                    const tr = document.createElement('tr');
+                    // Build the full reservation set: already-enabled + this one
+                    const allRes = new Set();
+                    data.current_reservations.forEach(r => {
+                        if (r.fluid_scaling_enabled) allRes.add(r.reservation_id);
+                    });
+                    allRes.add(resId);
+                    const listStr = Array.from(allRes).sort().map(r => `'${r}'`).join(', ');
+                    const ddl = `ALTER PROJECT \`${adminProj}\` SET OPTIONS (\`${region}.preflight_fluid_autoscaling_reservations\` = [${listStr}]);`;
+                    
+                    tr.innerHTML = `
+                        <td>${resId}</td>
+                        <td>Enable Fluid Scaling for true per-second billing.</td>
+                        <td>
+                            <button class="btn-action copy-config-ddl-btn" data-ddl="${ddl.replace(/"/g, '&quot;')}">Copy DDL</button>
+                        </td>
+                    `;
+                    configTbody.appendChild(tr);
+                }
+                
+                // Recommend ALL_SLOTS scaling mode if unspecified and max > baseline
+                if (row.scaling_mode === 'SCALING_MODE_UNSPECIFIED' && row.current_max_slots > row.current_baseline) {
+                    const tr = document.createElement('tr');
+                    
+                    let step1 = '';
+                    let stepNum = 1;
+                    if (!data.fairness_enabled) {
+                        step1 = `-- Step 1: Enable Reservation-Based Fairness
+ALTER PROJECT \`${adminProj}\` SET OPTIONS (\`${region}.enable_reservation_based_fairness\` = true);
+
+`;
+                        stepNum = 2;
+                    }
+
+                    const ddl = `${step1}-- Step ${stepNum}: Disable Legacy Autoscaling
+ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (autoscale_max_slots = 0);
+
+-- Step ${stepNum + 1}: Enable the New Scaling Model
+ALTER RESERVATION \`${adminProj}.${region}.${resId}\` SET OPTIONS (scaling_mode = 'ALL_SLOTS', max_slots = ${row.current_max_slots}, ignore_idle_slots = false);`;
+                    
+                    tr.innerHTML = `
+                        <td>${resId}</td>
+                        <td>Set scaling mode to ALL_SLOTS. ${data.fairness_enabled ? 'Requires 2 steps (Fairness already enabled).' : 'Requires 3 steps: enable fairness, disable legacy autoscale, set new mode.'}</td>
+                        <td>
+                            <button class="btn-action copy-config-ddl-btn" data-ddl="${ddl.replace(/"/g, '&quot;')}">Copy DDL</button>
+                        </td>
+                    `;
+                    configTbody.appendChild(tr);
+                }
+            });
+        }
+
+        // Add Event Listeners for Copy Config DDL Buttons
+        document.querySelectorAll('.copy-config-ddl-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const ddl = e.target.getAttribute('data-ddl');
+                if (ddl) {
+                    copyToClipboard(ddl).then(() => {
+                        showNotification('DDL copied to clipboard!', 'success');
+                    }).catch(err => {
+                        console.error(err);
+                        showNotification('Failed to copy DDL.', 'error');
+                    });
+                }
+            });
+        });
+
+        // Initialize DataTable for Config Recommendations
+        safeInitDataTable('#config-recommendations-table', { pageLength: 5, responsive: true });
+
+        safeInitDataTable('#current-reservations-table-new', { pageLength: 5, responsive: true });
+
+        safeInitDataTable('#slots-recommendations-table', { pageLength: 5, order: [[1, 'desc']], responsive: true });
+    };
+
+    const renderTieredRecommendations = (data) => {
+      // Normalize the response shape — handle array, envelope, or single object
+      let rows = [];
+      if (Array.isArray(data)) {
+        rows = data;
+      } else if (data && Array.isArray(data.rows)) {
+        rows = data.rows;
+      } else if (data && Array.isArray(data.recommendations)) {
+        rows = data.recommendations;
+      } else if (data && typeof data === 'object' && 'aggressive_baseline_p80' in data) {
+        rows = [data];  // single reservation returned as object
+      }
+
+      if (rows.length === 0) {
+        console.warn('Tiered recommendations: no data to render', data);
+        setTierCardValues('—', '—', '—');
+        return;
+      }
+
+      // Re-insert original HTML structure to restore IDs lost to skeleton
+      const tierContainer = document.querySelector('.tier-cards-container');
+      if (tierContainer) {
+        tierContainer.innerHTML = `
+                            <!-- Aggressive Card -->
+                            <article class="tier-card tier-card--aggressive">
+                                <div class="tier-badge">P80</div>
+                                <h3>Aggressive Savings</h3>
+                                <p>Low cost, higher risk of queuing during bursts.</p>
+                                <div class="slots-display">
+                                    <span id="tier-p80-slots">0</span>
+                                    <span> slots</span>
+                                </div>
+                                <button class="btn-action" id="btn-apply-p80">COPY DDL</button>
+                            </article>
+                            
+                            <!-- Balanced Card -->
+                            <article class="tier-card tier-card--balanced tier-card--recommended" aria-current="true">
+                                <div class="tier-badge">P95</div>
+                                <h3>Balanced</h3>
+                                <p>Optimal balance of cost and performance.</p>
+                                <div class="slots-display">
+                                    <span id="tier-p95-slots">0</span>
+                                    <span> slots</span>
+                                </div>
+                                <button class="btn-action" id="btn-apply-p95">COPY DDL</button>
+                            </article>
+                            
+                            <!-- Performance Card -->
+                            <article class="tier-card tier-card--performance">
+                                <div class="tier-badge">Max</div>
+                                <h3>Performance</h3>
+                                <p>Zero queuing risk, highest cost.</p>
+                                <div class="slots-display">
+                                    <span id="tier-max-slots">0</span>
+                                    <span> slots</span>
+                                </div>
+                                <button class="btn-action" id="btn-apply-max">COPY DDL</button>
+                            </article>
+        `;
+      }
+
+      // Pick the reservation with the highest performance_baseline_max
+      const mainRes = rows.reduce((prev, curr) =>
+        (curr.performance_baseline_max || 0) > (prev.performance_baseline_max || 0) ? curr : prev
+      );
+
+      setTierCardValues(
+        mainRes.aggressive_baseline_p80,
+        mainRes.balanced_baseline_p95,
+        mainRes.performance_baseline_max
+      );
+
+      // Wire up the Apply buttons (replace, don't accumulate listeners)
+      wireApplyButton('btn-apply-p80', mainRes.aggressive_baseline_p80, mainRes.reservation_id);
+      wireApplyButton('btn-apply-p95', mainRes.balanced_baseline_p95, mainRes.reservation_id);
+      wireApplyButton('btn-apply-max', mainRes.performance_baseline_max, mainRes.reservation_id);
+    };
+
+    const setTierCardValues = (p80, p95, max) => {
+      const targets = [
+        ['tier-p80-slots', p80],
+        ['tier-p95-slots', p95],
+        ['tier-max-slots', max]
+      ];
+
+      targets.forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (!el) {
+          console.error(`Tier card element #${id} not found in DOM`);
+          return;
+        }
+        el.textContent = (value == null || value === '—')
+          ? '—'
+          : formatNumber(value);
+      });
+    };
+
+    const wireApplyButton = (buttonId, slots, reservationId) => {
+      const btn = document.getElementById(buttonId);
+      if (!btn) return;
+
+      // Clone-and-replace to wipe any previous listeners (prevents double-fire)
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+
+      fresh.addEventListener('click', () => {
+        let cleanResId = reservationId;
+        if (cleanResId && cleanResId.includes('.')) {
+            cleanResId = cleanResId.split('.').pop();
+        }
+        const adminProj = state.adminProject || state.orgProject;
+        const region = state.region;
+        
+        const ddl = `ALTER RESERVATION \`${adminProj}.${region}.${cleanResId}\` SET OPTIONS (slot_capacity = ${slots});`;
+
+        copyToClipboard(ddl)
+          .then(() => {
+            const original = fresh.textContent;
+            fresh.textContent = '✓ COPIED';
+            showNotification('DDL copied to clipboard!', 'success');
+            setTimeout(() => { fresh.textContent = original; }, 1500);
+          })
+          .catch(err => console.error('Clipboard write failed:', err));
+      });
+    };
+
+    const renderProfilerResults = (data) => {
+        const tbody = document.querySelector('#slots-profiler-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            // Clean up reservation ID
+            let displayResId = row.reservation_id;
+            if (displayResId && displayResId.includes('.')) {
+                displayResId = displayResId.split('.').pop();
+            }
+            
+            tr.innerHTML = `
+                <td>${renderReservationLink(displayResId, state.adminProject, displayResId)}</td>
+                <td data-order="${Number(row.total_flagged_hours) || 0}">${formatNumber(row.total_flagged_hours)}</td>
+                <td data-order="${Number(row.peak_hourly_queries) || 0}">${formatNumber(row.peak_hourly_queries)}</td>
+                <td>${row.top_projects}</td>
+                <td><span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b;">Consider Baseline</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Initialize DataTable
+        safeInitDataTable('#slots-profiler-table', { pageLength: 5, order: [[2, 'desc']], responsive: true });
+    };
+
+    const renderHeatmap = (timeline) => {
+        const tbody = document.querySelector('#heatmap-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        // Initialize 24x7 grid
+        const grid = Array(24).fill(0).map(() => Array(7).fill(0));
+
+        // Populate grid
+        timeline.forEach(row => {
+            const date = new Date(row.hour_bucket);
+            const day = date.getDay(); // 0 = Sun, 1 = Mon, etc.
+            const hour = date.getHours();
+            grid[hour][day] += row.hourly_queries;
+        });
+
+        // Find max value for scaling intensity
+        let maxVal = 0;
+        for (let h = 0; h < 24; h++) {
+            for (let d = 0; d < 7; d++) {
+                if (grid[h][d] > maxVal) maxVal = grid[h][d];
+            }
+        }
+
+        // Render rows
+        for (let h = 0; h < 24; h++) {
+            const tr = document.createElement('tr');
+            
+            // Hour label
+            const tdHour = document.createElement('td');
+            tdHour.textContent = `${String(h).padStart(2, '0')}:00`;
+            tdHour.style.fontWeight = 'bold';
+            tr.appendChild(tdHour);
+
+            // Days
+            for (let d = 0; d < 7; d++) {
+                const td = document.createElement('td');
+                const val = grid[h][d];
+                
+                if (val > 0) {
+                    const intensity = val / maxVal;
+                    td.style.background = `rgba(239, 68, 68, ${intensity * 0.8 + 0.1})`;
+                    td.style.color = intensity > 0.5 ? '#fff' : 'var(--text-secondary)';
+                    td.innerHTML = `<strong>${formatNumber(val)}</strong>`;
+                    td.title = `${val} queries`;
+                } else {
+                    td.textContent = '-';
+                    td.style.color = 'var(--text-secondary)';
+                    td.style.opacity = '0.3';
+                }
+                
+                td.style.padding = '0.5rem';
+                td.style.border = '1px solid rgba(255,255,255,0.05)';
+                
+                tr.appendChild(td);
+            }
+            
+            tbody.appendChild(tr);
+        }
+    };
+
+    const renderProfilerQueries = (data) => {
+        let table;
+        table = safeInitDataTable('#profiler-queries-table', {
+                pageLength: 10,
+                order: [[3, 'desc']],
+                responsive: true,
+                // Rows are added as HTML strings, so DataTables cannot see the
+                // <td data-order>. formatNumber() abbreviates to "12.3k"/"4.5m",
+                // which would otherwise sort lexically.
+                columnDefs: [{ targets: [3, 4, 5, 6], type: 'num', render: orderByDataAttr }]
+        });
+        
+        if (!table) return;
+        table.clear();
+
+        const formatSlotHours = (num) => {
+            if (num > 0 && num < 0.01) {
+                return new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(num);
+            }
+            return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
+        };
+
+        // XSS-safe helper: escapes HTML entities for use in innerHTML / title attributes
+        const esc = (s) => s == null ? '' : String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'", '&#39;');
+
+        data.forEach(row => {
+            const avgBytes = row.avg_bytes_processed || 0;
+            const recommendation = row.recommendation || 'N/A';
+            const isCandidate = recommendation !== 'N/A';
+            const badgeBg = isCandidate ? 'rgba(34, 197, 94, 0.15)' : 'rgba(148, 163, 184, 0.15)';
+            const badgeColor = isCandidate ? '#22c55e' : '#94a3b8';
+            const badgeText = isCandidate ? 'Candidate' : 'N/A';
+            
+            table.row.add([
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.query)}">${esc(row.query)}</div>`,
+                `<div style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.project_id || ''}">${renderProjectLink(row.project_id)}</div>`,
+                `<div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="font-family: monospace; font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${row.example_job_id || ''}">${row.example_job_id || 'N/A'}</span>
+                    ${row.example_job_id ? `<a href="${buildConsoleUrl('job', { project: row.project_id, location: state.region, jobId: row.example_job_id })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
+                    ${row.example_job_id ? `<button class="btn-action copy-job-id-btn" data-job-id="${row.example_job_id}" title="Copy Job ID" style="padding: 2px 5px; font-size: 0.75rem;"><i class="fa-solid fa-copy"></i></button>` : ''}
+                </div>`,
+                `<span data-order="${Number(row.frequency) || 0}">${formatNumber(row.frequency)}</span>`,
+                `<span data-order="${Number(row.avg_slot_hours) || 0}">${formatSlotHours(row.avg_slot_hours)}</span>`,
+                `<span data-order="${Number(row.avg_duration_seconds) || 0}">${formatNumber(row.avg_duration_seconds)}</span>`,
+                `<span data-order="${avgBytes}">${formatNumber(avgBytes / (1024 * 1024))} MB</span>`,
+                `<span class="badge" style="background: ${badgeBg}; color: ${badgeColor};" title="${recommendation}">${badgeText}</span>`
+            ]);
+        });
+
+        table.draw();
+    };
+
+    const renderActualProvisioningDonut = (autoscaledHours, baselineHours) => {
+        const ctx = document.getElementById('actual-provisioning-donut').getContext('2d');
+        
+        if (state.actualProvisioningChart) {
+            state.actualProvisioningChart.destroy();
+        }
+        
+        state.actualProvisioningChart = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Autoscaled Hours', 'Baseline Hours'],
+                datasets: [{
+                    data: [autoscaledHours, baselineHours],
+                    backgroundColor: ['#facc15', '#38bdf8'],
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.raw || 0;
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((value / total) * 100).toFixed(2) + '%';
+                                return `${label}: ${formatNumber(value)} (${percentage})`;
+                            }
+                        }
+                    }
+                },
+                cutout: '70%'
+            }
+        });
+    };
+
+    const renderSlotsChart = (data, provisioningTimeline = null) => {
+        const ctx = document.getElementById('slots-timeline-chart').getContext('2d');
+        
+        if (state.slotsChart) {
+            state.slotsChart.destroy();
+        }
+        
+        // Reverse data to show chronological order (API returns descending)
+        const reversedData = [...data].reverse();
+        
+        const labels = reversedData.map(d => {
+            const date = new Date(d.timestamp);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        });
+        
+        const timeAvg = reversedData.map(d => d.time_average);
+        const p90 = reversedData.map(d => d.p90_slots);
+        const maxSlots = reversedData.map(d => d.max_slots);
+        
+        let baselineData = [];
+        let currentData = [];
+
+        if (provisioningTimeline && provisioningTimeline.length > 0) {
+            provisioningTimeline.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+            reversedData.forEach(d => {
+                const currentTs = new Date(d.timestamp);
+                let activeProvisioning = { baseline_slots: 0, current_slots: 0 };
+                for (let i = provisioningTimeline.length - 1; i >= 0; i--) {
+                    if (new Date(provisioningTimeline[i].ts) <= currentTs) {
+                        activeProvisioning = provisioningTimeline[i];
+                        break;
+                    }
+                }
+                baselineData.push(activeProvisioning.baseline_slots);
+                currentData.push(activeProvisioning.current_slots);
+            });
+        }
+        
+        const datasets = [
+            {
+                label: 'Time Average',
+                data: timeAvg,
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 0,
+                borderWidth: 1.5
+            },
+            {
+                label: 'P90',
+                data: p90,
+                borderColor: '#a855f7',
+                borderDash: [5, 5],
+                fill: false,
+                tension: 0.4,
+                pointRadius: 0,
+                borderWidth: 1.5
+            },
+            {
+                label: 'Max Slots',
+                data: maxSlots,
+                borderColor: '#ef4444',
+                borderDash: [2, 2],
+                fill: false,
+                tension: 0.1,
+                pointRadius: 0,
+                borderWidth: 1.5
+            }
+        ];
+
+        if (baselineData.length > 0) {
+            datasets.push({
+                label: 'Actual Baseline',
+                data: baselineData,
+                borderColor: '#f59e0b',
+                borderDash: [5, 5],
+                fill: false,
+                stepped: 'before',
+                pointRadius: 0,
+                borderWidth: 2
+            });
+            datasets.push({
+                label: 'Total Provisioned',
+                data: currentData,
+                borderColor: '#10b981',
+                borderDash: [2, 2],
+                fill: false,
+                stepped: 'before',
+                pointRadius: 0,
+                borderWidth: 2
+            });
+        }
+
+        state.slotsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Slots'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            }
+        });
+    };
+
+    const renderSlotsUtilizationAndProvisioning = (utilData, actualData) => {
+        let provisioningTimeline = null;
+        if (actualData) {
+            const elAuto = document.getElementById('act-autoscaled-hours');
+            const elBase = document.getElementById('act-baseline-hours');
+            const elTotal = document.getElementById('act-total-hours');
+            if (elAuto) elAuto.textContent = formatNumber(Math.round(actualData.autoscaled_slot_hours || 0));
+            if (elBase) elBase.textContent = formatNumber(Math.round(actualData.baseline_slot_hours || 0));
+            if (elTotal) elTotal.textContent = formatNumber(Math.round(actualData.total_slot_hours || 0));
+            provisioningTimeline = actualData.timeline || null;
+            renderActualProvisioningDonut(actualData.autoscaled_slot_hours || 0, actualData.baseline_slot_hours || 0);
+        }
+
+        if (Array.isArray(utilData) && utilData.length > 0) {
+            renderSlotsChart(utilData, provisioningTimeline);
+
+            const simMaxBaselineInput = document.getElementById('sim-max-baseline');
+            if (simMaxBaselineInput) {
+                const peakSlots = Math.max(...utilData.map(d => d.max_slots || 0));
+                const recommendedMax = Math.ceil(peakSlots / 500) * 500 || 1000;
+                simMaxBaselineInput.value = recommendedMax;
+                console.log(`Auto-set simulator max baseline to ${recommendedMax} based on peak usage of ${peakSlots}`);
+            }
+        }
+    };
+
+    // Helpers
+    const formatCurrency = (amount) => {
+        // Exact -0 (Python serializes -0.0 into JSON verbatim) also formats as
+        // "-$0.00". It is zero; drop the sign.
+        if (Object.is(amount, -0)) amount = 0;
+        // Compare on magnitude, not the signed value. A tiny NEGATIVE amount
+        // (editions marginally more expensive than on-demand) otherwise skips
+        // the extra digits and renders as "-$0.00" -- a zero wearing a minus
+        // sign, which reads as a rendering fault rather than a real figure.
+        const magnitude = Math.abs(amount);
+        if (magnitude > 0 && magnitude < 0.01) {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 6 }).format(amount);
+        }
+        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+    };
+
+    const formatNumber = (num) => {
+        // Guard null/undefined/NaN from snapshot import
+        if (num == null || isNaN(num)) return '0';
+        const abs = Math.abs(num);
+        if (abs >= 1e9) return (num / 1e9).toFixed(2) + 'b';
+        if (abs >= 1e6) return (num / 1e6).toFixed(2) + 'm';
+        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'k';
+        return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(num);
+    };
+
+    const formatDiffPct = (pct) => {
+        if (!pct) return '0%';
+        if (pct >= 1000) {
+            const multiplier = pct / 100;
+            if (multiplier >= 1000000) {
+                return `+${(multiplier / 1000000).toFixed(1)}Mx`;
+            } else if (multiplier >= 1000) {
+                return `+${(multiplier / 1000).toFixed(1)}Kx`;
+            } else {
+                return `+${multiplier.toFixed(1)}x`;
+            }
+        }
+        return `+${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(pct)}%`;
+    };
+
+    const showNotification = (message, type = 'info') => {
+        // Every toast is also archived in the bell-icon panel — the toast
+        // itself disappears after 3s and users kept missing scan results.
+        NotificationCenter.record(message, type);
+
+        // If an identical notification is already showing, flash it to acknowledge the click without stacking duplicate popups
+        if (elements.notificationContainer) {
+            const activeNotifs = elements.notificationContainer.querySelectorAll('.notification');
+            for (const notif of activeNotifs) {
+                const contentEl = notif.querySelector('.notif-content');
+                if (contentEl && contentEl.textContent.trim() === message.trim()) {
+                    notif.style.transform = 'scale(1.05)';
+                    setTimeout(() => { notif.style.transform = 'scale(1)'; }, 150);
+                    return;
+                }
+            }
+        }
+
+        const notification = document.createElement('div');
+        notification.className = `notification ${type}`;
+        notification.style.transition = 'transform 0.15s ease-out';
+        
+        let icon = 'fa-circle-info';
+        if (type === 'success') icon = 'fa-circle-check';
+        if (type === 'error') icon = 'fa-circle-exclamation';
+        if (type === 'warning') icon = 'fa-triangle-exclamation';
+
+        // H1: Build the node with textContent to prevent XSS — message
+        // can contain DOM input values (e.g. project IDs from validation)
+        // that bypass the global fetch sanitizer.
+        const iconEl = document.createElement('i');
+        iconEl.className = `fa-solid ${icon}`;
+        const contentEl = document.createElement('div');
+        contentEl.className = 'notif-content';
+        contentEl.textContent = message;
+        notification.appendChild(iconEl);
+        notification.appendChild(contentEl);
+
+        elements.notificationContainer.appendChild(notification);
+
+        setTimeout(() => {
+            notification.style.animation = 'fadeOut 0.3s ease-out forwards';
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    };
+
+    window.showNotification = showNotification;
+
+    const setLoading = (button, isLoading) => {
+        if (!button) return;
+        if (isLoading) {
+            button.disabled = true;
+            button.dataset.originalText = button.innerHTML;
+            const startTime = Date.now();
+            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing <span class="btn-timer">0s</span>';
+            const timerInterval = setInterval(() => {
+                const el = button.querySelector('.btn-timer');
+                if (el) {
+                    const secs = Math.floor((Date.now() - startTime) / 1000);
+                    el.textContent = `${secs}s`;
+                }
+            }, 1000);
+            button._timerInterval = timerInterval;
+
+            // --- Ongoing task tracking ---
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                const label = (typeof TASK_LABELS !== 'undefined' && TASK_LABELS[button.id])
+                    || button.dataset.originalText.replace(/<[^>]*>/g, '').trim()
+                    || 'Processing';
+                NotificationCenter.startTask(button.id, label);
+            }
+        } else {
+            if (button._timerInterval) {
+                clearInterval(button._timerInterval);
+                button._timerInterval = null;
+            }
+            button.disabled = false;
+            button.innerHTML = button.dataset.originalText;
+            // --- Complete task tracking ---
+            if (button.id && typeof NotificationCenter !== 'undefined') {
+                NotificationCenter.completeTask(button.id);
+            }
+        }
+    };
+
+    const logger_error = (error) => {
+        console.error("Application Error:", error);
+    };
+
+    // Cost Attribution Logic
+    if (elements.navCostAttribution) {
+        elements.navCostAttribution.addEventListener('click', async (e) => {
+            e.preventDefault();
+            Router.navigate('cost-attribution');
+            await loadCostAttributionConfig();
+        });
+    }
+
+    const renderReservationsForm = (reservations) => {
+        const container = elements.cbReservationsContainer;
+        if (!container) return;
+        container.innerHTML = '';
+
+        Object.entries(reservations).forEach(([resId, config]) => {
+            addReservationRow(resId, config.sku_rate, config.total_admin_bill);
+        });
+    };
+
+    const addReservationRow = (resId = '', skuRate = '', totalBill = '') => {
+        const container = elements.cbReservationsContainer;
+        if (!container) return;
+
+        const row = document.createElement('div');
+        row.className = 'reservation-row';
+        row.style.display = 'flex';
+        row.style.gap = '0.5rem';
+        row.style.marginBottom = '0.5rem';
+        row.style.alignItems = 'center';
+
+        row.innerHTML = `
+            <input type="text" class="cb-res-id" placeholder="Reservation ID" value="${resId}" style="flex: 2; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <input type="number" class="cb-res-rate" placeholder="SKU Rate" step="0.001" value="${skuRate}" style="flex: 1; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <input type="number" class="cb-res-bill" placeholder="Total Bill ($)" step="0.01" value="${totalBill}" style="flex: 1; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 0.375rem;">
+            <button class="btn-action cb-remove-res-btn" style="padding: 0.375rem 0.5rem;"><i class="fa-solid fa-trash"></i></button>
+        `;
+
+        row.querySelector('.cb-remove-res-btn').addEventListener('click', () => {
+            row.remove();
+        });
+
+        container.appendChild(row);
+    };
+
+    const getReservationsFromForm = () => {
+        const reservations = {};
+        const rows = document.querySelectorAll('.reservation-row');
+        rows.forEach(row => {
+            const resId = row.querySelector('.cb-res-id').value.trim();
+            const skuRate = parseFloat(row.querySelector('.cb-res-rate').value);
+            const totalBill = parseFloat(row.querySelector('.cb-res-bill').value);
+            
+            if (resId) {
+                reservations[resId] = {
+                    sku_rate: skuRate || 0.0,
+                    total_admin_bill: totalBill || 0.0
+                };
+            }
+        });
+        return reservations;
+    };
+
+    if (elements.cbAddReservationBtn) {
+        elements.cbAddReservationBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            addReservationRow();
+        });
+    }
+
+    /**
+     * Seed the reservations form from the last Slots Optimizer run so users
+     * don't have to retype reservation IDs they already discovered. Only
+     * fills the ID — SKU rate and total bill come off the GCP invoice and
+     * cannot be inferred, so they stay blank on purpose.
+     */
+    const autoPopulateReservationsFromSlots = () => {
+        const existingRows = document.querySelectorAll('.reservation-row');
+        if (existingRows.length > 0) return;
+
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (!cachedSlots) return;
+
+        try {
+            const slotsData = JSON.parse(cachedSlots);
+            if (!slotsData.current_reservations || slotsData.current_reservations.length === 0) return;
+
+            slotsData.current_reservations.forEach(res => {
+                addReservationRow(res.reservation_id, '', '');
+            });
+            showNotification(
+                `Pre-filled ${slotsData.current_reservations.length} reservation(s) from Slots Optimizer. Please enter SKU Rate and Total Bill.`,
+                'info'
+            );
+        } catch (e) {
+            console.warn('Failed to auto-populate reservations from cached slots data:', e);
+        }
+    };
+
+    const loadCostAttributionConfig = async () => {
+        try {
+            const response = await fetch('/api/cost-attribution/config');
+            if (response.ok) {
+                const config = await response.json();
+                elements.cbWasteRule.value = config.waste_rule;
+                elements.cbCentralProject.value = config.central_cost_center_project || '';
+                elements.cbBorrowingRule.value = config.borrowing_rule;
+                renderReservationsForm(config.reservations);
+            }
+        } catch (error) {
+            console.error("Failed to load cost attribution config:", error);
+        }
+        // Runs after the saved config renders — no-ops if any row exists.
+        autoPopulateReservationsFromSlots();
+    };
+
+    if (elements.btnCalculateCostAttribution) {
+        elements.btnCalculateCostAttribution.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            const monthStart = elements.cbMonthStart.value;
+            const monthEnd = elements.cbMonthEnd.value;
+
+            if (!monthStart || !monthEnd) {
+                showNotification('Please select both start and end dates.', 'error');
+                return;
+            }
+
+            setLoading(elements.btnCalculateCostAttribution, true);
+
+            try {
+                // First save config
+                const config = {
+                    waste_rule: elements.cbWasteRule.value,
+                    central_cost_center_project: elements.cbCentralProject.value.trim() || null,
+                    borrowing_rule: elements.cbBorrowingRule.value,
+                    reservations: getReservationsFromForm()
+                };
+
+                const configResp = await fetch('/api/cost-attribution/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (!configResp.ok) {
+                    const errBody = await configResp.json().catch(() => ({}));
+                    throw new Error(detailToMessage(errBody.detail, `Config save failed (HTTP ${configResp.status})`));
+                }
+
+                // Then calculate
+                const params = {
+                    billing_month_start: monthStart,
+                    billing_month_end: monthEnd,
+                    org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                    region: state.region,
+                focus_projects: state.focusProjects,
+                    admin_project_id: state.adminProject
+                };
+
+                const response = await fetch('/api/cost-attribution/calculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/cost-attribution/calculate', params))
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Calculation failed'));
+                }
+
+                const data = await response.json();
+                const attributions = data.attributions || data; // backward compat
+                const scope = data.scope;
+                renderCostAttributionResults(attributions);
+                safeSetLocalStorage('bq_cost_attribution_results', JSON.stringify(data));
+                if (scope && scope.mode === 'focused' && scope.total_org_projects) {
+                    showNotification(`Cost attribution calculated — showing ${scope.projects.length} of ${scope.total_org_projects} projects (waste computed over full org).`, 'success');
+                } else {
+                    showNotification('Cost attribution calculated successfully.', 'success');
+                }
+            } catch (error) {
+                console.error("Cost Attribution Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnCalculateCostAttribution, false);
+            }
+        });
+    }
+
+    const renderCostAttributionResults = (data) => {
+        let table;
+        // Clear tbody before init to avoid stale-row column mismatch (DT /tn/18)
+        const tbody = document.querySelector('#cost-attribution-results-table tbody');
+        if (tbody) tbody.innerHTML = '';
+        table = safeInitDataTable('#cost-attribution-results-table', {
+                pageLength: 10,
+                order: [[4, 'desc']],
+                responsive: true,
+                columnDefs: [{ targets: [2, 3, 4], type: 'num', render: orderByDataAttr }]
+        });
+        
+        if (!table) return;
+        table.clear();
+        
+        // Aggregation for Slot Usage by Project
+        const projectSlots = {};
+        const projectCosts = {};
+
+        data.forEach(row => {
+            let displayResId = row.reservation_id;
+            let resProject = state.adminProject || state.orgProject;
+            if (displayResId && displayResId.includes('.')) {
+                const parts = displayResId.split('.');
+                if (parts.length >= 3) {
+                    resProject = parts[0];
+                }
+                displayResId = parts.pop();
+            } else if (displayResId && displayResId.includes(':')) {
+                const parts = displayResId.split(':');
+                resProject = parts[0];
+                displayResId = parts.pop();
+            }
+
+            // data-order carries the raw number so DataTables sorts these
+            // numerically instead of lexically on the "$1,234.00" string.
+            table.row.add([
+                renderProjectLink(row.project_id),
+                renderReservationLink(displayResId, resProject, displayResId),
+                `<span data-order="${row.direct_usage_cost_usd || 0}">${formatCurrency(row.direct_usage_cost_usd)}</span>`,
+                `<span data-order="${row.allocated_waste_cost_usd || 0}">${formatCurrency(row.allocated_waste_cost_usd)}</span>`,
+                `<span data-order="${row.total_cost_attribution_usd || 0}"><strong>${formatCurrency(row.total_cost_attribution_usd)}</strong></span>`
+            ]);
+
+            // Aggregate slots
+            if (!projectSlots[row.project_id]) projectSlots[row.project_id] = 0;
+            projectSlots[row.project_id] += row.slot_hours || 0;
+
+            // Aggregate costs for finding top spenders
+            if (!projectCosts[row.project_id]) projectCosts[row.project_id] = 0;
+            projectCosts[row.project_id] += row.total_cost_attribution_usd || 0;
+        });
+        
+        table.draw();
+
+        // Render Slot Usage by Project Table
+        let slotTable;
+        slotTable = safeInitDataTable('#slot-usage-by-project-table', {
+                pageLength: 5,
+                order: [[1, 'desc']],
+                responsive: true,
+                columnDefs: [{ targets: [1], type: 'num', render: orderByDataAttr }]
+        });
+        if (!slotTable) return;
+        slotTable.clear();
+
+        for (const [projId, slots] of Object.entries(projectSlots)) {
+            slotTable.row.add([
+                renderProjectLink(projId),
+                `<span data-order="${slots}">${slots.toFixed(2)} hrs</span>`
+            ]);
+        }
+        slotTable.draw();
+
+        // Extract Top 5 Spenders for HBO
+        const sortedProjects = Object.entries(projectCosts)
+            .sort((a, b) => b[1] - a[1])
+            .map(entry => entry[0])
+            .filter(proj => !proj.startsWith('res-') && !proj.includes(':') && !proj.includes('.'));
+        
+        state.top5Projects = sortedProjects.slice(0, 5);
+    };
+
+    if (elements.btnAnalyzeProfiler) {
+        elements.btnAnalyzeProfiler.addEventListener('click', async () => {
+            console.log("Profiler button clicked!");
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeProfiler, true);
+            clearModuleCache(['bq_profiler_summary', 'bq_profiler_timeline', 'bq_profiler_queries'], ['#profiler-summary-table', '#profiler-timeline-table', '#profiler-queries-table']);
+
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: parseInt(elements.slLookback.value) || 7,
+                admin_project_id: state.adminProject
+            };
+
+            try {
+                const response = await fetch('/api/slots/profiler', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/slots/profiler', params))
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze workload profile'));
+                }
+
+                const data = await response.json();
+                renderProfilerResults(data.summary);
+                renderHeatmap(data.timeline);
+                safeSetLocalStorage('bq_profiler_summary', JSON.stringify(data.summary));
+                safeSetLocalStorage('bq_profiler_timeline', JSON.stringify(data.timeline));
+                
+                // Fetch top queries
+                const queriesResponse = await fetch('/api/slots/profiler/queries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/slots/profiler/queries', params))
+                });
+                
+                if (queriesResponse.ok) {
+                    const queriesData = await queriesResponse.json();
+                    renderProfilerQueries(queriesData);
+                    safeSetLocalStorage('bq_profiler_queries', JSON.stringify(queriesData));
+                }
+                showNotification('Workload profile analysis completed.', 'success');
+            } catch (error) {
+                console.error("Profiler Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeProfiler, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeUsers) {
+        elements.btnAnalyzeUsers.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeUsers, true);
+            clearModuleCache(['bq_top_spenders'], ['#top-spenders-table']);
+
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: parseInt(elements.slLookback.value) || 7,
+                admin_project_id: state.adminProject,
+                od_price: parseFloat(document.getElementById('jb-od-rate').value) || 6.25,
+                ed_price: parseFloat(document.getElementById('jb-ed-rate').value) || 0.06
+            };
+
+            try {
+                const response = await fetch('/api/users/top_spenders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/users/top_spenders', params))
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze top spenders'));
+                }
+
+                const data = await response.json();
+                renderTopSpenders(data);
+                safeSetLocalStorage('bq_top_spenders', JSON.stringify(data));
+                showNotification('Top spenders analysis completed.', 'success');
+            } catch (error) {
+                console.error("Top Spenders Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeUsers, false);
+            }
+        });
+    }
+
+    let _spendersRawData = [];
+    const _spendersFilterState = { userType: 'all', user: '' };
+
+    const populateSpendersFilterOptions = () => {
+        const sel = document.getElementById('spenders-filter-user');
+        if (!sel) return;
+        const previous = sel.value;
+        const users = Array.from(new Set(_spendersRawData.map(r => r.user_email).filter(Boolean))).sort();
+        sel.innerHTML = '<option value="">All users</option>' +
+            users.map(u => `<option value="${escapeHtmlAttr(u)}">${escapeHtmlAttr(u)}</option>`).join('');
+        const retained = users.includes(previous) ? previous : '';
+        sel.value = retained;
+        _spendersFilterState.user = retained;
+    };
+
+    const applySpendersFilters = () => {
+        let filtered = _spendersRawData;
+        if (_spendersFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_spendersFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+        if (_spendersFilterState.user) {
+            filtered = filtered.filter(r => r.user_email === _spendersFilterState.user);
+        }
+
+        renderTopSpendersTable(filtered);
+    };
+
+    const initSpendersToolbar = () => {
+        const typeEl = document.getElementById('spenders-filter-user-type');
+        if (typeEl) {
+            typeEl.addEventListener('change', () => {
+                _spendersFilterState.userType = typeEl.value;
+                applySpendersFilters();
+            });
+        }
+        const userEl = document.getElementById('spenders-filter-user');
+        if (userEl) {
+            userEl.addEventListener('change', () => {
+                _spendersFilterState.user = userEl.value;
+                applySpendersFilters();
+            });
+        }
+        const resetBtn = document.getElementById('spenders-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                _spendersFilterState.userType = 'all';
+                _spendersFilterState.user = '';
+                if (typeEl) typeEl.value = 'all';
+                if (userEl) userEl.value = '';
+                applySpendersFilters();
+            });
+        }
+    };
+    initSpendersToolbar();
+
+    const renderTopSpenders = (data) => {
+        _spendersRawData = Array.isArray(data) ? data : [];
+        populateSpendersFilterOptions();
+        applySpendersFilters();
+    };
+
+    /**
+     * Render a billing mode badge (Reservation vs On-Demand vs Mixed)
+     * with detailed query counts & primary reservations tooltip.
+     */
+    function renderBillingModeBadge(row) {
+        const pct = row.reservation_pct;
+        if (pct === undefined || pct === null) {
+            return '<span class="badge-billing badge-billing-unknown" title="Billing mode unknown">—</span>';
+        }
+        const resPct = Number(pct) || 0;
+        const odPct = Math.max(0, 100 - resPct);
+        const reservations = Array.isArray(row.primary_reservations) ? row.primary_reservations.filter(Boolean) : [];
+
+        let tooltip = `${resPct.toFixed(1)}% Reservation (${(row.reservation_query_count || 0).toLocaleString()} queries)\n${odPct.toFixed(1)}% On-Demand (${(row.od_query_count || 0).toLocaleString()} queries)`;
+        if (reservations.length > 0) {
+            tooltip += `\nPrimary Reservations: ${reservations.join(', ')}`;
+        }
+
+        if (resPct >= 80) {
+            return `<span class="badge-billing badge-billing-res" title="${escapeHtmlAttr(tooltip)}">Reservation</span>`;
+        } else if (resPct <= 20) {
+            return `<span class="badge-billing badge-billing-od" title="${escapeHtmlAttr(tooltip)}">On-Demand</span>`;
+        } else {
+            return `<span class="badge-billing badge-billing-mixed" title="${escapeHtmlAttr(tooltip)}">Mixed (${Math.round(resPct)}% Res)</span>`;
+        }
+    }
+    /**
+     * Waste cell: dollars wasted (failed/cancelled + min-billing floor),
+     * colour-coded by share of that user's actual spend.
+     */
+    function renderWasteCell(row) {
+        const waste = Number(row.total_waste_cost);
+        if (!Number.isFinite(waste)) {
+            return { html: '<span style="color: var(--text-secondary);">—</span>', order: -1 };
+        }
+        const pct        = Number(row.waste_pct) || 0;
+        const failedCost = Number(row.failed_cost) || 0;
+        const minCost    = Number(row.min_billing_cost) || 0;
+        const failedN    = Number(row.failed_query_count) || 0;
+        const subMinN    = Number(row.sub_min_query_count) || 0;
+
+        const parts = [];
+        if (failedN > 0) {
+            parts.push(`Failed/cancelled: ${failedN.toLocaleString()} queries`
+                + ` (${(Number(row.failure_rate) || 0).toFixed(1)}% of runs), $${failedCost.toFixed(2)}`
+                + ` · ${(Number(row.failed_slot_hours) || 0).toLocaleString()} slot-hrs burned`);
+        }
+        if (subMinN > 0) {
+            parts.push(`Min-billing floor: ${subMinN.toLocaleString()} sub-10MiB on-demand queries, $${minCost.toFixed(2)}`);
+        }
+        if (row.cache_hit_rate !== undefined && row.cache_hit_rate !== null) {
+            parts.push(`Cache hit rate: ${Number(row.cache_hit_rate).toFixed(1)}%`);
+        }
+        const tooltip = parts.length
+            ? parts.join('\n') + `\n\nWaste is ${pct.toFixed(1)}% of this user's actual spend (subset, not additional).`
+            : 'No detectable waste in this window.';
+
+        let cls = 'waste-none';
+        if (waste >= 1 && pct >= 10)      cls = 'waste-high';
+        else if (waste >= 1 && pct >= 3)  cls = 'waste-med';
+        else if (waste >= 1)              cls = 'waste-low';
+
+        const label = waste < 0.005
+            ? '—'
+            : `$${Math.round(waste).toLocaleString()}<span class="waste-pct"> (${pct.toFixed(0)}%)</span>`;
+
+        return {
+            html: `<span class="waste-cell ${cls}" title="${escapeHtmlAttr(tooltip)}">${label}</span>`,
+            order: waste
+        };
+    }
+    window.renderWasteCell = renderWasteCell;
+
+    const renderTopSpendersTable = (data) => {
+        if ($.fn.DataTable.isDataTable('#top-spenders-table')) {
+            $('#top-spenders-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#top-spenders-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let totalActual = 0;
+        let totalSavings = 0;
+        let totalWaste = 0;
+        let totalFailedQueries = 0;
+        let usersWithWaste = 0;
+        let totalSlots = 0;
+        let totalBytes = 0;
+        let resUsers = 0;
+        let odUsers = 0;
+        let mixedUsers = 0;
+
+        data.forEach(r => {
+            const hasActual = r.total_actual_cost !== undefined && r.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(r.total_actual_cost) : null;
+            const estOd = Number(r.est_on_demand_cost) || 0;
+            const estEd = Number(r.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            if (hasActual) {
+                totalActual += actualCost;
+                totalSavings += (savings || 0);
+                const pct = Number(r.reservation_pct) || 0;
+                if (pct >= 80) resUsers++;
+                else if (pct <= 20) odUsers++;
+                else mixedUsers++;
+            }
+
+            const w = Number(r.total_waste_cost);
+            if (Number.isFinite(w)) {
+                totalWaste += w;
+                totalFailedQueries += (Number(r.failed_query_count) || 0);
+                if (w >= 1) usersWithWaste++;
+            }
+
+            totalSlots += (Number(r.total_slot_hours) || 0);
+            totalBytes += (Number(r.total_bytes_billed) || 0);
+        });
+
+        const elUsers = document.getElementById('top-spenders-total-users');
+        const elActual = document.getElementById('top-spenders-total-actual');
+        const elSavings = document.getElementById('top-spenders-total-savings');
+        const elWaste = document.getElementById('top-spenders-total-waste');
+        const elWasteSub = document.getElementById('top-spenders-waste-sub');
+        const elSlots = document.getElementById('top-spenders-total-slots');
+        if (elUsers) elUsers.textContent = data.length.toLocaleString();
+        if (elActual) elActual.textContent = `$${Math.round(totalActual).toLocaleString()}`;
+        if (elSavings) elSavings.textContent = `$${Math.round(totalSavings).toLocaleString()}`;
+        if (elWaste) elWaste.textContent = `$${Math.round(totalWaste).toLocaleString()}`;
+        if (elWasteSub) {
+            const share = totalActual > 0 ? (totalWaste / totalActual * 100) : 0;
+            elWasteSub.textContent = `${share.toFixed(1)}% of spend · ${totalFailedQueries.toLocaleString()} failed · ${usersWithWaste} users`;
+        }
+        if (elSlots) elSlots.textContent = formatNumber(totalSlots);
+
+        const statsEl = document.getElementById('spenders-filter-stats');
+        if (statsEl) {
+            const rawLen = (_spendersRawData || []).length;
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${data.length}</span> of ${rawLen} spenders</span>
+                <span class="ap-stat">Total Actual Spend: <span class="ap-stat-value" style="color: #38bdf8;">$${Math.round(totalActual).toLocaleString()}</span></span>
+                <span class="ap-stat">Potential Savings: <span class="ap-stat-value" style="color: #4ade80;">$${Math.round(totalSavings).toLocaleString()}</span></span>
+                <span class="ap-stat">Wasted: <span class="ap-stat-value" style="color: #fb7185;">$${Math.round(totalWaste).toLocaleString()}</span></span>
+                <span class="ap-stat">Billing Split: <span class="ap-stat-value">${resUsers} Res / ${odUsers} OD / ${mixedUsers} Mixed</span></span>
+            `;
+        }
+
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No matching spenders found.</td></tr>`;
+            return;
+        }
+
+        data.forEach(row => {
+            const hasActual = row.total_actual_cost !== undefined && row.total_actual_cost !== null;
+            const actualCost = hasActual ? Number(row.total_actual_cost) : null;
+            const estOd = Number(row.est_on_demand_cost) || 0;
+            const estEd = Number(row.est_editions_cost) || 0;
+            const minEst = Math.min(estOd, estEd);
+            const savings = hasActual ? Math.max(0, actualCost - minEst) : null;
+
+            const actualTitle = hasActual
+                ? `On-Demand: $${(Number(row.actual_od_cost) || 0).toFixed(2)} + Editions: $${(Number(row.actual_ed_cost) || 0).toFixed(2)}`
+                : '';
+
+            const billedTib = (Number(row.total_bytes_billed) || 0) / Math.pow(1024, 4);
+            const hypoTib = (Number(row.hypothetical_od_bytes) || (Number(row.total_bytes_billed) || 0)) / Math.pow(1024, 4);
+            const bytesTitle = hypoTib > billedTib * 1.01
+                ? `${formatNumber(billedTib)} TiB actually billed (reservation queries bill 0 bytes). ${formatNumber(hypoTib)} TiB processed is used for the Est. On-Demand calculation.`
+                : `${formatNumber(billedTib)} TiB billed`;
+
+            const waste = renderWasteCell(row);
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td data-order="${escapeHtmlAttr(row.user_email || '')}" style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, state.orgProject)}</span></td>
+                <td data-order="${isServiceAccount(row.user_email) ? 'Service Account' : 'Human'}">${renderIdentityBadge(row.user_email)}</td>
+                <td data-order="${Number(row.reservation_pct) || 0}">${renderBillingModeBadge(row)}</td>
+                <td data-order="${Number(row.query_count) || 0}" style="text-align: right;">${formatCompact(row.query_count)}</td>
+                <td data-order="${Number(row.total_bytes_billed) || 0}" style="text-align: right;" title="${escapeHtmlAttr(bytesTitle)}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatNumber(billedTib)} TiB</strong></td>
+                <td data-order="${Number(row.total_slot_hours) || 0}" style="text-align: right;">${formatCompact(row.total_slot_hours)}</td>
+                <td data-order="${actualCost ?? -1}" style="text-align: right;" title="${escapeHtmlAttr(actualTitle)}">
+                    ${hasActual ? `<strong style="color: #38bdf8; font-weight: 700;">$${Math.round(actualCost).toLocaleString()}</strong>` : '—'}
+                </td>
+                <td data-order="${waste.order}" style="text-align: right;">${waste.html}</td>
+                <td data-order="${estOd}" style="text-align: right;"><span style="color: #f87171; font-weight: 600;">$${Math.round(estOd).toLocaleString()}</span></td>
+                <td data-order="${estEd}" style="text-align: right;"><span style="color: #94a3b8; font-weight: 600;">$${Math.round(estEd).toLocaleString()}</span></td>
+                <td data-order="${savings ?? -1}" style="text-align: right;">
+                    ${hasActual ? `<strong style="color: ${savings > 0 ? '#4ade80' : 'var(--text-secondary)'}; font-weight: 700;">${savings > 0 ? '$' + Math.round(savings).toLocaleString() : '—'}</strong>` : '—'}
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#top-spenders-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
+    };
+
+    // Build a DOM node for the optimization badges cell.
+    // Uses createElement + textContent to avoid XSS (§6.2).
+    const _buildBadgeCell = (optimizations) => {
+        const container = document.createElement('div');
+        container.className = 'opt-badges';
+
+        // null = undetermined
+        if (optimizations === null || optimizations === undefined) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = '—';
+            span.title = 'Could not determine (permissions or scope)';
+            container.appendChild(span);
+            return container;
+        }
+
+        // [] = checked, none applied
+        if (Array.isArray(optimizations) && optimizations.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'opt-none';
+            span.textContent = 'None detected';
+            container.appendChild(span);
+            return container;
+        }
+
+        // Array of badge objects
+        if (Array.isArray(optimizations)) {
+            optimizations.forEach(badge => {
+                const chip = document.createElement('span');
+                // Validate category to a CSS class — whitelist only
+                const validCats = ['hbo', 'engine', 'unknown'];
+                const cat = validCats.includes(badge.category) ? badge.category : 'unknown';
+                chip.className = `opt-badge opt-badge--${cat}`;
+                chip.textContent = badge.label || badge.key || 'Unknown';
+                chip.title = badge.description || '';
+                container.appendChild(chip);
+            });
+            return container;
+        }
+
+        // Fallback — loading state
+        const span = document.createElement('span');
+        span.className = 'opt-none';
+        span.textContent = 'Loading…';
+        container.appendChild(span);
+        return container;
+    };
+
+    // Store the last analyze data so enrichment can correlate
+    let _lastAnalyzeData = null;
+
+    const clearLoadingBadges = () => {
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        tableEl.querySelectorAll('tbody tr td:last-child').forEach(td => {
+            if (td.textContent.trim() === 'Loading…' || td.textContent.trim() === 'Loading...') {
+                td.innerHTML = '<span class="opt-none">—</span>';
+            }
+        });
+    };
+
+    const renderHboResults = (data, enrichmentData = null) => {
+        _lastAnalyzeData = data;
+        let table;
+        table = safeInitDataTable('#hbo-results-table', {
+                pageLength: 10,
+                order: [[1, 'desc']],
+                responsive: true,
+                columnDefs: [
+                    { targets: [1, 2, 3], type: 'num', render: orderByDataAttr },
+                    { targets: 4, orderable: false }
+                ]
+        });
+
+        if (!table) return;
+        table.clear();
+
+        const lookup = {};
+        if (enrichmentData && Array.isArray(enrichmentData.jobs)) {
+            enrichmentData.jobs.forEach(j => {
+                lookup[j.job_id] = j.optimizations;
+            });
+        }
+
+        let totalSlotsSaved = 0;
+        let totalDollarsSaved = 0;
+
+        data.forEach(row => {
+            totalSlotsSaved += row.saved_slot_hours || 0;
+            totalDollarsSaved += row.estimated_savings_usd || 0;
+
+            const optValue = (row.job_id in lookup) ? lookup[row.job_id] : (row.optimizations !== undefined ? row.optimizations : '_loading');
+            const badgeNode = _buildBadgeCell(optValue);
+            // data-order carries the raw number: DataTables cannot sort
+            // "12.34%" numerically, and "1,234" only by lucky auto-detection.
+            table.row.add([
+                row.job_id,
+                `<span data-order="${Number(row.percent_execution_time_saved) || 0}">${row.percent_execution_time_saved.toFixed(2)}%</span>`,
+                `<span data-order="${Number(row.new_elapsed_ms) || 0}">${row.new_elapsed_ms.toLocaleString()}</span>`,
+                `<span data-order="${Number(row.original_elapsed_ms) || 0}">${row.original_elapsed_ms.toLocaleString()}</span>`,
+                badgeNode.outerHTML
+            ]);
+        });
+
+        table.draw();
+
+        // Tile writing moved out of renderHboResults. The live handler
+        // uses org-wide /api/hbo/summary data for tiles, not this top-10 slice.
+        // Keeping tile writes here caused a ~300× discrepancy on reload.
+    };
+
+    // Apply enrichment badges to the existing table rows.
+    const applyOptimizationBadges = (enrichmentData) => {
+        if (!enrichmentData || !enrichmentData.jobs) return;
+
+        // Build lookup: job_id -> optimizations
+        const lookup = {};
+        enrichmentData.jobs.forEach(j => {
+            lookup[j.job_id] = j.optimizations;
+        });
+
+        // Update table cells
+        const tableEl = document.querySelector('#hbo-results-table');
+        if (!tableEl) return;
+        const rows = tableEl.querySelectorAll('tbody tr');
+        rows.forEach(tr => {
+            const jobIdCell = tr.querySelector('td:first-child');
+            const badgeCell = tr.querySelector('td:last-child');
+            if (!jobIdCell || !badgeCell) return;
+
+            const jobId = jobIdCell.textContent.trim();
+            if (jobId in lookup) {
+                badgeCell.innerHTML = '';
+                badgeCell.appendChild(_buildBadgeCell(lookup[jobId]));
+            }
+        });
+
+        clearLoadingBadges();
+
+        // Show coverage warning if any projects were inaccessible
+        if (enrichmentData.coverage && enrichmentData.coverage.inaccessible_projects &&
+            enrichmentData.coverage.inaccessible_projects.length > 0) {
+            const names = enrichmentData.coverage.inaccessible_projects
+                .map(p => p.project_id).join(', ');
+            console.warn(`HBO enrichment: inaccessible projects: ${names}. ` +
+                `Grant roles/bigquery.resourceViewer on each project for full coverage.`);
+        }
+    };
+
+    const renderHboStatus = (data) => {
+        const panel = elements.hboStatusPanel;
+        const tbody = elements.hboStatusList;
+        const summary = elements.hboStatusSummary;
+        const pagination = elements.hboStatusPagination;
+        if (!panel || !tbody) return;
+
+        panel.style.display = 'block';
+
+        const PAGE_SIZE = 10;
+        let currentPage = 1;
+        const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
+
+        // Summary counts
+        const enabled = data.filter(d => d.enabled === true).length;
+        const disabled = data.filter(d => d.enabled === false).length;
+        const errors = data.filter(d => d.error).length;
+        if (summary) {
+            summary.textContent = `${enabled} enabled · ${disabled} disabled${errors ? ` · ${errors} errors` : ''} — ${data.length} projects`;
+        }
+
+        function renderPage(page) {
+            currentPage = page;
+            tbody.innerHTML = '';
+            const start = (page - 1) * PAGE_SIZE;
+            const slice = data.slice(start, start + PAGE_SIZE);
+
+            slice.forEach(item => {
+                const tr = document.createElement('tr');
+
+                // Project cell
+                const tdProject = document.createElement('td');
+                tdProject.style.fontWeight = '500';
+                tdProject.textContent = item.project_id;
+
+                // Status cell
+                const tdStatus = document.createElement('td');
+                if (item.error) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(148,163,184,0.15);color: #94a3b8;"><i class="fa-solid fa-circle-question" style="font-size:0.7rem;"></i> Error</span>`;
+                } else if (item.enabled) {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(74,222,128,0.12);color: #4ade80;"><i class="fa-solid fa-circle-check" style="font-size:0.7rem;"></i> Enabled</span>`;
+                } else {
+                    tdStatus.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:0.8rem;background:rgba(250,204,21,0.12);color: #facc15;"><i class="fa-solid fa-circle-exclamation" style="font-size:0.7rem;"></i> Disabled</span>`;
+                }
+
+                // Action cell
+                const tdAction = document.createElement('td');
+                if (item.error) {
+                    tdAction.innerHTML = `<span style="color: #94a3b8;font-size:0.8rem;" title="${item.error}">Permission error</span>`;
+                } else if (item.enabled) {
+                    tdAction.innerHTML = `<span style="color: #64748b;font-size:0.8rem;">—</span>`;
+                } else if (item.ddl) {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-action';
+                    btn.style.fontSize = '0.75rem';
+                    btn.style.padding = '4px 10px';
+                    btn.textContent = 'Copy Enable DDL';
+                    btn.title = item.ddl;
+                    btn.addEventListener('click', () => {
+                        copyToClipboard(item.ddl).then(() => {
+                            btn.textContent = 'Copied!';
+                            setTimeout(() => { btn.textContent = 'Copy Enable DDL'; }, 2000);
+                        });
+                    });
+                    tdAction.appendChild(btn);
+                } else {
+                    tdAction.innerHTML = `<span style="color: #64748b;font-size:0.8rem;">—</span>`;
+                }
+
+                tr.appendChild(tdProject);
+                tr.appendChild(tdStatus);
+                tr.appendChild(tdAction);
+                tbody.appendChild(tr);
+            });
+
+            renderPagination();
+        }
+
+        function renderPagination() {
+            if (!pagination) return;
+            pagination.innerHTML = '';
+            if (totalPages <= 1) return;
+
+            const btnStyle = (active) => `
+                padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+                background: ${active ? 'rgba(56,189,248,0.2)' : 'rgba(15,23,42,0.5)'};
+                color: ${active ? '#38bdf8' : '#94a3b8'}; cursor: pointer; font-size: 0.8rem;
+                font-weight: ${active ? '600' : '400'};
+            `;
+
+            for (let p = 1; p <= totalPages; p++) {
+                const btn = document.createElement('button');
+                btn.textContent = p;
+                btn.style.cssText = btnStyle(p === currentPage);
+                btn.addEventListener('click', () => renderPage(p));
+                pagination.appendChild(btn);
+            }
+        }
+
+        renderPage(1);
+    };
+
+    if (elements.btnAnalyzeHbo) {
+        elements.btnAnalyzeHbo.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeHbo, true);
+            clearModuleCache(['bq_hbo_results', 'bq_hbo_status', 'bq_hbo_summary', 'bq_hbo_optimizations'], ['#hbo-results-table']);
+
+            const projectOverride = document.getElementById('hbo-project-override')?.value;
+            const lookbackOverride = document.getElementById('hbo-lookback-override')?.value;
+
+            const targetProject = projectOverride || state.orgProject;
+
+            const baseParams = {
+                org_project_id: targetProject,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : (parseInt(elements.slLookback.value) || 30)
+            };
+
+            const analyzeParams = { ...baseParams, limit: 10 };
+
+            debug_log("Fetching HBO analysis with params:", analyzeParams);
+
+            try {
+                const [analyzeRes, statusRes, summaryRes] = await Promise.all([
+                    fetch('/api/hbo/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/analyze', analyzeParams))
+                    }),
+                    fetch('/api/hbo/status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/status', baseParams))
+                    }),
+                    fetch('/api/hbo/summary', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/summary', baseParams))
+                    })
+                ]);
+
+                if (!analyzeRes.ok || !statusRes.ok || !summaryRes.ok) {
+                    throw new Error('One or more API calls failed');
+                }
+
+                const analyzeData = await analyzeRes.json();
+                const statusData = await statusRes.json();
+                const summaryData = await summaryRes.json();
+
+                const slicedData = analyzeData.slice(0, 10);
+                renderHboResults(slicedData);
+                renderHboStatus(statusData);
+
+                // Update tiles
+                const slotsEl = document.getElementById('hbo-total-slots');
+                const dollarsEl = document.getElementById('hbo-total-dollars');
+                if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+                if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
+
+                safeSetLocalStorage('bq_hbo_results', JSON.stringify(slicedData));
+                safeSetLocalStorage('bq_hbo_status', JSON.stringify(statusData));
+                // Cache the summary so tiles survive reload.
+                safeSetLocalStorage('bq_hbo_summary', JSON.stringify(summaryData));
+
+                // Non-blocking: enrich jobs with optimization type badges.
+                // This is progressive enhancement — the table is already
+                // rendered and usable without it.
+                const refs = slicedData
+                    .filter(r => r.project_id && r.job_id && r.creation_time)
+                    .map(r => ({
+                        project_id: r.project_id,
+                        job_id: r.job_id,
+                        creation_time: r.creation_time
+                    }));
+                if (refs.length > 0) {
+                    fetch('/api/hbo/optimizations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildPayload('/api/hbo/optimizations', {
+                            ...baseParams,
+                            jobs: refs
+                        }))
+                    })
+                    .then(r => r.ok ? r.json() : Promise.reject(r))
+                    .then(optData => {
+                        applyOptimizationBadges(optData);
+                        safeSetLocalStorage('bq_hbo_optimizations', JSON.stringify(optData));
+                    })
+                    .catch(e => {
+                        console.warn('Optimization badges unavailable:', e);
+                        clearLoadingBadges();
+                    });
+                } else {
+                    // No enrichable refs (missing project_id/creation_time) — clear loading state
+                    clearLoadingBadges();
+                }
+
+                showNotification('HBO analysis completed for the organization.', 'success');
+            } catch (error) {
+                console.error("HBO Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeHbo, false);
+            }
+        });
+    }
+
+    // Performance Insights
+    const btnAnalyzePerformance = document.getElementById('analyze-performance-btn');
+    if (btnAnalyzePerformance) {
+        btnAnalyzePerformance.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(btnAnalyzePerformance, true);
+            clearModuleCache(['bq_performance_results'], ['#performance-results-table']);
+
+            const projectOverride = document.getElementById('perf-project-override')?.value;
+            const lookbackOverride = document.getElementById('perf-lookback-override')?.value;
+
+            const params = {
+                org_project_id: projectOverride || state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: lookbackOverride ? parseInt(lookbackOverride) : 7
+            };
+
+            try {
+                const response = await fetch('/api/hbo/performance_insights', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/hbo/performance_insights', params))
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze performance insights'));
+                }
+
+                const data = await response.json();
+                renderPerformanceResults(data);
+                safeSetLocalStorage('bq_performance_results', JSON.stringify(data));
+                showNotification('Performance insights analysis completed.', 'success');
+            } catch (error) {
+                console.error("Performance Insights Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(btnAnalyzePerformance, false);
+            }
+        });
+    }
+
+    const renderPerformanceResults = (data) => {
+        if (!data || typeof data !== 'object') return;
+
+        // Render Slot Contention
+        const contentionTbody = document.querySelector('#slot-contention-table tbody');
+        if (contentionTbody) {
+            contentionTbody.innerHTML = '';
+            const slotJobs = Array.isArray(data.slot_contention_jobs) ? data.slot_contention_jobs : [];
+            slotJobs.forEach(row => {
+                if (!row) return;
+                const tr = document.createElement('tr');
+                const stageStr = row.stage_id != null ? escapeHtmlAttr(String(row.stage_id)) : '—';
+                tr.innerHTML = `
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
+                    <td>${stageStr}</td>
+                `;
+                contentionTbody.appendChild(tr);
+            });
+        }
+        safeInitDataTable('#slot-contention-table', { pageLength: 5, responsive: true, order: [] });
+
+        // Render Shuffle Quota
+        const shuffleTbody = document.querySelector('#shuffle-quota-table tbody');
+        if (shuffleTbody) {
+            shuffleTbody.innerHTML = '';
+            const shuffleJobs = Array.isArray(data.shuffle_quota_jobs) ? data.shuffle_quota_jobs : [];
+            shuffleJobs.forEach(row => {
+                if (!row) return;
+                const tr = document.createElement('tr');
+                const stageStr = row.stage_id != null ? escapeHtmlAttr(String(row.stage_id)) : '—';
+                tr.innerHTML = `
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
+                    <td>${stageStr}</td>
+                `;
+                shuffleTbody.appendChild(tr);
+            });
+        }
+        safeInitDataTable('#shuffle-quota-table', { pageLength: 5, responsive: true, order: [] });
+
+        // Render Data Volume
+        const volumeTbody = document.querySelector('#data-volume-table tbody');
+        if (volumeTbody) {
+            volumeTbody.innerHTML = '';
+            const volumeJobs = Array.isArray(data.data_volume_jobs) ? data.data_volume_jobs : [];
+            volumeJobs.forEach(row => {
+                if (!row) return;
+                const tr = document.createElement('tr');
+                const diffVal = Number(row.diff_pct) || 0;
+                tr.innerHTML = `
+                    ${renderJobId(row.job_id, row.project_id, state.region)}
+                    <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                    <td>${renderProjectLink(row.project_id)}</td>
+                    <td class="text-danger" style="font-weight: 600;">${formatDiffPct(diffVal)}</td>
+                `;
+                volumeTbody.appendChild(tr);
+            });
+        }
+        safeInitDataTable('#data-volume-table', { pageLength: 5, responsive: true, order: [] });
+    };
+
+    const cachedHboResults = localStorage.getItem('bq_hbo_results');
+    if (cachedHboResults) {
+        try {
+            const parsedResults = JSON.parse(cachedHboResults);
+            const cachedOptBadges = localStorage.getItem('bq_hbo_optimizations');
+            let parsedOpt = null;
+            if (cachedOptBadges) {
+                try { parsedOpt = JSON.parse(cachedOptBadges); } catch (e2) { console.warn('Failed to parse cached HBO optimizations', e2); }
+            }
+            renderHboResults(parsedResults, parsedOpt);
+            if (parsedOpt) {
+                applyOptimizationBadges(parsedOpt);
+            } else {
+                clearLoadingBadges();
+            }
+        } catch (e) { console.warn("Failed to parse cached HBO results", e); }
+    }
+    const cachedHboStatus = localStorage.getItem('bq_hbo_status');
+    if (cachedHboStatus) {
+        try {
+            renderHboStatus(JSON.parse(cachedHboStatus));
+        } catch (e) { console.warn("Failed to parse cached HBO status", e); }
+    }
+    // Restore tiles from cached summary instead of recomputing from top-10.
+    const cachedHboSummary = localStorage.getItem('bq_hbo_summary');
+    if (cachedHboSummary) {
+        try {
+            const summaryData = JSON.parse(cachedHboSummary);
+            const slotsEl = document.getElementById('hbo-total-slots');
+            const dollarsEl = document.getElementById('hbo-total-dollars');
+            if (slotsEl) slotsEl.textContent = formatNumber(summaryData.monthly_saved_slot_hours || summaryData.total_saved_slot_hours || 0);
+            if (dollarsEl) dollarsEl.textContent = formatCurrency(summaryData.monthly_estimated_savings_usd || summaryData.total_estimated_savings_usd || 0);
+        } catch (e) { console.warn("Failed to parse cached HBO summary", e); }
+    }
+
+    /**
+     * Handle FEATURE_NOT_ENABLED errors from any storage hygiene endpoint.
+     * Shows the status banner with project/org DDL toggle.
+     * Returns true if error was handled, false otherwise.
+     */
+    const handleHygieneApiError = (errorData) => {
+        if (!errorData?.detail || typeof errorData.detail !== 'object') return false;
+        if (errorData.detail.error_code !== 'FEATURE_NOT_ENABLED') return false;
+
+        const panel = document.getElementById('hygiene-status-panel');
+        const textEl = document.getElementById('hygiene-status-text');
+        const ddlEl = document.getElementById('hygiene-ddl-output');
+        if (!panel || !textEl || !ddlEl) return false;
+
+        const { message, ddl, org_ddl, help_text } = errorData.detail;
+        textEl.textContent = `${message} ${help_text}`;
+        ddlEl.value = ddl;
+        // Store both DDLs on the textarea element for toggle
+        ddlEl.dataset.projectDdl = ddl;
+        ddlEl.dataset.orgDdl = org_ddl || '';
+        ddlEl.dataset.showingOrg = 'false';
+        panel.style.display = '';
+
+        // Hide KPIs and clear table when error is showing
+        const kpiGrid = document.getElementById('hygiene-kpis');
+        if (kpiGrid) kpiGrid.style.display = 'none';
+        const tbody = document.querySelector('#hygiene-results-table tbody');
+        if (tbody) tbody.innerHTML = '';
+
+        // Reset toggle button label
+        const toggleBtn = document.getElementById('toggle-hygiene-ddl-scope-btn');
+        if (toggleBtn) toggleBtn.textContent = 'Switch to Org DDL';
+
+        return true;
+    };
+
+    // DDL scope toggle handler
+    const toggleBtn = document.getElementById('toggle-hygiene-ddl-scope-btn');
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            const ddlEl = document.getElementById('hygiene-ddl-output');
+            if (!ddlEl) return;
+            const showingOrg = ddlEl.dataset.showingOrg === 'true';
+            if (showingOrg) {
+                ddlEl.value = ddlEl.dataset.projectDdl || '';
+                ddlEl.dataset.showingOrg = 'false';
+                toggleBtn.textContent = 'Switch to Org DDL';
+            } else {
+                ddlEl.value = ddlEl.dataset.orgDdl || '';
+                ddlEl.dataset.showingOrg = 'true';
+                toggleBtn.textContent = 'Switch to Project DDL';
+            }
+        });
+    }
+
+    // Copy DDL button handler
+    const copyDdlBtn = document.getElementById('copy-hygiene-ddl-btn');
+    if (copyDdlBtn) {
+        copyDdlBtn.addEventListener('click', () => {
+            const ddlEl = document.getElementById('hygiene-ddl-output');
+            if (!ddlEl) return;
+            copyToClipboard(ddlEl.value).then(() => {
+                showNotification('DDL copied to clipboard!', 'success');
+            }).catch(() => showNotification('Copy failed.', 'warning'));
+        });
+    }
+
+    const renderHygieneResults = (data) => {
+        if (!data || !Array.isArray(data)) return;
+        // Clear any previous error banner
+        const errPanel = document.getElementById('hygiene-status-panel');
+        if (errPanel) errPanel.style.display = 'none';
+        if ($.fn.DataTable.isDataTable('#hygiene-results-table')) {
+            $('#hygiene-results-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#hygiene-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let totalSize = 0;
+        let totalTtSize = 0;
+        let highChurnCount = 0;
+        let potentialSavings = 0;
+
+        data.forEach(row => {
+            totalSize += row.live_active_physical_gb || 0;
+            totalTtSize += row.time_travel_gb || 0;
+            potentialSavings += row.monthly_savings || 0;
+            if (row.health_status && row.health_status.toUpperCase() === 'HIGH CHURN/RECREATE DETECTED') {
+                highChurnCount++;
+            }
+
+            const tr = document.createElement('tr');
+            const badgeBg = row.health_status === 'Healthy' ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+            const badgeColor = row.health_status === 'Healthy' ? '#22c55e' : '#ef4444';
+
+            const churnVal = row.churn_ratio || 0;
+            const churnPct = (churnVal * 100).toFixed(1) + '%';
+            let churnBg = 'rgba(148, 163, 184, 0.1)', churnColor = '#94a3b8';
+            if (churnVal >= 0.8) { churnBg = 'rgba(239, 68, 68, 0.15)'; churnColor = '#ef4444'; }
+            else if (churnVal >= 0.5) { churnBg = 'rgba(251, 191, 36, 0.15)'; churnColor = '#fbbf24'; }
+
+            const ttlDays = row.time_travel_days ?? 7;
+            let ttlBadgeBg, ttlBadgeColor, ttlLabel;
+            if (ttlDays < 7) {
+                ttlBadgeBg = 'rgba(34, 197, 94, 0.15)'; ttlBadgeColor = '#22c55e'; ttlLabel = `${ttlDays}d ✓`;
+            } else if (ttlDays > 7) {
+                ttlBadgeBg = 'rgba(251, 191, 36, 0.15)'; ttlBadgeColor = '#fbbf24'; ttlLabel = `${ttlDays}d ⚠`;
+            } else {
+                ttlBadgeBg = 'rgba(148, 163, 184, 0.1)'; ttlBadgeColor = '#94a3b8'; ttlLabel = `${ttlDays}d`;
+            }
+
+            // Savings cell — backend-computed
+            const savings = row.monthly_savings || 0;
+            const savingsCell = savings > 0
+                ? `<span class="badge" style="background: rgba(34,197,94,0.15); color: #22c55e; font-weight: 600;">$${savings.toFixed(2)}</span>`
+                : '<span style="color: #64748b;">—</span>';
+
+            // DDL button — backend only populates ddl for first row per dataset
+            const actionCell = row.ddl
+                ? `<button class="btn-action btn-copy-hygiene-ddl" data-ddl="${escapeHtmlAttr(row.ddl)}" title="Copy ALTER SCHEMA DDL" style="font-size: 0.75rem;"><i class="fa-solid fa-copy"></i> Copy DDL</button>`
+                : '—';
+
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
+                <td data-order="${row.live_active_physical_gb || 0}">${(row.live_active_physical_gb || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}</td>
+                <td data-order="${row.time_travel_gb || 0}">${(row.time_travel_gb || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}</td>
+                <td data-order="${ttlDays}" data-csv="${ttlDays}d"><span class="badge" style="background: ${ttlBadgeBg}; color: ${ttlBadgeColor}; font-weight: 600;">${ttlLabel}</span></td>
+                <td data-order="${churnVal}" data-csv="${churnVal}"><span class="badge" style="background: ${churnBg}; color: ${churnColor}; font-weight: 600;">${churnPct}</span></td>
+                <td><span class="badge" style="background: ${badgeBg}; color: ${badgeColor}; font-weight: 600;">${row.health_status}</span></td>
+                <td data-order="${savings}" data-csv="${savings}">${savingsCell}</td>
+                <td data-csv="${escapeHtmlAttr(row.ddl || '')}">${actionCell}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Event delegation for copy buttons (guarded to prevent duplicate listeners on re-render)
+        if (!tbody.dataset.copyBound) {
+            tbody.dataset.copyBound = 'true';
+            tbody.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-copy-hygiene-ddl');
+                if (!btn) return;
+                copyToClipboard(btn.dataset.ddl).then(() => {
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                    setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy DDL'; }, 2000);
+                    showNotification('DDL copied to clipboard!', 'success');
+                }).catch(() => showNotification('Copy failed.', 'warning'));
+            });
+        }
+
+        // Update KPIs
+        const el = id => document.getElementById(id);
+        const formatStorageSize = (sizeInGiB) => sizeInGiB >= 1024 ? `${(sizeInGiB / 1024).toFixed(1)} TiB` : `${sizeInGiB.toFixed(0)} GiB`;
+
+        if (el('hygiene-kpis')) el('hygiene-kpis').style.display = '';
+        if (el('hygiene-total-size')) el('hygiene-total-size').textContent = formatStorageSize(totalSize);
+        if (el('hygiene-total-savings')) el('hygiene-total-savings').textContent = `$${potentialSavings.toFixed(0)}`;
+        if (el('hygiene-total-tt-size')) el('hygiene-total-tt-size').textContent = formatStorageSize(totalTtSize);
+        if (el('hygiene-table-count')) el('hygiene-table-count').textContent = data.length;
+        if (el('hygiene-high-churn-count')) el('hygiene-high-churn-count').textContent = highChurnCount;
+
+        safeInitDataTable('#hygiene-results-table', { pageLength: 10, order: [[8, 'desc']], responsive: true });
+    };
+
+    if (elements.btnAnalyzeHygiene) {
+        elements.btnAnalyzeHygiene.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeHygiene, true);
+            clearModuleCache(['bq_hygiene_results'], ['#hygiene-results-table']);
+            // Hide previous error banner
+            const statusPanel = document.getElementById('hygiene-status-panel');
+            if (statusPanel) statusPanel.style.display = 'none';
+
+            const limitEl = document.getElementById('hygiene-limit');
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                limit: parseInt(limitEl?.value || '100', 10),
+            };
+
+            try {
+                const response = await fetch('/api/storage/hygiene', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/storage/hygiene', params))
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    if (handleHygieneApiError(errorData)) throw new Error(errorData.detail.message);
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze storage hygiene'));
+                }
+                const data = await response.json();
+                renderHygieneResults(data);
+                safeSetLocalStorage('bq_hygiene_results', JSON.stringify(data));
+                showNotification('Storage hygiene analysis completed.', 'success');
+            } catch (error) { console.error("Hygiene Error:", error); showNotification(error.message, 'error');
+            } finally { setLoading(elements.btnAnalyzeHygiene, false); }
+        });
+    }
+
+    // ── Time Travel Reduction ─────────────────────────────────
+    const renderTimeTravelReduction = (data) => {
+        if (!data || !Array.isArray(data)) return;
+        if ($.fn.DataTable.isDataTable('#time-travel-reduction-table')) {
+            $('#time-travel-reduction-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#time-travel-reduction-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let totalSavings = 0, totalReducibleGib = 0;
+
+        data.forEach(row => {
+            totalSavings += row.monthly_savings || 0;
+            totalReducibleGib += row.time_travel_gib || 0;
+            const tr = document.createElement('tr');
+            const churnPct = ((row.churn_ratio || 0) * 100).toFixed(1);
+            let churnBg = 'rgba(148, 163, 184, 0.1)', churnColor = '#94a3b8';
+            if (row.churn_ratio >= 0.8)      { churnBg = 'rgba(239, 68, 68, 0.15)'; churnColor = '#ef4444'; }
+            else if (row.churn_ratio >= 0.5) { churnBg = 'rgba(251, 191, 36, 0.15)'; churnColor = '#fbbf24'; }
+
+            const wd = row.current_time_travel_days || 7;
+            const windowBadge = wd <= 3
+                ? `<span class="badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; font-weight: 600;">${wd}d ✓</span>`
+                : `<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; font-weight: 600;">${wd}d</span>`;
+
+            // Billing model badge
+            const modelBadge = row.billing_model === 'PHYSICAL'
+                ? `<span class="badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e;">PHYSICAL</span>`
+                : `<span class="badge" style="background: rgba(251, 191, 36, 0.15); color: #fbbf24;">LOGICAL</span>`;
+
+            // Savings cell — show savings_note for LOGICAL
+            const savingsCell = row.monthly_savings > 0
+                ? `<span class="badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; font-weight: 600;">${formatCurrency(row.monthly_savings)}</span>`
+                : row.savings_note
+                    ? `<span style="color: #94a3b8; font-size: 0.8rem;">${row.savings_note}</span>`
+                    : `<span style="color: #64748b;">—</span>`;
+
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${modelBadge}</td>
+                <td>${windowBadge}</td>
+                <td data-order="${row.time_travel_gib||0}">${(row.time_travel_gib||0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 1})}</td>
+                <td data-order="${row.active_data_gib||0}">${(row.active_data_gib||0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 1})}</td>
+                <td data-order="${row.churn_ratio||0}"><span class="badge" style="background: ${churnBg}; color: ${churnColor}; font-weight: 600;">${churnPct}%</span></td>
+                <td data-order="${row.current_monthly_tt_cost||0}">${formatCurrency(row.current_monthly_tt_cost||0)}</td>
+                <td data-order="${row.projected_monthly_tt_cost||0}">${formatCurrency(row.projected_monthly_tt_cost||0)}</td>
+                <td data-order="${row.monthly_savings||0}">${savingsCell}</td>
+                <td><button class="btn-action btn-copy-tt-ddl" data-ddl="${escapeHtmlAttr(row.ddl)}" style="font-size: 0.75rem;"><i class="fa-solid fa-copy"></i> Copy DDL</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Event delegation (guarded)
+        if (!tbody.dataset.copyBound) {
+            tbody.dataset.copyBound = 'true';
+            tbody.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-copy-tt-ddl');
+                if (!btn) return;
+                copyToClipboard(btn.dataset.ddl).then(() => {
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                    setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy DDL'; }, 2000);
+                    showNotification('DDL copied to clipboard!', 'success');
+                }).catch(() => showNotification('Copy failed.', 'warning'));
+            });
+        }
+
+        // KPIs
+        const kpiC = document.getElementById('tt-reduction-kpis');
+        if (kpiC) kpiC.style.display = '';
+        const el = id => document.getElementById(id);
+        if (el('tt-dataset-count')) el('tt-dataset-count').textContent = data.length;
+        if (el('tt-reducible-gib')) el('tt-reducible-gib').textContent =
+            totalReducibleGib >= 1024 ? `${(totalReducibleGib/1024).toFixed(1)} TiB` : `${totalReducibleGib.toFixed(0)} GiB`;
+        if (el('tt-total-savings')) el('tt-total-savings').textContent = `${formatCurrency(totalSavings)}`;
+
+        safeInitDataTable('#time-travel-reduction-table', { pageLength: 10, order: [[9, 'desc']], responsive: true });
+    };
+
+    if (elements.btnAnalyzeTimeTravel) {
+        elements.btnAnalyzeTimeTravel.addEventListener('click', async () => {
+            if (!state.orgProject) { showNotification('Please configure settings first.', 'error'); Router.navigate('settings'); return; }
+            setLoading(elements.btnAnalyzeTimeTravel, true);
+            clearModuleCache(['bq_time_travel_results'], ['#time-travel-reduction-table']);
+            const statusPanel = document.getElementById('hygiene-status-panel');
+            if (statusPanel) statusPanel.style.display = 'none';
+
+            const targetHours = parseInt(document.getElementById('tt-target-hours')?.value || '48', 10);
+            const params = {
+                org_project_id: state.orgProject, region: state.region,
+                focus_projects: state.focusProjects, max_bytes_billed_gb: state.maxBytesBilledGb,
+                target_hours: targetHours,
+            };
+            try {
+                const response = await fetch('/api/storage/time_travel_reduction', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/storage/time_travel_reduction', params))
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    if (handleHygieneApiError(errorData)) throw new Error(errorData.detail.message);
+                    throw new Error(detailToMessage(errorData.detail, 'Time travel scan failed'));
+                }
+                const data = await response.json();
+                renderTimeTravelReduction(data);
+                safeSetLocalStorage('bq_time_travel_results', JSON.stringify(data));
+                showNotification(`Found ${data.length} datasets for time travel reduction.`, 'success');
+            } catch (error) { console.error("TT Error:", error); showNotification(error.message, 'error');
+            } finally { setLoading(elements.btnAnalyzeTimeTravel, false); }
+        });
+    }
+
+    // Cache restore
+    const cachedTT = localStorage.getItem('bq_time_travel_results');
+    if (cachedTT) { try { renderTimeTravelReduction(JSON.parse(cachedTT)); } catch (e) { console.warn("Failed to parse cached TT results", e); } }
+
+    // ── Shard Consolidation ───────────────────────────────────
+
+    const renderShardConsolidation = (data) => {
+        if (!data || !Array.isArray(data)) return;
+        if ($.fn.DataTable.isDataTable('#shard-consolidation-table')) {
+            $('#shard-consolidation-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#shard-consolidation-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let totalFamilies = 0, totalShards = 0, totalGib = 0;
+
+        data.forEach(row => {
+            totalFamilies++;
+            totalShards += row.shard_count || 0;
+            totalGib += row.total_physical_gib || 0;
+
+            const tr = document.createElement('tr');
+            const fmtDate = (d) => d && d.length === 8 ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` : d;
+            const dateRange = `${fmtDate(row.min_date)} → ${fmtDate(row.max_date)}`;
+            const sizeGib = (row.total_physical_gib || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 1});
+
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td><span style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: hsl(var(--foreground));">${escapeHtmlAttr(row.table_prefix)}_*</span></td>
+                <td data-order="${row.shard_count||0}"><strong>${row.shard_count}</strong></td>
+                <td><span style="font-size: 0.82rem; color: var(--text-secondary);">${escapeHtmlAttr(dateRange)}</span></td>
+                <td data-order="${row.total_physical_gib||0}">${sizeGib} GiB</td>
+                <td><span class="badge" style="background: rgba(239,68,68,0.15); color: #ef4444; font-weight: 600;">${escapeHtmlAttr(row.risk_level)}</span></td>
+                <td><button class="btn-action btn-copy-shard-ddl" data-ddl="${escapeHtmlAttr(row.ddl)}" style="font-size: 0.75rem;"><i class="fa-solid fa-copy"></i> Copy DDL</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Event delegation (guarded)
+        if (!tbody.dataset.copyBound) {
+            tbody.dataset.copyBound = 'true';
+            tbody.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-copy-shard-ddl');
+                if (!btn) return;
+                copyToClipboard(btn.dataset.ddl).then(() => {
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                    setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy DDL'; }, 2000);
+                    showNotification('DDL copied to clipboard!', 'success');
+                }).catch(() => showNotification('Copy failed.', 'warning'));
+            });
+        }
+
+        // KPIs
+        const kpiC = document.getElementById('shard-reduction-kpis');
+        if (kpiC) kpiC.style.display = '';
+        const el = id => document.getElementById(id);
+        if (el('shard-family-count')) el('shard-family-count').textContent = totalFamilies;
+        if (el('shard-total-count')) el('shard-total-count').textContent = formatNumber(totalShards);
+        if (el('shard-total-gib')) el('shard-total-gib').textContent =
+            totalGib >= 1024 ? `${(totalGib/1024).toFixed(1)} TiB` : `${totalGib.toFixed(0)} GiB`;
+
+        safeInitDataTable('#shard-consolidation-table', { pageLength: 10, order: [[3, 'desc']], responsive: true });
+    };
+
+    if (elements.btnAnalyzeShard) {
+        elements.btnAnalyzeShard.addEventListener('click', async () => {
+            if (!state.orgProject) { showNotification('Please configure settings first.', 'error'); Router.navigate('settings'); return; }
+            setLoading(elements.btnAnalyzeShard, true);
+            clearModuleCache(['bq_shard_results'], ['#shard-consolidation-table']);
+            const statusPanel = document.getElementById('hygiene-status-panel');
+            if (statusPanel) statusPanel.style.display = 'none';
+
+            const minCount = parseInt(document.getElementById('shard-min-count')?.value || '7', 10);
+            const params = {
+                org_project_id: state.orgProject, region: state.region,
+                focus_projects: state.focusProjects, max_bytes_billed_gb: state.maxBytesBilledGb,
+                min_shard_count: minCount,
+            };
+            try {
+                const response = await fetch('/api/storage/shard_consolidation', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/storage/shard_consolidation', params))
+                });
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    if (handleHygieneApiError(errorData)) throw new Error(errorData.detail.message);
+                    throw new Error(detailToMessage(errorData.detail, 'Shard consolidation scan failed'));
+                }
+                const data = await response.json();
+                renderShardConsolidation(data);
+                safeSetLocalStorage('bq_shard_results', JSON.stringify(data));
+                showNotification(`Found ${data.length} date-sharded table families.`, 'success');
+            } catch (error) { console.error("Shard Error:", error); showNotification(error.message, 'error');
+            } finally { setLoading(elements.btnAnalyzeShard, false); }
+        });
+    }
+
+    // Cache restore
+    const cachedShard = localStorage.getItem('bq_shard_results');
+    if (cachedShard) { try { renderShardConsolidation(JSON.parse(cachedShard)); } catch (e) { console.warn("Failed to parse cached shard results", e); } }
+
+    const cachedHygieneResults = localStorage.getItem('bq_hygiene_results');
+    if (cachedHygieneResults) {
+        try {
+            renderHygieneResults(JSON.parse(cachedHygieneResults));
+        } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
+    }
+
+    // Minimal comment/keyword highlighter for the remediation snippets.
+    // Escapes first, then decorates — never inject un-escaped snippet text.
+    const highlightSnippet = (snippet) => escapeHtmlAttr(snippet)
+        .replace(/^(\s*#.*)$/gm, '<span style="color: #64748b;">$1</span>')
+        .replace(/\b(BATCH|INTERACTIVE|batch|interactive)\b/g, '<span style="color: #fbbf24;">$1</span>');
+
+    // Global Remediation Modal Renderer
+    window.showRemediationModal = function (name, type, recPriority) {
+        let snippet = '';
+        const isBatch = recPriority === 'BATCH';
+        if (type.includes('Dataform') || type.includes('Scheduled Query')) {
+            snippet = `# Architecture Migration Required
+# Tooling Constraint:
+# ${type} does not currently support native BATCH priority execution flags.
+
+# Recommended Workaround:
+# Migrate orchestration to Google Cloud Composer (Airflow) or Cloud Workflows,
+# which provide native job configuration overrides for BigQuery execution priority.`;
+        } else if (type.includes('dbt')) {
+            snippet = `# profiles.yml
+target: prod
+outputs:
+  prod:
+    type: bigquery
+    project: your-project-id
+    dataset: analytics
+    priority: ${isBatch ? 'batch' : 'interactive'} # Sets all dbt query executions to ${recPriority}`;
+        } else if (type.includes('Airflow')) {
+            snippet = `# Airflow DAG Operator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+
+run_task = BigQueryInsertJobOperator(
+    task_id="transform_task",
+    configuration={
+        "query": {
+            "query": "MERGE INTO ...",
+            "priority": "${recPriority}", # Configures execution priority
+        }
+    },
+)`;
+        } else {
+            snippet = `# Python SDK & bq CLI
+# Python:
+job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.${recPriority})
+query_job = client.query("...", job_config=job_config)
+
+# bq CLI:
+${isBatch ? "bq query --batch --use_legacy_sql=false 'MERGE INTO ...'" : "bq query --use_legacy_sql=false 'SELECT ...'"}`;
+        }
+
+        const existing = document.getElementById('remediation-modal-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'remediation-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 600px; max-width: 92%; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-code" style="margin-right: 0.5rem;"></i>Remediation Snippet</h3>
+                    <button id="close-remediation-btn" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+                <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.75rem;">
+                    Workload: <strong style="color: #e2e8f0;">${escapeHtmlAttr(name)}</strong> <span style="color: #64748b;">(${escapeHtmlAttr(type)})</span><br/>
+                    Recommended Priority: <span class="badge ${isBatch ? 'warning' : 'primary'}" style="font-size: 0.75rem;">${escapeHtmlAttr(recPriority)}</span>
+                </p>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.82rem; line-height: 1.65; overflow-x: auto; white-space: pre-wrap; margin: 0;">${highlightSnippet(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                    <button id="copy-remediation-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('close-remediation-btn').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('copy-remediation-btn').addEventListener('click', function () {
+            // copyToClipboard, not navigator.clipboard directly: the latter is
+            // undefined on non-secure origins (local dev on 0.0.0.0), where a bare
+            // call throws and the button silently does nothing.
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    };
+
+    // Body-level singleton for the detection-reason popover. Lives outside the
+    // results card so no `overflow` or transformed ancestor can clip it, and is
+    // built with textContent so nothing in the payload can be interpreted as markup.
+    const batchTooltip = (() => {
+        let node = null;
+        let anchoredTo = null;
+
+        const ensure = () => {
+            if (!node) {
+                node = document.createElement('div');
+                node.className = 'batch-tooltip-popup';
+                document.body.appendChild(node);
+            }
+            return node;
+        };
+
+        const hide = () => {
+            anchoredTo = null;
+            if (node) node.classList.remove('is-visible');
+        };
+
+        const show = (wrap) => {
+            // mouseover re-fires for every descendant the pointer crosses; without
+            // this the popup would rebuild and restart its fade on each one.
+            if (anchoredTo === wrap) return;
+            anchoredTo = wrap;
+
+            const tip = ensure();
+            tip.textContent = '';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight: 600; margin-bottom: 0.4rem; color: #f8fafc;';
+            title.textContent = wrap.dataset.tipTitle || '';
+            tip.appendChild(title);
+
+            const summary = document.createElement('div');
+            summary.style.cssText = 'margin-bottom: 0.5rem; line-height: 1.5;';
+            summary.textContent = wrap.dataset.tipSummary || '';
+            tip.appendChild(summary);
+
+            const reasons = (wrap.dataset.tipReasons || '').split('\n').filter(Boolean);
+            if (reasons.length) {
+                const block = document.createElement('div');
+                block.style.cssText = 'border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.4rem; font-size: 0.75rem; color: #94a3b8;';
+                const heading = document.createElement('strong');
+                heading.style.color = '#cbd5e1';
+                heading.textContent = 'Detection Reasons:';
+                block.appendChild(heading);
+                reasons.forEach(text => {
+                    const line = document.createElement('div');
+                    line.textContent = `• ${text}`;
+                    block.appendChild(line);
+                });
+                tip.appendChild(block);
+            }
+
+            // Measure before placing: the popup flips below the badge when there
+            // is not enough room above, and is clamped to the viewport sideways.
+            tip.classList.add('is-visible');
+            const anchor = wrap.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+            const GAP = 8;
+            const MARGIN = 8;
+
+            let top = anchor.top - tipRect.height - GAP;
+            if (top < MARGIN) top = anchor.bottom + GAP;
+
+            let left = anchor.left + (anchor.width / 2) - (tipRect.width / 2);
+            left = Math.max(MARGIN, Math.min(left, window.innerWidth - tipRect.width - MARGIN));
+
+            tip.style.top = `${Math.round(top)}px`;
+            tip.style.left = `${Math.round(left)}px`;
+        };
+
+        return { show, hide };
+    })();
+    // Fixed coordinates go stale the moment anything moves underneath them.
+    window.addEventListener('scroll', batchTooltip.hide, true);
+    window.addEventListener('resize', batchTooltip.hide);
+
+    const getWorkloadTypeBadge = (wType) => {
+        const t = (wType || '').trim();
+        if (t === 'Airflow DAG') {
+            return `<span class="badge-workload badge-workload--airflow"><i class="fa-solid fa-wind"></i>Airflow DAG</span>`;
+        } else if (t === 'dbt Pipeline') {
+            return `<span class="badge-workload badge-workload--dbt"><i class="fa-solid fa-cube"></i>dbt Pipeline</span>`;
+        } else if (t === 'Dataform Pipeline') {
+            return `<span class="badge-workload badge-workload--dataform"><i class="fa-solid fa-code-branch"></i>Dataform</span>`;
+        } else if (t === 'Scheduled Query') {
+            return `<span class="badge-workload badge-workload--scheduled"><i class="fa-solid fa-clock"></i>Scheduled</span>`;
+        } else if (t === 'BI Dashboard Connection' || t.toLowerCase().includes('bi')) {
+            return `<span class="badge-workload badge-workload--bi"><i class="fa-solid fa-chart-pie"></i>BI Dashboard</span>`;
+        } else if (t === 'Service Account Workload' || t.toLowerCase().includes('service account')) {
+            return `<span class="badge-workload badge-workload--sa"><i class="fa-solid fa-robot"></i>Service Account</span>`;
+        } else if (t === 'Human Ad-hoc' || t.toLowerCase().includes('human') || t.toLowerCase().includes('ad-hoc')) {
+            return `<span class="badge-workload badge-workload--human"><i class="fa-solid fa-user"></i>Human Ad-hoc</span>`;
+        }
+        return `<span class="badge-workload badge-workload--default">${escapeHtmlAttr(t)}</span>`;
+    };
+
+    const getWorkloadIcon = (wType) => {
+        const t = (wType || '').toLowerCase();
+        if (t.includes('airflow')) return 'fa-solid fa-wind';
+        if (t.includes('dbt')) return 'fa-solid fa-cube';
+        if (t.includes('dataform')) return 'fa-solid fa-code-branch';
+        if (t.includes('scheduled')) return 'fa-solid fa-clock';
+        if (t.includes('bi')) return 'fa-solid fa-chart-pie';
+        if (t.includes('service')) return 'fa-solid fa-robot';
+        return 'fa-solid fa-user';
+    };
+
+    const renderBatchCandidatesResults = (data) => {
+        const tbody = document.querySelector('#batch-candidates-results-table tbody');
+        if (!tbody) return;
+        batchTooltip.hide();
+        tbody.innerHTML = '';
+
+        // Cached payloads from before the workload engine used a per-job shape.
+        // Drop them rather than emit rows with the wrong column count, which
+        // would break DataTables initialisation.
+        const rows = (data || []).filter(r => r && r.workload_name && r.finding_category);
+
+        rows.forEach(row => {
+            const tr = document.createElement('tr');
+            const reasons = (row.detection_reasons || []).join('\n');
+
+            const isUnder = row.finding_category === 'UNDER_BATCHED';
+            const badgeClass = isUnder ? 'badge-finding--under' : 'badge-finding--over';
+            const badgeIcon = isUnder ? 'fa-bolt' : 'fa-hourglass-half';
+            const badgeLabel = isUnder ? 'Under-Batched' : 'Over-Batched';
+            const summary = isUnder
+                ? 'Automated pipeline running in INTERACTIVE mode. Risks starving live dashboards of the 100-query concurrent limit. Switch to BATCH for auto-retry protection at identical pricing.'
+                : 'Human/BI workload facing >30s BATCH queue lag. Switch to INTERACTIVE for instant slot allocation.';
+
+            // The popup body travels as data-* rather than as a hidden child of the
+            // cell: it is rendered into a single body-level node on hover (see
+            // batchTooltip), and a hidden child would also be swept into the CSV
+            // export, which reads cell text via textContent.
+            const categoryBadge = `
+                <span class="batch-tooltip-wrap" data-tip-title="${escapeHtmlAttr(badgeLabel)}" data-tip-summary="${escapeHtmlAttr(summary)}" data-tip-reasons="${escapeHtmlAttr(reasons)}">
+                    <span class="badge-finding ${badgeClass}" style="cursor: help;">
+                        <i class="fa-solid ${badgeIcon}"></i>${badgeLabel}
+                    </span>
+                </span>`;
+
+            const confBadge = row.confidence === 'HIGH'
+                ? `<span class="badge-conf badge-conf--high">HIGH CONF</span>`
+                : `<span class="badge-conf badge-conf--low">LOW CONF</span>`;
+
+            const actionBtn = row.has_remediation
+                ? `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-code"></i>Snippet</button>`
+                : `<button class="btn-action-glow btn-remediation" data-wname="${escapeHtmlAttr(row.workload_name)}" data-wtype="${escapeHtmlAttr(row.workload_type)}" data-wpriority="${escapeHtmlAttr(row.recommended_priority)}"><i class="fa-solid fa-lightbulb"></i>Guidance</button>`;
+
+            tr.innerHTML = `
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <i class="${getWorkloadIcon(row.workload_type)}" style="font-size: 0.8rem; opacity: 0.75; flex-shrink: 0; color: #94a3b8;"></i>
+                        <span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; display: inline-block;" title="${escapeHtmlAttr(row.workload_name)}">${escapeHtmlAttr(row.workload_name)}</span>
+                        ${confBadge}
+                    </div>
+                </td>
+                <td>${getWorkloadTypeBadge(row.workload_type)}</td>
+                <td><span style="font-family: monospace; font-size: 0.8rem; color: #94a3b8;">${escapeHtmlAttr(row.project_id)}</span></td>
+                <td data-order="${row.total_job_runs}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1;">${row.total_job_runs.toLocaleString()}</span></td>
+                <td data-order="${row.total_slot_hours}"><span style="font-family: monospace; font-size: 0.82rem; color: #cbd5e1; white-space: nowrap;">${row.total_slot_hours.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})} <span style="color: #64748b; font-size: 0.72rem;">hrs</span></span></td>
+                <td data-order="${row.pct_interactive}"><span style="font-family: monospace; font-size: 0.82rem; font-weight: 600; color: ${row.pct_interactive >= 90 ? '#f87171' : '#cbd5e1'};">${row.pct_interactive.toFixed(1)}%</span></td>
+                <td data-order="${row.total_human_wait_seconds}"><span style="font-family: monospace; font-size: 0.82rem; color: ${row.total_human_wait_seconds > 30 ? '#f59e0b' : '#64748b'};">${row.total_human_wait_seconds > 0 ? Math.round(row.total_human_wait_seconds) + 's' : '—'}</span></td>
+                <td>${categoryBadge}</td>
+                <td>${actionBtn}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Delegated on the table so the handlers survive DataTables destroy/re-init;
+        // the flag keeps re-renders from stacking duplicates.
+        const batchTable = document.getElementById('batch-candidates-results-table');
+        if (batchTable && !batchTable._batchDelegateAttached) {
+            batchTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-remediation');
+                if (btn) {
+                    batchTooltip.hide();
+                    window.showRemediationModal(btn.dataset.wname, btn.dataset.wtype, btn.dataset.wpriority);
+                }
+            });
+            // mouseover/mouseout rather than mouseenter/mouseleave: the latter do
+            // not bubble, so they cannot be delegated from the table.
+            batchTable.addEventListener('mouseover', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap) batchTooltip.show(wrap);
+            });
+            batchTable.addEventListener('mouseout', (e) => {
+                const wrap = e.target.closest('.batch-tooltip-wrap');
+                if (wrap && !wrap.contains(e.relatedTarget)) batchTooltip.hide();
+            });
+            batchTable._batchDelegateAttached = true;
+        }
+
+        safeInitDataTable('#batch-candidates-results-table', { pageLength: 10, order: [], responsive: true });
+    };
+
+    const renderSkewResults = (data) => {
+        if ($.fn.DataTable.isDataTable('#skew-results-table')) {
+            $('#skew-results-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#skew-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!Array.isArray(data) || data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 2rem;">No data skew detected.</td></tr>`;
+            return;
+        }
+
+        data.forEach(row => {
+            const proj = row.project_id || (typeof state !== 'undefined' ? state.orgProject : '');
+            const loc = typeof state !== 'undefined' ? state.region : 'region-us';
+            const consoleUrl = buildConsoleUrl('job', { project: proj, location: loc, jobId: row.job_id });
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td style="white-space: nowrap;"><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem; color: #cbd5e1;">${escapeHtmlAttr(row.stage_name || '')}</span></td>
+                <td data-order="${row.avg_compute_ms || 0}" style="text-align: right;">${(row.avg_compute_ms || 0).toLocaleString()}</td>
+                <td data-order="${row.max_compute_ms || 0}" style="text-align: right;"><strong style="color: #f87171; font-family: monospace;">${(row.max_compute_ms || 0).toLocaleString()}</strong></td>
+                <td data-order="${row.skew_ratio || 0}"><span class="badge error">${(row.skew_ratio || 0).toFixed(1)}x</span></td>
+                <td><a href="${consoleUrl}" target="_blank" rel="noopener noreferrer" class="btn-action" style="font-size: 0.78rem; padding: 3px 8px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Open stage execution graph in BigQuery Console"><i class="fa-solid fa-arrow-up-right-from-square"></i> Inspect Stage</a></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#skew-results-table', { pageLength: 10, order: [[6, 'desc']], responsive: true });
+    };
+
+    /* --------------------------------------------------------------
+       Anti-pattern filtering & aggregation
+       The scan returns one row per offending job. Raw rows are cached in
+       `_linterRawData` so the toolbar can re-slice them client-side
+       without re-running the (expensive) INFORMATION_SCHEMA scan.
+       -------------------------------------------------------------- */
+    let _linterRawData = [];
+    const _linterFilterState = { userType: 'all', user: '', project: '', abuseType: '', view: 'detail' };
+
+    const isServiceAccount = (email) => {
+        if (!email) return false;
+        return email.endsWith('.gserviceaccount.com') || email.endsWith('.iam.gserviceaccount.com');
+    };
+
+    const formatDataSize = (gb) => {
+        // threshold must be 1024, not 1000, to avoid "0.99 TB" for 1010 GB.
+        if (gb >= 1024) {
+            return `${formatNumber(gb / 1024)} TiB`;
+        }
+        return `${formatNumber(gb)} GiB`;
+    };
+
+    /** Rebuild the User / Project / Anti-pattern dropdowns from the raw rows. */
+    const populateLinterFilterOptions = () => {
+        // `stateKey` matters: dropping a value from the <select> without also
+        // clearing it from _linterFilterState leaves the filter silently
+        // active — the table empties while the dropdown reads "All users".
+        const fill = (id, stateKey, values, allLabel) => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            const previous = sel.value;
+            sel.innerHTML = `<option value="">${allLabel}</option>` +
+                values.map(v => `<option value="${escapeHtmlAttr(v)}">${escapeHtmlAttr(v)}</option>`).join('');
+            // Keep the current selection if it still exists in the new data.
+            const retained = values.includes(previous) ? previous : '';
+            sel.value = retained;
+            _linterFilterState[stateKey] = retained;
+        };
+
+        const uniq = (key) => Array.from(new Set(
+            _linterRawData.map(r => r[key]).filter(Boolean)
+        )).sort();
+
+        fill('ap-filter-user', 'user', uniq('user_email'), 'All users');
+        fill('ap-filter-project', 'project', uniq('project_id'), 'All projects');
+        fill('ap-filter-abuse', 'abuseType', uniq('abuse_type'), 'All types');
+    };
+
+    /**
+     * Apply the toolbar filters to `_linterRawData`, refresh the stats
+     * strip, then render whichever view (detail / summary) is active.
+     */
+    const applyLinterFilters = () => {
+        const odRate = parseFloat(document.getElementById('jb-od-rate')?.value) || 6.25;
+        let filtered = _linterRawData;
+
+        if (_linterFilterState.userType === 'humans') {
+            filtered = filtered.filter(r => !isServiceAccount(r.user_email));
+        } else if (_linterFilterState.userType === 'service_accounts') {
+            filtered = filtered.filter(r => isServiceAccount(r.user_email));
+        }
+
+        if (_linterFilterState.user) filtered = filtered.filter(r => r.user_email === _linterFilterState.user);
+        if (_linterFilterState.project) filtered = filtered.filter(r => r.project_id === _linterFilterState.project);
+        if (_linterFilterState.abuseType) filtered = filtered.filter(r => r.abuse_type === _linterFilterState.abuseType);
+
+        const totalGb = filtered.reduce((s, r) => s + (r.billed_gb || 0), 0);
+        const totalWaste = totalGb * odRate / 1024;
+
+        const statsEl = document.getElementById('ap-filter-stats');
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <span class="ap-stat">Showing <span class="ap-stat-value">${filtered.length}</span> of ${_linterRawData.length} queries</span>
+                <span class="ap-stat">Total Data Billed: <span class="ap-stat-value">${formatNumber(totalGb)} GiB</span></span>
+                <span class="ap-stat">Total Est. Waste: <span class="ap-stat-value" style="color: #f87171;">${formatCurrency(totalWaste)}</span></span>
+            `;
+        }
+
+        const detailView = document.getElementById('linter-detail-view');
+        const summaryView = document.getElementById('linter-summary-view');
+        if (_linterFilterState.view === 'summary') {
+            if (detailView) detailView.style.display = 'none';
+            if (summaryView) summaryView.style.display = '';
+            renderLinterSummary(filtered, odRate);
+        } else {
+            if (detailView) detailView.style.display = '';
+            if (summaryView) summaryView.style.display = 'none';
+            renderLinterDetail(filtered, odRate);
+        }
+    };
+
+    /** Wire the toolbar once; the handlers just mutate state and re-apply. */
+    const initLinterToolbar = () => {
+        const bind = (id, key) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', () => {
+                _linterFilterState[key] = el.value;
+                applyLinterFilters();
+            });
+        };
+        bind('ap-filter-user-type', 'userType');
+        bind('ap-filter-user', 'user');
+        bind('ap-filter-project', 'project');
+        bind('ap-filter-abuse', 'abuseType');
+
+        const toggle = document.getElementById('ap-view-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-view]');
+                if (!btn) return;
+                _linterFilterState.view = btn.getAttribute('data-view');
+                toggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+                applyLinterFilters();
+            });
+        }
+
+        const resetBtn = document.getElementById('ap-filter-reset');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                Object.assign(_linterFilterState, { userType: 'all', user: '', project: '', abuseType: '' });
+                ['ap-filter-user', 'ap-filter-project', 'ap-filter-abuse'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = '';
+                });
+                const typeEl = document.getElementById('ap-filter-user-type');
+                if (typeEl) typeEl.value = 'all';
+                applyLinterFilters();
+            });
+        }
+    };
+    initLinterToolbar();
+
+    const renderLinterResults = (data) => {
+        _linterRawData = Array.isArray(data) ? data : [];
+        populateLinterFilterOptions();
+        applyLinterFilters();
+    };
+
+    /** Roll the filtered jobs up to (user × project × anti-pattern). */
+    const renderLinterSummary = (rows, odRate) => {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-summary-table')) {
+            $('#linter-summary-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#linter-summary-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const groups = new Map();
+        rows.forEach(r => {
+            const key = JSON.stringify([r.user_email, r.project_id, r.abuse_type]);
+            let g = groups.get(key);
+            if (!g) {
+                g = {
+                    user_email: r.user_email,
+                    project_id: r.project_id,
+                    abuse_type: r.abuse_type,
+                    count: 0,
+                    billed_gb: 0
+                };
+                groups.set(key, g);
+            }
+            g.count += 1;
+            g.billed_gb += r.billed_gb || 0;
+        });
+
+        Array.from(groups.values())
+            .sort((a, b) => b.billed_gb - a.billed_gb)
+            .forEach(g => {
+                const waste = g.billed_gb * odRate / 1024;
+                const sa = isServiceAccount(g.user_email);
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><span style="color: #e2e8f0; font-weight: 500;">${escapeHtmlAttr(g.user_email)}</span></td>
+                    <td><span class="badge" style="background: ${sa ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)'}; color: ${sa ? '#38bdf8' : '#cbd5e1'}; font-weight: 600;">${sa ? 'Service Account' : 'Human'}</span></td>
+                    <td><span style="color: #94a3b8; font-family: monospace; font-size: 0.85rem;">${escapeHtmlAttr(g.project_id)}</span></td>
+                    <td>${getAbuseBadge(g.abuse_type)}</td>
+                    <td data-order="${g.count}">${formatCompact(g.count)}</td>
+                    <td data-order="${g.billed_gb}"><strong style="color: #f1f5f9; font-family: monospace; white-space: nowrap;">${formatDataSize(g.billed_gb)}</strong></td>
+                    <td data-order="${waste}">${getWasteCell(waste)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+        safeInitDataTable('#linter-summary-table', {
+            pageLength: 10,
+            order: [[6, 'desc']],
+            autoWidth: false
+        });
+    };
+
+    function getAbuseBadge(type) {
+        type = type || 'UNKNOWN';
+        let bg, color, border;
+        if (type.includes('LIMIT TRAP')) {
+            bg = 'rgba(139, 92, 246, 0.15)'; // Purple
+            color = '#c084fc';
+            border = 'rgba(139, 92, 246, 0.3)';
+        } else if (type.includes('DML SCAN')) {
+            bg = 'rgba(239, 68, 68, 0.15)'; // Red
+            color = '#f87171';
+            border = 'rgba(239, 68, 68, 0.3)';
+        } else {
+            bg = 'rgba(245, 158, 11, 0.15)'; // Amber/Orange
+            color = '#fbbf24';
+            border = 'rgba(245, 158, 11, 0.3)';
+        }
+        return `<span style="display: inline-block; padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 9999px; background: ${bg}; color: ${color}; border: 1px solid ${border}; white-space: nowrap;">${escapeHtmlAttr(type)}</span>`;
+    }
+
+    function getWasteCell(waste) {
+        if (waste > 0) {
+            return `<strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(waste)}</strong>`;
+        }
+        return `<span style="color: #64748b;">$0.00</span>`;
+    }
+
+    /** One row per offending job — the default (unaggregated) view. */
+    function renderLinterDetail(rows, odRate) {
+        // Tear down the old DataTable BEFORE touching the DOM — otherwise
+        // .clear().destroy() inside safeInitDataTable can wipe out the rows
+        // we just appended while DT reconciles its internal state.
+        if ($.fn.DataTable.isDataTable('#linter-results-table')) {
+            $('#linter-results-table').DataTable().clear().destroy();
+        }
+        const tbody = document.querySelector('#linter-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        rows.forEach(row => {
+            const estimated_waste_usd = (row.billed_gb || 0) * odRate / 1024;
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><span style="color: #e2e8f0; font-weight: 500;">${renderUserLink(row.user_email, row.project_id)}</span></td>
+                <td><span style="font-family: monospace; font-size: 0.85rem;">${renderProjectLink(row.project_id)}</span></td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td data-order="${row.billed_gb || 0}"><strong style="color: #f1f5f9; font-weight: 600; font-family: monospace; white-space: nowrap;">${formatDataSize(row.billed_gb)}</strong></td>
+                <td>${getAbuseBadge(row.abuse_type)}</td>
+                <td data-order="${estimated_waste_usd}">${getWasteCell(estimated_waste_usd)}</td>
+                <td><div style="font-family: 'Fira Code', 'Courier New', monospace; font-size: 0.8rem; background: rgba(0,0,0,0.4); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-width: 350px; overflow-x: auto; white-space: nowrap; color: #cbd5e1;">${row.query_snippet}</div></td>
+                <td>
+                    <div style="display: flex; align-items: flex-start; gap: 0.35rem; font-size: 0.85rem; color: #94a3b8; line-height: 1.3; min-width: 250px;">
+                        <i class="fa-regular fa-lightbulb" style="color: #38bdf8; margin-top: 0.15rem; font-size: 0.9rem; flex-shrink: 0;"></i>
+                        <span>${row.suggested_fix || 'N/A'}</span>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#linter-results-table', {
+            pageLength: 10,
+            order: [[3, 'desc']],
+            autoWidth: false
+        });
+    }
+
+    const renderAntiPatternsResults = (data) => {
+        const tbody = document.querySelector('#antipatterns-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const edRate = parseFloat(document.getElementById('jb-ed-rate')?.value) || 0.06;
+        data.forEach(row => {
+            const slotHours = row.wasted_slot_hours || 0;
+            const wasteUsd = slotHours * edRate;
+            const insertCount = row.insert_job_count || 0;
+            const activeDays = row.active_days || 1;
+            const perDay = row.avg_inserts_per_day != null
+                ? row.avg_inserts_per_day
+                : insertCount / Math.max(activeDays, 1);
+
+            // Destination table is the migration unit. Pre-table-centric
+            // snapshots have no dest_* fields — fall back to a dash.
+            const destProject = row.dest_project_id || row.project_id;
+            const destLabel = row.dest_table_id
+                ? `${row.dest_dataset_id || '?'}.${row.dest_table_id}`
+                : '—';
+            const destCell = row.dest_table_id
+                ? `<span style="font-family: monospace; font-size: 0.82rem;" title="${escapeHtmlAttr(`${destProject}.${destLabel}`)}">${renderTableLink(row.dest_table_id, row.dest_dataset_id, destProject, destLabel)}</span>`
+                : '<span style="color: #64748b;">—</span>';
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td data-order="${escapeHtmlAttr(destLabel)}">${destCell}</td>
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td data-order="${insertCount}">${formatCompact(insertCount)}</td>
+                <td data-order="${activeDays}">${activeDays}</td>
+                <td data-order="${perDay}">${formatCompact(Math.round(perDay))}</td>
+                <td data-order="${slotHours}">${slotHours.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                <td data-order="${wasteUsd}"><strong style="color: #f87171; font-weight: 700; text-shadow: 0 0 8px rgba(248, 113, 113, 0.15);">${formatCurrency(wasteUsd)}</strong></td>
+                <td><button class="btn-secondary btn-sm btn-storage-write-api" style="white-space: nowrap; min-width: 180px;"><i class="fa-solid fa-bolt" style="margin-right: 0.35rem;"></i>Migrate to Storage Write API</button></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Delegated click handler for the Storage Write API guidance button.
+        const dmlTable = document.getElementById('antipatterns-results-table');
+        if (dmlTable && !dmlTable._dmlDelegateAttached) {
+            dmlTable.addEventListener('click', (e) => {
+                const btn = e.target.closest('.btn-storage-write-api');
+                if (btn) showStorageWriteApiModal();
+            });
+            dmlTable._dmlDelegateAttached = true;
+        }
+
+        safeInitDataTable('#antipatterns-results-table', { pageLength: 10, order: [[7, 'desc']], responsive: true });
+    };
+
+    /**
+     * Educational modal explaining the Storage Write API and why it replaces
+     * high-frequency legacy DML. Same overlay pattern as showRemediationModal.
+     */
+    function showStorageWriteApiModal() {
+        const existing = document.getElementById('storage-write-api-modal-overlay');
+        if (existing) {
+            // Run the previous instance's teardown rather than a bare remove():
+            // its keydown handler is bound to document, so dropping the node
+            // alone would leave a listener pointing at a detached overlay.
+            if (typeof existing.__close === 'function') existing.__close();
+            else existing.remove();
+        }
+
+        const snippet = `from google.cloud import bigquery_storage_v1
+from google.cloud.bigquery_storage_v1 import types, writer
+from google.protobuf import descriptor_pb2
+import sample_data_pb2  # Your protobuf-compiled schema
+
+# 1. Create a write client
+write_client = bigquery_storage_v1.BigQueryWriteClient()
+
+# 2. Target table reference
+parent = write_client.table_path(
+    "your-project", "your_dataset", "your_table"
+)
+
+# 3. Open a default (committed) write stream
+write_stream = types.WriteStream(type_=types.WriteStream.Type.COMMITTED)
+write_stream = write_client.create_write_stream(
+    parent=parent, write_stream=write_stream
+)
+
+# 4. Build a batch of rows and append
+request = types.AppendRowsRequest(
+    write_stream=write_stream.name,
+)
+proto_rows = types.ProtoRows()
+row = sample_data_pb2.SampleRow()
+row.column_a = "value"
+row.column_b = 42
+proto_rows.serialized_rows.append(row.SerializeToString())
+request.proto_rows = types.AppendRowsRequest.ProtoData(
+    rows=proto_rows,
+    writer_schema=types.ProtoSchema(
+        proto_descriptor=descriptor_pb2.DescriptorProto()
+    ),
+)
+write_client.append_rows(iter([request]))`;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'storage-write-api-modal-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = `
+            <div role="dialog" aria-modal="true" aria-labelledby="swa-modal-title" style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 0.75rem; width: 700px; max-width: 92%; max-height: 85vh; overflow-y: auto; padding: 1.5rem; color: #f8fafc; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h3 id="swa-modal-title" style="margin: 0; font-size: 1.1rem; color: #60a5fa;"><i class="fa-solid fa-bolt" style="margin-right: 0.5rem;" aria-hidden="true"></i>Migrate to Storage Write API</h3>
+                    <button id="close-swa-modal-btn" aria-label="Close dialog" style="background: none; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 4px;">&times;</button>
+                </div>
+
+                <div style="background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #60a5fa; font-size: 0.95rem;"><i class="fa-solid fa-circle-info" style="margin-right: 0.4rem;"></i>What is the Storage Write API?</h4>
+                    <p style="margin: 0; font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;">
+                        The <strong style="color: #f8fafc;">BigQuery Storage Write API</strong> is a high-throughput ingestion API that streams data directly into BigQuery managed storage, bypassing the query engine entirely.
+                        Unlike legacy <code style="background: rgba(255,255,255,0.08); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.8rem;">INSERT</code> DML statements — which compile a full SQL query, reserve slots, and count against the <strong style="color: #f8fafc;">1,500 table-modification operations/day</strong> quota — the Storage Write API writes directly to the storage layer with no slot consumption and no daily operation cap.
+                    </p>
+                </div>
+
+                <div style="background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0; color: #34d399; font-size: 0.95rem;"><i class="fa-solid fa-arrow-trend-up" style="margin-right: 0.4rem;"></i>Why migrate?</h4>
+                    <ul style="margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: #cbd5e1; line-height: 1.7;">
+                        <li><strong style="color: #f8fafc;">No slot consumption</strong> — writes go to managed storage, freeing slot capacity for queries</li>
+                        <li><strong style="color: #f8fafc;">No 1,500 ops/day cap</strong> — legacy DML is throttled per table per day; the Write API has no such limit</li>
+                        <li><strong style="color: #f8fafc;">Higher throughput</strong> — batched binary protocol vs. parsing SQL text for every row</li>
+                        <li><strong style="color: #f8fafc;">Exactly-once semantics</strong> — committed streams guarantee no duplicates, unlike retry-prone DML</li>
+                        <li><strong style="color: #f8fafc;">Lower cost</strong> — eliminates wasted slot-hours from thousands of tiny INSERT jobs</li>
+                    </ul>
+                </div>
+
+                <h4 style="margin: 0 0 0.5rem 0; color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">Python SDK Example</h4>
+                <div style="position: relative;">
+                    <pre style="background: #0c1222; padding: 1.25rem; border-radius: 0.5rem; border: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 0.78rem; line-height: 1.6; overflow-x: auto; white-space: pre-wrap; margin: 0; max-height: 280px; overflow-y: auto;">${escapeHtmlAttr(snippet)}</pre>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                    <a href="https://cloud.google.com/bigquery/docs/write-api" target="_blank" rel="noopener noreferrer" style="font-size: 0.82rem; color: #60a5fa; text-decoration: none;"><i class="fa-solid fa-arrow-up-right-from-square" style="margin-right: 0.3rem;"></i>BigQuery Storage Write API Docs</a>
+                    <button id="copy-swa-snippet-btn" class="btn-primary btn-sm"><i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        // Keyboard contract for the dialog: Escape closes, Tab cycles inside it,
+        // and focus returns to whatever opened it. Without this, tabbing walks
+        // straight out of the modal into the page behind the scrim.
+        const previouslyFocused = document.activeElement;
+        const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
+        function closeModal() {
+            document.removeEventListener('keydown', onKeydown, true);
+            overlay.remove();
+            if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+                previouslyFocused.focus();
+            }
+        }
+
+        function onKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeModal();
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            const items = Array.from(overlay.querySelectorAll(FOCUSABLE))
+                .filter(el => el.offsetParent !== null);
+            if (!items.length) return;
+            const first = items[0];
+            const last = items[items.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+
+        document.addEventListener('keydown', onKeydown, true);
+        overlay.__close = closeModal;
+
+        const closeBtn = document.getElementById('close-swa-modal-btn');
+        closeBtn.addEventListener('click', closeModal);
+        closeBtn.focus();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+        document.getElementById('copy-swa-snippet-btn').addEventListener('click', function () {
+            copyToClipboard(snippet).then(() => {
+                this.innerHTML = '<i class="fa-solid fa-check" style="margin-right: 0.35rem;"></i>Copied!';
+                setTimeout(() => { this.innerHTML = '<i class="fa-solid fa-copy" style="margin-right: 0.35rem;"></i>Copy Snippet'; }, 2000);
+            }).catch(() => {
+                if (typeof showNotification === 'function') {
+                    showNotification('Copy failed — select the snippet and copy manually.', 'warning');
+                }
+            });
+        });
+    }
+    window.showStorageWriteApiModal = showStorageWriteApiModal;
+
+    const renderExpirationResults = (data) => {
+        const tbody = document.querySelector('#expiration-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td><span class="badge secondary">Missing Expiration</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#expiration-results-table', { pageLength: 10, responsive: true });
+    };
+
+    const renderFilterResults = (data) => {
+        const tbody = document.querySelector('#filter-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset_id, row.project_id, row.dataset_id)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset_id, row.project_id, row.table_name)}</td>
+                <td>${row.partition_type}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#filter-results-table', { pageLength: 10, responsive: true });
+    };
+
+    const renderMvResults = (data) => {
+        const tbody = document.querySelector('#mv-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderProjectLink(row.project_id)}</td>
+                <td>${renderDatasetLink(row.dataset, row.project_id, row.dataset)}</td>
+                <td>${renderTableLink(row.table_name, row.dataset, row.project_id, row.table_name)}</td>
+                <td data-order="${row.refresh_count || 0}">${formatCompact(row.refresh_count)}</td>
+                <td data-order="${row.total_slot_hours || 0}">${(row.total_slot_hours || 0).toFixed(2)} hrs</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#mv-results-table', { pageLength: 10, order: [[4, 'desc']], responsive: true });
+    };
+
+    const renderMvRejectionResults = (data) => {
+        const tbody = document.querySelector('#mv-rejections-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td>${row.mv_name}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.rejected_reason}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#mv-rejections-table', { pageLength: 10, responsive: true });
+    };
+
+    const renderWarningResults = (data) => {
+        const tbody = document.querySelector('#resource-warnings-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td style="font-size: 0.85rem; color: #f59e0b;">${row.resource_warning}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#resource-warnings-table', { pageLength: 10, responsive: true });
+    };
+
+    // Check settings before executing scan
+    const checkSettings = () => {
+        if (!state.orgProject) {
+            showNotification('Please configure settings first.', 'error');
+            Router.navigate('settings');
+            return false;
+        }
+        return true;
+    };
+
+    if (elements.btnAnalyzeLinter) {
+        elements.btnAnalyzeLinter.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeLinter, true);
+            clearModuleCache(['bq_linter_results'], ['#linter-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 7,
+                limit_per_project: 100
+            };
+            try {
+                const response = await fetch('/api/antipatterns/linter', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/antipatterns/linter', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan query linter'));
+                }
+                const data = await response.json();
+                renderLinterResults(data);
+                safeSetLocalStorage('bq_linter_results', JSON.stringify(data));
+                showNotification('Query optimization opportunities scan completed.', 'success');
+            } catch (error) {
+                console.error("Linter Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeLinter, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeDml) {
+        elements.btnAnalyzeDml.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeDml, true);
+            clearModuleCache(['bq_antipatterns_results'], ['#antipatterns-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 1,
+                // Per destination table, not per user — see DMLAbuseParams.
+                threshold: 100
+            };
+            try {
+                const response = await fetch('/api/antipatterns/dml', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/antipatterns/dml', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan DML abuse'));
+                }
+                const data = await response.json();
+                renderAntiPatternsResults(data);
+                safeSetLocalStorage('bq_antipatterns_results', JSON.stringify(data));
+                showNotification('DML Abuse scan completed.', 'success');
+            } catch (error) {
+                console.error("DML Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeDml, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeMv) {
+        elements.btnAnalyzeMv.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeMv, true);
+            clearModuleCache(['bq_mv_results'], ['#mv-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 7
+            };
+            try {
+                const response = await fetch('/api/antipatterns/mv', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/antipatterns/mv', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV costs'));
+                }
+                const data = await response.json();
+                renderMvResults(data);
+                safeSetLocalStorage('bq_mv_results', JSON.stringify(data));
+                showNotification('Materialized View cost scan completed.', 'success');
+            } catch (error) {
+                console.error("MV Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeMv, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeSkew) {
+        elements.btnAnalyzeSkew.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeSkew, true);
+            clearModuleCache(['bq_skew_results'], ['#skew-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 7,
+                limit_per_project: 50
+            };
+            try {
+                const response = await fetch('/api/antipatterns/skew', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/antipatterns/skew', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan data skew'));
+                }
+                const data = await response.json();
+                renderSkewResults(data);
+                safeSetLocalStorage('bq_skew_results', JSON.stringify(data));
+                showNotification('Data skew candidates scan completed.', 'success');
+            } catch (error) {
+                console.error("Skew Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeSkew, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeBatch) {
+        elements.btnAnalyzeBatch.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeBatch, true);
+            clearModuleCache(['bq_batch_results'], ['#batch-candidates-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 7,
+                limit_per_project: 50
+            };
+            try {
+                const response = await fetch('/api/antipatterns/batch_candidates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/antipatterns/batch_candidates', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan batch candidates'));
+                }
+                const data = await response.json();
+                renderBatchCandidatesResults(data);
+                safeSetLocalStorage('bq_batch_results', JSON.stringify(data));
+                showNotification('Interactive vs. Batch candidates scan completed.', 'success');
+            } catch (error) {
+                console.error("Batch Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeBatch, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeExpiration) {
+        elements.btnAnalyzeExpiration.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeExpiration, true);
+            // Don't clear bq_gov_results — only clear the DataTable.
+            // Clearing the key wipes the sibling scan's cached data.
+            clearModuleCache([], ['#expiration-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                audit_type: 'expiration'
+            };
+            try {
+                const response = await fetch('/api/governance/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
+                }
+                const govData = await response.json();
+                renderExpirationResults(govData.expiration_issues || []);
+                
+                let cachedGov = {};
+                try {
+                    cachedGov = JSON.parse(localStorage.getItem('bq_gov_results')) || {};
+                } catch(e) {}
+                cachedGov.expiration_issues = govData.expiration_issues || [];
+                safeSetLocalStorage('bq_gov_results', JSON.stringify(cachedGov));
+
+                showNotification('Dataset expiration policy scan completed.', 'success');
+            } catch (error) {
+                console.error("Gov Expiration Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeExpiration, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeFilter) {
+        elements.btnAnalyzeFilter.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeFilter, true);
+            // Don't clear bq_gov_results — only clear the DataTable.
+            clearModuleCache([], ['#filter-results-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                audit_type: 'filter'
+            };
+            try {
+                const response = await fetch('/api/governance/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/governance/analyze', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan governance'));
+                }
+                const govData = await response.json();
+                renderFilterResults(govData.filter_issues || []);
+
+                let cachedGov = {};
+                try {
+                    cachedGov = JSON.parse(localStorage.getItem('bq_gov_results')) || {};
+                } catch(e) {}
+                cachedGov.filter_issues = govData.filter_issues || [];
+                safeSetLocalStorage('bq_gov_results', JSON.stringify(cachedGov));
+
+                showNotification('Partitioned tables filter scan completed.', 'success');
+            } catch (error) {
+                console.error("Gov Filter Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeFilter, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeMvRejections) {
+        elements.btnAnalyzeMvRejections.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeMvRejections, true);
+            clearModuleCache(['bq_mv_rejection_results'], ['#mv-rejections-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 30
+            };
+            try {
+                const response = await fetch('/api/mv/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/mv/analyze', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan MV rejections'));
+                }
+                const data = await response.json();
+                renderMvRejectionResults(data);
+                safeSetLocalStorage('bq_mv_rejection_results', JSON.stringify(data));
+                showNotification('Materialized View rejections scan completed.', 'success');
+            } catch (error) {
+                console.error("MV Rejections Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeMvRejections, false);
+            }
+        });
+    }
+
+    if (elements.btnAnalyzeWarnings) {
+        elements.btnAnalyzeWarnings.addEventListener('click', async () => {
+            if (!checkSettings()) return;
+            setLoading(elements.btnAnalyzeWarnings, true);
+            clearModuleCache(['bq_resource_warning_results'], ['#resource-warnings-table']);
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 30
+            };
+            try {
+                const response = await fetch('/api/resource_warnings/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/resource_warnings/analyze', params))
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(detailToMessage(err.detail, 'Failed to scan resource warnings'));
+                }
+                const data = await response.json();
+                renderWarningResults(data);
+                safeSetLocalStorage('bq_resource_warning_results', JSON.stringify(data));
+                showNotification('Proactive resource warnings scan completed.', 'success');
+            } catch (error) {
+                console.error("Resource Warnings Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeWarnings, false);
+            }
+        });
+    }
+
+    const cachedMvResults = localStorage.getItem('bq_mv_results');
+    if (cachedMvResults) {
+        try {
+            renderMvResults(JSON.parse(cachedMvResults));
+        } catch (e) { console.warn("Failed to parse cached MV results", e); }
+    }
+
+    const cachedAntiPatternsResults = localStorage.getItem('bq_antipatterns_results');
+    if (cachedAntiPatternsResults) {
+        try {
+            renderAntiPatternsResults(JSON.parse(cachedAntiPatternsResults));
+        } catch (e) { console.warn("Failed to parse cached anti-patterns results", e); }
+    }
+
+    const cachedSkewResults = localStorage.getItem('bq_skew_results');
+    if (cachedSkewResults) {
+        try {
+            renderSkewResults(JSON.parse(cachedSkewResults));
+        } catch (e) { console.warn("Failed to parse cached skew results", e); }
+    }
+
+    const cachedBatchResults = localStorage.getItem('bq_batch_results');
+    if (cachedBatchResults) {
+        try {
+            renderBatchCandidatesResults(JSON.parse(cachedBatchResults));
+        } catch (e) { console.warn("Failed to parse cached batch results", e); }
+    }
+
+    const cachedMvRejectionResults = localStorage.getItem('bq_mv_rejection_results');
+    if (cachedMvRejectionResults) {
+        try {
+            renderMvRejectionResults(JSON.parse(cachedMvRejectionResults));
+        } catch (e) { console.warn("Failed to parse cached MV rejection results", e); }
+    }
+
+    const cachedCostAttributionResults = localStorage.getItem('bq_cost_attribution_results');
+    if (cachedCostAttributionResults) {
+        try {
+            const parsedData = JSON.parse(cachedCostAttributionResults);
+            const attributions = parsedData.attributions || parsedData;
+            renderCostAttributionResults(attributions);
+        } catch (e) { console.warn("Failed to parse cached cost attribution results", e); }
+    }
+
+    const cachedWarningResults = localStorage.getItem('bq_resource_warning_results');
+    if (cachedWarningResults) {
+        try {
+            renderWarningResults(JSON.parse(cachedWarningResults));
+        } catch (e) { console.warn("Failed to parse cached warning results", e); }
+    }
+
+    const cachedLinterResults = localStorage.getItem('bq_linter_results');
+    if (cachedLinterResults) {
+        try {
+            renderLinterResults(JSON.parse(cachedLinterResults));
+        } catch (e) { console.warn("Failed to parse cached linter results", e); }
+    }
+
+    const cachedGovResults = localStorage.getItem('bq_gov_results');
+    if (cachedGovResults) {
+        try {
+            const govData = JSON.parse(cachedGovResults);
+            renderExpirationResults(govData.expiration_issues || []);
+            renderFilterResults(govData.filter_issues || []);
+        } catch (e) { console.warn("Failed to parse cached governance results", e); }
+    }
+
+    const cachedPerformanceResults = localStorage.getItem('bq_performance_results');
+    if (cachedPerformanceResults) {
+        try {
+            renderPerformanceResults(JSON.parse(cachedPerformanceResults));
+        } catch (e) { console.warn("Failed to parse cached performance results", e); }
+    }
+
+    const renderBiResults = (data) => {
+        const tbody = document.querySelector('#bi-results-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let totalSaved = 0;
+        let fullAccelerated = 0;
+
+        data.forEach(row => {
+            totalSaved += row.estimated_dollars_saved;
+            if (row.bi_engine_mode === 'FULL') fullAccelerated++;
+
+            const tr = document.createElement('tr');
+            const modeClass = row.bi_engine_mode === 'FULL' ? 'physical' : (row.bi_engine_mode === 'PARTIAL' ? 'logical' : 'error');
+            tr.innerHTML = `
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td>${row.processed_gb.toFixed(2)}</td>
+                <td>${row.billed_gb.toFixed(2)}</td>
+                <td><span class="badge ${modeClass}">${row.bi_engine_mode}</span></td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary);">${row.failure_reasons}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        document.getElementById('bi-total-saved').innerText = `$${totalSaved.toFixed(2)}`;
+        const rate = data.length > 0 ? (fullAccelerated / data.length * 100).toFixed(2) : 0;
+        document.getElementById('bi-full-rate').innerText = `${rate}%`;
+
+        safeInitDataTable('#bi-results-table', { pageLength: 10, order: [[2, 'desc']], responsive: true });
+    };
+
+    if (elements.btnAnalyzeBi) {
+        elements.btnAnalyzeBi.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure settings first.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            setLoading(elements.btnAnalyzeBi, true);
+            clearModuleCache(['bq_bi_results'], ['#bi-results-table']);
+
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                lookback_days: 7,
+                limit: 50
+            };
+
+            try {
+                const response = await fetch('/api/bi/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/bi/analyze', params))
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to analyze BI Engine'));
+                }
+
+                const data = await response.json();
+                renderBiResults(data);
+                safeSetLocalStorage('bq_bi_results', JSON.stringify(data));
+                showNotification('BI Engine analysis completed.', 'success');
+            } catch (error) {
+                console.error("BI Error:", error);
+                showNotification(error.message, 'error');
+            } finally {
+                setLoading(elements.btnAnalyzeBi, false);
+            }
+        });
+    }
+
+    const cachedBiResults = localStorage.getItem('bq_bi_results');
+    if (cachedBiResults) {
+        try {
+            renderBiResults(JSON.parse(cachedBiResults));
+        } catch (e) { console.warn("Failed to parse cached BI results", e); }
+    }
+
+    // XSS-safe escape for raw (un-proxy-escaped) fields like optimized_query,
+    // query, and migration_applied_yaml, which are now exempted from the
+    // global sanitizeData proxy so they remain usable for clipboard / POST.
+    // Apply this helper when interpolating them into innerHTML.  [R3]
+    const escHtml = s => String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    // Module-scoped variable to hold current results for Copy SQL reference
+    let currentAiResults = [];
+
+    const renderAiResults = (data) => {
+        const panel = document.getElementById('ai-results-panel');
+        if (panel) panel.style.display = 'block';
+        const oldTbody = document.querySelector('#ai-results-table tbody');
+        if (!oldTbody) return;
+        const tbody = oldTbody.cloneNode(false);
+        oldTbody.parentNode.replaceChild(tbody, oldTbody);
+        currentAiResults = data;
+
+        // --- KPI Summary Strip ---
+        const kpiStrip = document.getElementById('aidoc-kpis');
+        const filtersBar = document.getElementById('aidoc-filters');
+        if (kpiStrip && data.length > 0) {
+            let totalCostUsd = 0, totalBytes = 0;
+            let nHigh = 0, nMed = 0, nLow = 0;
+            let totalReferenced = 0, totalFound = 0;
+            let nMigration = 0, nSchemaGap = 0, nRepeat = 0;
+
+            data.forEach(r => {
+                const rate = r.on_demand_rate_usd_per_tb || 6.25;
+                const bytes = r.bytes_billed_original || r.bytes_scanned_original || 0;
+                totalBytes += bytes;
+                totalCostUsd += (bytes / (1024**4)) * rate;
+                if (r.severity === 'HIGH') nHigh++;
+                else if (r.severity === 'MEDIUM') nMed++;
+                else if (r.severity === 'LOW') nLow++;
+                totalReferenced += (r.tables_referenced_count || 0);
+                totalFound += (r.tables_found_count || 0);
+                // Same echo test the row loop applies — counting rows the
+                // "Migration" pill then filters out would show a KPI of N
+                // that expands to fewer than N rows.
+                const rHasRewrite = !!r.optimized_query
+                    && (r.optimized_query || '').trim() !== (r.query || '').trim();
+                if (r.migration_applied_yaml && rHasRewrite) nMigration++;
+                if ((r.tables_referenced_count || 0) > (r.tables_found_count || 0)) nSchemaGap++;
+                if (r.execution_count && r.execution_count > 1) nRepeat++;
+            });
+
+            // Populate KPI values
+            const spendEl = document.getElementById('kpi-spend');
+            const bytesEl = document.getElementById('kpi-bytes');
+            if (spendEl) spendEl.textContent = `$${Math.round(totalCostUsd).toLocaleString()}`;
+            const totalTib = totalBytes / (1024**4);
+            if (bytesEl) bytesEl.textContent = totalTib >= 1 ? `${totalTib.toFixed(1)} TiB scanned` : `${Math.round(totalBytes / (1024**3))} GiB scanned`;
+
+            const nHighEl = document.getElementById('kpi-n-high');
+            const nMedEl = document.getElementById('kpi-n-med');
+            const nLowEl = document.getElementById('kpi-n-low');
+            if (nHighEl) nHighEl.textContent = nHigh;
+            if (nMedEl) nMedEl.textContent = nMed;
+            if (nLowEl) nLowEl.textContent = nLow;
+
+            const covEl = document.getElementById('kpi-coverage');
+            const covMeta = document.getElementById('kpi-coverage-meta');
+            if (covEl) covEl.textContent = totalReferenced > 0 ? `${Math.round((totalFound / totalReferenced) * 100)}%` : 'N/A';
+            if (covMeta) covMeta.textContent = `${totalFound}/${totalReferenced} DDLs supplied to model`;
+
+            kpiStrip.style.display = 'grid';
+
+            // Populate filter pill counts
+            const setCount = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+            setCount('pill-all', data.length);
+            setCount('pill-high', nHigh);
+            setCount('pill-med', nMed);
+            setCount('pill-migration', nMigration);
+            setCount('pill-schemagap', nSchemaGap);
+            setCount('pill-repeat', nRepeat);
+            if (filtersBar) filtersBar.style.display = 'flex';
+        }
+
+        // Severity badge config with numeric rank for DataTable sorting [R2]
+        const severityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+        const severityColors = {
+            HIGH:   { bg: 'rgba(239, 68, 68, 0.15)',  border: 'rgba(239, 68, 68, 0.4)',  text: '#ef4444', icon: 'fa-circle-exclamation' },
+            MEDIUM: { bg: 'rgba(245, 158, 11, 0.15)', border: 'rgba(245, 158, 11, 0.4)', text: '#f59e0b', icon: 'fa-triangle-exclamation' },
+            LOW:    { bg: 'rgba(34, 197, 94, 0.15)',   border: 'rgba(34, 197, 94, 0.4)',  text: '#22c55e', icon: 'fa-circle-check' }
+        };
+
+        data.forEach(row => {
+            // The backend suppresses SQL it merely echoed back; repeat the test
+            // here so snapshots taken before that fix behave the same. An echo
+            // means the Migration API config changed nothing, so the YAML badge
+            // and the "Migration" filter pill must be suppressed with it —
+            // otherwise the pill surfaces rows whose Optimized SQL cell is "—".
+            const isEcho = !!row.optimized_query
+                && (row.optimized_query || '').trim() === (row.query || '').trim();
+            const hasRewrite = !!row.optimized_query && !isEcho;
+            const migrationYaml = hasRewrite ? row.migration_applied_yaml : null;
+
+            const tr = document.createElement('tr');
+            // Severity-based row stripe + filter data attributes
+            if (row.severity) {
+                tr.className = `severity-${row.severity.toLowerCase()}`;
+            }
+            tr.dataset.severity = (row.severity || '').toUpperCase();
+            tr.dataset.migration = migrationYaml ? '1' : '0';
+            tr.dataset.schemagap = (row.tables_referenced_count || 0) > (row.tables_found_count || 0) ? '1' : '0';
+            tr.dataset.repeat = (row.execution_count && row.execution_count > 1) ? '1' : '0';
+            
+            // --- Severity Badge [R2] ---
+            let severityBadge = '<span style="color: var(--text-secondary);">—</span>';
+            let severityOrder = 3;
+            if (row.severity) {
+                severityOrder = severityRank[row.severity] ?? 3;
+                const s = severityColors[row.severity] || severityColors.LOW;
+                severityBadge = `
+                    <span style="background: ${s.bg}; border: 1px solid ${s.border}; color: ${s.text};
+                        padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;
+                        display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;">
+                        <i class="fa-solid ${s.icon}" style="font-size: 0.85rem;"></i> ${row.severity}
+                    </span>`;
+            }
+
+            // --- Zero-Click Original Cost [R7] ---
+            const rate = row.on_demand_rate_usd_per_tb || 6.25;
+            const billedBytes = row.bytes_billed_original || 0;
+            const scannedBytes = row.bytes_scanned_original || 0;
+            const displayBytes = billedBytes > 0 ? billedBytes : scannedBytes;
+            const costLabel = billedBytes > 0 ? 'Billed' : 'Scanned';
+            let originalCost = '<span style="color: var(--text-secondary);">—</span>';
+            if (displayBytes > 0) {
+                const gib = displayBytes / (1024**3);
+                const sizeLabel = gib >= 1024
+                    ? `${Math.round(gib / 1024)} TiB`
+                    : `${Math.round(gib)} GiB`;
+                const usd = Math.round((displayBytes / (1024**4)) * rate);
+                const execBadge = row.execution_count && row.execution_count > 1 
+                    ? `<div style="color: #38bdf8; font-size: 0.75rem; margin-top: 2px;"><i class="fa-solid fa-repeat"></i> ${row.execution_count.toLocaleString()} runs</div>`
+                    : '';
+                originalCost = `
+                    <div style="font-size: 0.85rem;">
+                        <div style="color: #e2e8f0; font-weight: 600;">${sizeLabel}</div>
+                        <div style="color: ${billedBytes > 0 ? '#f59e0b' : '#94a3b8'}; font-size: 0.8rem;">
+                            ~$${usd} <span style="font-size: 0.7rem;">(${costLabel})</span>
+                        </div>
+                        ${execBadge}
+                    </div>`;
+            }
+
+            // --- Schema Coverage Badge ---
+            const referenced = row.tables_referenced_count || 0;
+            const found = row.tables_found_count || 0;
+            const isInfoSchema = !!(row.query && row.query.toUpperCase().includes('INFORMATION_SCHEMA'));
+
+            // Backend extract_table_names() only emits 1-, 2- and 3-part names, so a fully
+            // qualified system view (project.region.INFORMATION_SCHEMA.VIEW — four parts) is
+            // matched and then discarded, leaving referenced === 0. Distinguish that from a
+            // genuine parse miss: a bare "N/A" reads like the tool failed.
+            const infoSchemaBadge = `
+                        <span style="background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.3); color: #94a3b8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns.">
+                            <i class="fa-solid fa-circle-info" style="font-size: 0.85rem;"></i> System views
+                        </span>`;
+
+            let coverageBadge = isInfoSchema
+                ? infoSchemaBadge
+                : '<span style="color: var(--text-secondary); font-size: 0.85rem;" title="No table references were parsed out of this query, so no DDL was sent to Vertex AI.">No tables parsed</span>';
+
+            if (referenced > 0) {
+                const missing = referenced - found;
+                const schemaNote = `This recommendation used schema context. ${found} table DDL(s) were sent to Vertex AI.${missing > 0 ? ` (${missing} referenced table(s) could not be retrieved — see cross-project/permission notes.)` : ''}`;
+                if (found === referenced) {
+                    coverageBadge = `
+                        <span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="${schemaNote}">
+                            <i class="fa-solid fa-circle-check" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
+                        </span>`;
+                } else {
+                    const badgeTitle = isInfoSchema
+                        ? `System views (INFORMATION_SCHEMA) do not have DDL schemas. The AI is auditing this query using standard optimization patterns.`
+                        : schemaNote;
+                    const badgeBg = isInfoSchema ? "rgba(148, 163, 184, 0.12)" : "rgba(245, 158, 11, 0.12)";
+                    const badgeBorder = isInfoSchema ? "1px solid rgba(148, 163, 184, 0.3)" : "1px solid rgba(245, 158, 11, 0.3)";
+                    const badgeColor = isInfoSchema ? "#94a3b8" : "#f59e0b";
+                    const badgeIcon = isInfoSchema ? "fa-solid fa-circle-info" : "fa-solid fa-triangle-exclamation";
+                    
+                    coverageBadge = `
+                        <span style="background: ${badgeBg}; border: ${badgeBorder}; color: ${badgeColor}; padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: help;" title="${badgeTitle}">
+                            <i class="${badgeIcon}" style="font-size: 0.85rem;"></i> ${found}/${referenced} DDLs
+                        </span>`;
+                }
+            }
+
+
+            const renderMarkdown = (text) => {
+                if (!text) return '';
+                let html = text;
+                const codeBlocks = [];
+                html = html.replace(/```(?:[a-zA-Z0-9\-]+)?\n([\s\S]*?)\n```/g, (match, code) => {
+                    const placeholder = `__CODE_BLOCK_PLACEHOLDER_${codeBlocks.length}__`;
+                    codeBlocks.push(`<pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255,255,255,0.08); padding: 1rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.85rem; color: #e2e8f0; overflow-x: auto; margin: 0.75rem 0; line-height: 1.5; white-space: pre;"><code style="color: #38bdf8;">${code}</code></pre>`);
+                    return placeholder;
+                });
+                html = html.replace(/^### (.*?)$/gm, '<h3 style="margin: 1rem 0 0.5rem 0; color: white; font-size: 1.05rem; font-weight: 600;">$1</h3>');
+                html = html.replace(/^#### (.*?)$/gm, '<h4 style="margin: 0.75rem 0 0.25rem 0; color: #94a3b8; font-size: 0.95rem; font-weight: 600;">$1</h4>');
+                html = html.replace(/`(.*?)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 0.15rem 0.35rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; color: #38bdf8;">$1</code>');
+                html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color: white; font-weight: 600;">$1</strong>');
+                html = html.replace(/^\s*[\*\-]\s+(.*?)$/gm, '<li style="margin-left: 1rem; list-style-type: disc; margin-bottom: 0.35rem; color: #cbd5e1;">$1</li>');
+                html = html.replace(/\n\n/g, '<div style="margin-bottom: 0.75rem;"></div>');
+                html = html.replace(/\n/g, '<br>');
+                // Auto-linkify fully qualified BigQuery table references
+                // (project.dataset.table).
+                //
+                // The leading group pins the match to a real text boundary —
+                // start-of-string, whitespace, an opening bracket, or the ">"
+                // that closes a tag we just emitted. Crucially it does NOT
+                // allow "/" or ".", which is what keeps the pattern out of
+                // URLs: in "https://console.cloud.google.com/…" the candidate
+                // "console.cloud.google" is preceded by "/" and so is skipped.
+                //
+                // The trailing lookahead rejects a 4th dotted segment for the
+                // same reason, so "a.b.c.d" is left alone rather than being
+                // linkified as "a.b.c" plus a dangling ".d".
+                html = html.replace(
+                    /(^|[\s(>\[])([a-z][a-z0-9\-]{5,29})\.([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)(?![\w.\-\/])/g,
+                    (match, pre, proj, ds, tbl) => {
+                        const url = buildConsoleUrl('table', { project: proj, dataset: ds, table: tbl });
+                        const ref = `${proj}.${ds}.${tbl}`;
+                        return `${pre}<a href="${url}" target="_blank" rel="noopener noreferrer" class="console-link" title="Open ${tbl} in Console">${ref}</a>`;
+                    }
+                );
+
+                codeBlocks.forEach((blockHtml, index) => {
+                    html = html.replace(`__CODE_BLOCK_PLACEHOLDER_${index}__`, blockHtml);
+                });
+                return html;
+            };
+
+            // --- Query SQL Preview ---
+            let originalQueryCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (row.query) {
+                const escapedOrigSqlPreview = escHtml(
+                    row.query.length > 200
+                        ? row.query.substring(0, 200) + '...'
+                        : row.query
+                );
+                originalQueryCell = `
+                    <div style="position: relative; min-width: 220px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(251, 113, 133, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #fb7185; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedOrigSqlPreview}</pre>
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                            <button class="copy-orig-sql-btn" style="background: rgba(251,113,133,0.15); border: 1px solid rgba(251,113,133,0.3);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-orig-translator-btn"
+                                style="background: rgba(251,113,133,0.12); border: 1px solid rgba(251,113,133,0.25);
+                                color: #fb7185; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
+                        </div>
+                    </div>`;
+            }
+
+            // --- Optimized Query Cell [R3] ---
+            let optimizedCell = '<span style="color: var(--text-secondary); font-size: 0.85rem;">—</span>';
+            if (hasRewrite) {
+                const escapedSqlPreview = escHtml(
+                    row.optimized_query.length > 200
+                        ? row.optimized_query.substring(0, 200) + '...'
+                        : row.optimized_query
+                );
+                let approxBadge = '';
+                if (row.approx_warning_flag) {
+                    approxBadge = `<div style="margin-top: 0.4rem; font-size: 0.7rem; color: #f59e0b;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Uses APPROX_COUNT_DISTINCT
+                    </div>`;
+                }
+                optimizedCell = `
+                    <div style="position: relative; min-width: 250px;">
+                        <pre style="background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.2);
+                            padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.78rem;
+                            color: #38bdf8; overflow-x: auto; max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+                            word-break: break-all; margin: 0;">${escapedSqlPreview}</pre>
+                        ${approxBadge}
+                        <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                            <button class="copy-sql-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <i class="fa-solid fa-copy"></i> Copy SQL
+                            </button>
+                            <a href="${buildConsoleUrl('interactive_translation', { project: row.project_id || state.projectId, location: state.region, query: row.optimized_query })}"
+                                target="_blank" rel="noopener noreferrer"
+                                class="open-opt-translator-btn"
+                                style="background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.25);
+                                color: #38bdf8; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem;
+                                text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"
+                                title="Copy SQL & open BigQuery Interactive Translator">
+                                <i class="fa-solid fa-arrow-right-arrow-left"></i> Translator
+                            </a>
+                        </div>
+                        __YAML_BADGE_PLACEHOLDER__
+                    </div>`;
+            }
+
+            let yamlBadge = '';
+            if (migrationYaml) {
+                const escapedYaml = escHtml(migrationYaml.trim());
+                yamlBadge = `
+                    <div style="margin-top: 0.5rem; border: 1px solid rgba(56,189,248,0.25); border-radius: 6px; font-size: 0.75rem; color: #38bdf8; overflow: hidden;">
+                        <div class="yaml-toggle-btn" style="padding: 0.4rem 0.6rem; background: rgba(56,189,248,0.08); cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none;">
+                            <i class="fa-solid fa-chevron-right yaml-chevron" style="font-size: 0.6rem; transition: transform 0.2s;"></i>
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Migration API Config Applied
+                        </div>
+                        <div class="yaml-content" style="display: none; padding: 0.4rem 0.6rem; background: rgba(15,23,42,0.4);">
+                            <pre style="margin: 0; font-family: monospace; font-size: 0.7rem; color: #94a3b8; white-space: pre-wrap; word-break: break-all;">${escapedYaml}</pre>
+                        </div>
+                    </div>`;
+            }
+            optimizedCell = optimizedCell.replace('__YAML_BADGE_PLACEHOLDER__', yamlBadge);
+
+            const slotHours = (row.total_slot_ms || 0) / 3600000;
+            const formattedSlotHours = slotHours >= 1000
+                ? `${Math.round(slotHours).toLocaleString()} hrs`
+                : (slotHours >= 1 ? `${slotHours.toFixed(1)} hrs` : `${slotHours.toFixed(2)} hrs`);
+
+            tr.innerHTML = `
+                ${renderJobId(row.job_id, row.project_id, state.region)}
+                <td>${renderUserLink(row.user_email, row.project_id)}</td>
+                <td data-order="${slotHours}" title="${(row.total_slot_ms || 0).toLocaleString()} slot-ms (${slotHours.toFixed(2)} slot-hours)">${formattedSlotHours}</td>
+                <td data-order="${severityOrder}">${severityBadge}</td>
+                <td data-order="${displayBytes > 0 ? Math.round((displayBytes / (1024**4)) * rate) : 0}">${originalCost}</td>
+                <td>${originalQueryCell}</td>
+                <td>${coverageBadge}</td>
+                <td style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                    <div class="advice-wrapper">
+                        <div class="advice-content">
+                            ${renderMarkdown(row.gemini_optimization_advice)}
+                        </div>
+                        ${(row.gemini_optimization_advice || '').length > 300 ? `
+                        <div class="advice-toggle">
+                            ▼ Show more
+                        </div>` : ''}
+                    </div>
+                </td>
+                <td>${optimizedCell}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        safeInitDataTable('#ai-results-table', { pageLength: 10, order: [[4, 'desc']], responsive: true });
+
+        // --- Filter Pills (DataTables custom search) ---
+        let activeFilter = 'all';
+        // Clear any previously-registered AI Doctor filter functions
+        $.fn.dataTable.ext.search = $.fn.dataTable.ext.search.filter(fn => !fn._aidocFilter);
+        const filterFn = (settings, searchData, dataIndex, rowData, counter) => {
+            if (settings.nTable.id !== 'ai-results-table') return true;
+            if (activeFilter === 'all') return true;
+            const tr = settings.aoData[dataIndex].nTr;
+            if (!tr) return true;
+            if (activeFilter === 'high') return tr.dataset.severity === 'HIGH';
+            if (activeFilter === 'medium') return tr.dataset.severity === 'MEDIUM';
+            if (activeFilter === 'migration') return tr.dataset.migration === '1';
+            if (activeFilter === 'schemagap') return tr.dataset.schemagap === '1';
+            if (activeFilter === 'repeat') return tr.dataset.repeat === '1';
+            return true;
+        };
+        filterFn._aidocFilter = true;
+        $.fn.dataTable.ext.search.push(filterFn);
+
+        if (filtersBar) {
+            // Clone to strip stacked event listeners from previous renders
+            const freshBar = filtersBar.cloneNode(true);
+            filtersBar.parentNode.replaceChild(freshBar, filtersBar);
+            freshBar.querySelectorAll('.aidoc-pill').forEach(pill => {
+                pill.addEventListener('click', () => {
+                    freshBar.querySelectorAll('.aidoc-pill').forEach(p => p.classList.remove('is-active'));
+                    pill.classList.add('is-active');
+                    activeFilter = pill.dataset.filter;
+                    $('#ai-results-table').DataTable().draw();
+                });
+            });
+        }
+
+        // --- Event Delegation for interactive buttons ---
+        tbody.addEventListener('click', async (e) => {
+            // Copy Optimized SQL button [R-clipboard]
+            const copyBtn = e.target.closest('.copy-sql-btn');
+            if (copyBtn) {
+                const tr = copyBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const sql = rowData?.optimized_query || '';
+                
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
+                    } else {
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                    showNotification('Optimized SQL copied to clipboard.', 'success');
+                } catch (err) {
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
+                }
+                return;
+            }
+
+            // Copy Original SQL button
+            const copyOrigBtn = e.target.closest('.copy-orig-sql-btn');
+            if (copyOrigBtn) {
+                const tr = copyOrigBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const sql = rowData?.query || '';
+                
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(sql);
+                    } else {
+                        const ta = document.createElement('textarea');
+                        ta.value = sql;
+                        ta.style.cssText = 'position:fixed;left:-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                    showNotification('Original SQL copied to clipboard.', 'success');
+                } catch (err) {
+                    showNotification('Failed to copy — please select and copy manually.', 'error');
+                }
+                return;
+            }
+
+            // Open in Translator with Auto-Copy
+            const transBtn = e.target.closest('.open-orig-translator-btn, .open-opt-translator-btn');
+            if (transBtn) {
+                const tr = transBtn.closest('tr');
+                const rowIdx = $('#ai-results-table').DataTable().row(tr).index();
+                const rowData = currentAiResults[rowIdx];
+                const isOrig = transBtn.classList.contains('open-orig-translator-btn');
+                const sql = isOrig ? (rowData?.query || '') : (rowData?.optimized_query || '');
+
+                if (sql) {
+                    try {
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(sql);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = sql;
+                            ta.style.cssText = 'position:fixed;left:-9999px';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                        }
+                        showNotification('SQL copied to clipboard! Paste (Cmd+V / Ctrl+V) in the translator.', 'info');
+                    } catch (err) {
+                        console.warn('Auto-copy failed on translator button click', err);
+                    }
+                }
+                return;
+            }
+
+            // YAML accordion toggle
+            const yamlBtn = e.target.closest('.yaml-toggle-btn');
+            if (yamlBtn) {
+                const content = yamlBtn.nextElementSibling;
+                const chevron = yamlBtn.querySelector('.yaml-chevron');
+                if (content.style.display === 'none') {
+                    content.style.display = 'block';
+                    if (chevron) chevron.style.transform = 'rotate(90deg)';
+                } else {
+                    content.style.display = 'none';
+                    if (chevron) chevron.style.transform = 'rotate(0deg)';
+                }
+                return;
+            }
+
+            // Advice Show more/less toggle
+            const adviceBtn = e.target.closest('.advice-toggle');
+            if (adviceBtn) {
+                const wrapper = adviceBtn.parentElement;
+                const content = wrapper.querySelector('.advice-content');
+                const isCollapsed = !adviceBtn.classList.contains('is-expanded');
+                if (isCollapsed) {
+                    content.style.maxHeight = 'none';
+                    content.style.overflow = 'visible';
+                    adviceBtn.classList.add('is-expanded');
+                    adviceBtn.textContent = '▲ Show less';
+                } else {
+                    content.style.maxHeight = '150px';
+                    content.style.overflow = 'hidden';
+                    adviceBtn.classList.remove('is-expanded');
+                    adviceBtn.textContent = '▼ Show more';
+                }
+                return;
+            }
+        });
+    };
+
+    // DDL Learn More Drawer Toggle
+    const learnMoreToggle = document.getElementById('ddl-learn-more-toggle');
+    const learnMoreDrawer = document.getElementById('ddl-learn-more-drawer');
+    const learnMoreClose = document.getElementById('ddl-learn-more-close');
+
+    if (learnMoreToggle && learnMoreDrawer) {
+        learnMoreToggle.addEventListener('click', () => {
+            const isHidden = learnMoreDrawer.style.display === 'none';
+            learnMoreDrawer.style.display = isHidden ? 'block' : 'none';
+            learnMoreToggle.textContent = isHidden ? 'Hide details ↑' : 'Learn more →';
+        });
+    }
+    if (learnMoreClose && learnMoreDrawer) {
+        learnMoreClose.addEventListener('click', () => {
+            learnMoreDrawer.style.display = 'none';
+            if (learnMoreToggle) learnMoreToggle.textContent = 'Learn more →';
+        });
+    }
+
+    // AI Scope (What it checks / Out of scope) Toggle
+    const aiScopeToggle = document.getElementById('ai-scope-toggle');
+    const aiScopeContent = document.getElementById('ai-scope-content');
+    const aiScopeChevron = document.getElementById('ai-scope-chevron');
+    if (aiScopeToggle && aiScopeContent) {
+        aiScopeToggle.addEventListener('click', () => {
+            const isHidden = aiScopeContent.style.display === 'none';
+            aiScopeContent.style.display = isHidden ? 'block' : 'none';
+            if (aiScopeChevron) aiScopeChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
+        });
+    }
+
+    // AI Dual-Engine Pipeline Architecture Toggle
+    const aiPipelineToggle = document.getElementById('ai-pipeline-toggle');
+    const aiPipelineContent = document.getElementById('ai-pipeline-content');
+    const aiPipelineChevron = document.getElementById('ai-pipeline-chevron');
+    if (aiPipelineToggle && aiPipelineContent) {
+        aiPipelineToggle.addEventListener('click', () => {
+            const isHidden = aiPipelineContent.style.display === 'none';
+            aiPipelineContent.style.display = isHidden ? 'block' : 'none';
+            if (aiPipelineChevron) aiPipelineChevron.style.transform = isHidden ? 'rotate(90deg)' : '';
+        });
+    }
+
+    // Consent Modal Logic
+    const consentModal = document.getElementById('ddl-consent-modal');
+    const consentCheckbox = document.getElementById('ddl-consent-checkbox');
+    const consentProceedBtn = document.getElementById('ddl-consent-proceed');
+    const consentCancelBtn = document.getElementById('ddl-consent-cancel');
+
+    if (consentCheckbox && consentProceedBtn) {
+        consentCheckbox.addEventListener('change', () => {
+            consentProceedBtn.disabled = !consentCheckbox.checked;
+            consentProceedBtn.style.opacity = consentCheckbox.checked ? '1' : '0.5';
+            consentProceedBtn.style.cursor = consentCheckbox.checked ? 'pointer' : 'not-allowed';
+        });
+    }
+
+    if (elements.btnRunAiAnalysis) {
+        let activeAiAbortController = null;
+
+        // Refactored helper function for actual AI execution
+        const runActualAiAnalysis = async () => {
+            if (activeAiAbortController) {
+                activeAiAbortController.abort();
+            }
+            const abortController = new AbortController();
+            activeAiAbortController = abortController;
+
+            const tableEl = document.getElementById('ai-results-table');
+            const container = tableEl ? tableEl.closest('.results-panel') : null;
+            if (container) container.style.display = 'block';
+
+            if (tableEl && $.fn.DataTable.isDataTable('#ai-results-table')) {
+                $('#ai-results-table').DataTable().destroy();
+            }
+            
+            if (tableEl) {
+                UIState.renderTableSkeleton(tableEl, 5);
+            }
+
+            let progress = null;
+            
+            if (container) {
+                progress = UIState.startQueryProgress(container, {
+                    message: 'Running LLM-powered semantic query analysis...',
+                    onCancel: () => abortController.abort()
+                });
+            }
+
+            setLoading(elements.btnRunAiAnalysis, true);
+            clearModuleCache(['bq_ai_results'], ['#ai-results-table']);
+
+            const params = {
+                org_project_id: state.orgProject,
+                max_bytes_billed_gb: state.maxBytesBilledGb,
+                region: state.region,
+                focus_projects: state.focusProjects,
+                limit: parseInt(elements.aiLimit.value),
+                discovery_strategy: elements.aiDiscoveryStrategy ? elements.aiDiscoveryStrategy.value : 'composite',
+                lookback_days: parseInt(elements.aiLookback ? elements.aiLookback.value : '7'),
+                model: elements.aiModel ? elements.aiModel.value : 'gemini-3.7-flash'
+            };
+
+            try {
+                const response = await fetch('/api/ai/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildPayload('/api/ai/analyze', params)),
+                    signal: abortController.signal
+                });
+
+                if (activeAiAbortController !== abortController) {
+                    return;
+                }
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(detailToMessage(errorData.detail, 'Failed to run AI analysis'));
+                }
+
+                const data = await response.json();
+
+                if (activeAiAbortController !== abortController) {
+                    return;
+                }
+                
+                if (progress) progress.stop();
+
+                renderAiResults(data);
+                safeSetLocalStorage('bq_ai_results', JSON.stringify(data));
+
+                if (data.length === 0) {
+                    const strategy = params.discovery_strategy;
+                    const emptyMessages = {
+                        execution_frequency: 'All analyzed high-frequency queries passed clean with no anti-patterns found! Try increasing the lookback window or using a different strategy (e.g. Cumulative Cost or Composite ROI).',
+                        memory_spill: 'No queries with RAM spill anti-patterns detected in this lookback window. Your workloads are not spilling shuffle data to disk.',
+                        composite: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        cumulative_cost: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!',
+                        slot_ms: 'All analyzed queries in this lookback window passed clean with no anti-patterns detected!'
+                    };
+                    showNotification(emptyMessages[strategy] || 'No query anti-patterns found to audit.', 'info');
+                } else {
+                    showNotification('AI analysis completed.', 'success');
+                }
+            } catch (error) {
+                if (progress && progress.stop) progress.stop();
+                // Ignore abort errors triggered because a newer request superseded this one
+                if (activeAiAbortController !== abortController) {
+                    return;
+                }
+                if (error.name === 'AbortError' || abortController.signal.aborted) {
+                    showNotification('AI Doctor analysis cancelled.', 'warning');
+                    if (tableEl) {
+                        const tbody = tableEl.querySelector('tbody');
+                        if (tbody) tbody.replaceChildren();
+                    }
+                    const cached = localStorage.getItem('bq_ai_results');
+                    if (cached) {
+                        try { renderAiResults(JSON.parse(cached)); } catch (_) {}
+                    }
+                } else {
+                    console.error("AI Error:", error);
+                    showNotification(error.message, 'error');
+                }
+            } finally {
+                if (activeAiAbortController === abortController) {
+                    activeAiAbortController = null;
+                    setLoading(elements.btnRunAiAnalysis, false);
+                }
+            }
+        };
+
+        elements.btnRunAiAnalysis.addEventListener('click', async () => {
+            if (!state.orgProject) {
+                showNotification('Please configure the GCP Project in Global Settings.', 'error');
+                Router.navigate('settings');
+                return;
+            }
+
+            // Blocking security check for DDL schema egress consent
+            const hasConsent = localStorage.getItem('ddl_consent_accepted') === 'true';
+            if (!hasConsent) {
+                if (consentModal) {
+                    consentModal.style.display = 'flex';
+                    
+                    const handleProceed = () => {
+                        localStorage.setItem('ddl_consent_accepted', 'true');
+                        consentModal.style.display = 'none';
+                        runActualAiAnalysis();
+                        cleanup();
+                    };
+                    
+                    const handleCancel = () => {
+                        consentModal.style.display = 'none';
+                        showNotification('Analysis cancelled. Schema consent is required to run the Doctor.', 'warning');
+                        cleanup();
+                    };
+                    
+                    const cleanup = () => {
+                        consentProceedBtn.removeEventListener('click', handleProceed);
+                        consentCancelBtn.removeEventListener('click', handleCancel);
+                    };
+                    
+                    consentProceedBtn.addEventListener('click', handleProceed);
+                    consentCancelBtn.addEventListener('click', handleCancel);
+                }
+                return;
+            }
+
+            // Execute directly if consent has been accepted previously
+            runActualAiAnalysis();
+        });
+    }
+
+    if (elements.aiDiscoveryStrategy) {
+        const strategyDescs = {
+            composite: '⚖️ Ranks candidates by Cost + Run Frequency + Slot Time + RAM Spill.',
+            cumulative_cost: '💰 Ranks workloads by On-Demand cost or On-Demand Equivalent cost for BigQuery Editions (using bytes scanned when bytes billed is 0).',
+            execution_frequency: '🔄 Targets dashboard micro-offenders executing repeatedly (COUNT(*) > 1).',
+            memory_spill: '💾 Filters for queries spilling intermediate shuffle data from RAM to disk.',
+            slot_ms: '⏱️ Focuses on heavy compute queries consuming the highest aggregate CPU slot milliseconds.'
+        };
+        elements.aiDiscoveryStrategy.addEventListener('change', (e) => {
+            const descEl = document.getElementById('ai-strategy-desc');
+            if (descEl && strategyDescs[e.target.value]) {
+                descEl.textContent = strategyDescs[e.target.value];
+            }
+        });
+    }
+
+    function loadAllCachedData() {
+        const cachedAiResults = localStorage.getItem('bq_ai_results');
+        if (cachedAiResults) {
+            try {
+                renderAiResults(JSON.parse(cachedAiResults));
+            } catch (e) { console.warn("Failed to parse cached AI results", e); }
+        }
+
+        // Load cached top spenders data
+        const cachedSpenders = localStorage.getItem('bq_top_spenders');
+        if (cachedSpenders) {
+            try {
+                renderTopSpenders(JSON.parse(cachedSpenders));
+            } catch (e) { console.warn("Failed to parse cached top spenders", e); }
+        }
+
+        // Load cached storage data
+        const cachedStorage = localStorage.getItem('bq_storage_results');
+        if (cachedStorage) {
+            try {
+                const storageData = JSON.parse(cachedStorage);
+                state.storageData = storageData.datasets;
+                renderStorageResults(storageData);
+                renderOrgStatus(storageData.org_status);
+            } catch (e) { console.warn("Failed to parse cached storage results", e); }
+        }
+
+        // Load cached Active Assist recommendations
+        const cachedActiveAssist = localStorage.getItem('bq_active_assist_results');
+        if (cachedActiveAssist) {
+            try {
+                const activeAssistData = JSON.parse(cachedActiveAssist);
+                state.activeAssistData = activeAssistData;
+                renderActiveAssistResults(activeAssistData);
+            } catch (e) { console.warn("Failed to parse cached Active Assist results", e); }
+        }
+
+        // Load cached Static Schema Audit results
+        const cachedStaticAudit = localStorage.getItem('bq_static_audit_results');
+        if (cachedStaticAudit) {
+            try {
+                const staticAuditData = JSON.parse(cachedStaticAudit);
+                state.staticAuditData = staticAuditData;
+                renderStaticAuditResults(staticAuditData);
+            } catch (e) { console.warn("Failed to parse cached Static Schema Audit results", e); }
+        }
+
+        // Load cached job data
+        const cachedJob = localStorage.getItem('bq_job_results');
+        if (cachedJob) {
+            try {
+                renderJobResults(JSON.parse(cachedJob));
+            } catch (e) { console.warn("Failed to parse cached job results", e); }
+        }
+
+        // Load cached slots data (recommendation + current reservations tables)
+        const cachedSlots = localStorage.getItem('bq_slots_results');
+        if (cachedSlots) {
+            try {
+                renderSlotsResults(JSON.parse(cachedSlots), parseInt(elements.slPercentile?.value || '90') || 90);
+            } catch (e) { console.warn("Failed to parse cached slots results", e); }
+        }
+        
+        const cachedTiered = localStorage.getItem('bq_slots_tiered');
+        if (cachedTiered) {
+            try { renderTieredRecommendations(JSON.parse(cachedTiered)); } catch (e) { console.warn("Failed to parse cached tiered", e); }
+        }
+
+        // Load cached simulation results (Edition Matrix Simulation)
+        const cachedSimulation = localStorage.getItem('bq_slots_simulation_results');
+        if (cachedSimulation) {
+            try {
+                const data = JSON.parse(cachedSimulation);
+                renderSimulationResults(data);
+                const panel = document.getElementById('simulation-results-panel');
+                if (panel) panel.style.display = 'block';
+            } catch (e) {
+                console.warn("Failed to parse cached simulation results", e);
+            }
+        }
+
+        // Load cached "Actual Provisioning" & "Slot usage by capacity" (utilization + provisioning timeline)
+        const cachedUtil = localStorage.getItem('bq_slots_utilization');
+        const cachedActualProv = localStorage.getItem('bq_slots_actual_provisioning');
+
+        let utilData = null;
+        let actualData = null;
+
+        if (cachedUtil) {
+            try {
+                utilData = JSON.parse(cachedUtil);
+            } catch (e) {
+                console.warn("Failed to parse cached slots utilization chart", e);
+            }
+        }
+
+        if (cachedActualProv) {
+            try {
+                actualData = JSON.parse(cachedActualProv);
+                // Standalone timeline fallback if not embedded or to support legacy cache keys
+                if (actualData && !actualData.timeline) {
+                    const cachedProv = localStorage.getItem('bq_slots_provisioning_timeline');
+                    if (cachedProv) {
+                        try {
+                            actualData.timeline = JSON.parse(cachedProv);
+                        } catch (_) {}
+                    }
+                }
+            } catch (e) {
+                console.warn("Failed to parse cached actual provisioning", e);
+            }
+        }
+
+        if (utilData || actualData) {
+            try {
+                renderSlotsUtilizationAndProvisioning(utilData, actualData);
+            } catch (e) {
+                console.error("Failed to render cached slots timeline / provisioning data", e);
+            }
+        }
+
+        // Load cached profiler data
+        const cachedSummary = localStorage.getItem('bq_profiler_summary');
+        const cachedTimeline = localStorage.getItem('bq_profiler_timeline');
+        const cachedQueries = localStorage.getItem('bq_profiler_queries');
+
+        if (cachedSummary) {
+            try {
+                renderProfilerResults(JSON.parse(cachedSummary));
+            } catch (e) { console.warn("Failed to parse cached profiler summary", e); }
+        }
+        if (cachedTimeline) {
+            try {
+                renderHeatmap(JSON.parse(cachedTimeline));
+            } catch (e) { console.warn("Failed to parse cached profiler timeline", e); }
+        }
+        if (cachedQueries) {
+            try {
+                renderProfilerQueries(JSON.parse(cachedQueries));
+            } catch (e) { console.warn("Failed to parse cached profiler queries", e); }
+        }
+
+        // Anti-patterns, Cost Attribution, Governance, MV, etc.
+        const cachedMv = localStorage.getItem('bq_mv_results');
+        if (cachedMv) {
+            try { renderMvResults(JSON.parse(cachedMv)); } catch (e) { console.warn("Failed to parse cached MV results", e); }
+        }
+        const cachedAnti = localStorage.getItem('bq_antipatterns_results');
+        if (cachedAnti) {
+            try { renderAntiPatternsResults(JSON.parse(cachedAnti)); } catch (e) { console.warn("Failed to parse cached anti-patterns results", e); }
+        }
+        const cachedSkew = localStorage.getItem('bq_skew_results');
+        if (cachedSkew) {
+            try { renderSkewResults(JSON.parse(cachedSkew)); } catch (e) { console.warn("Failed to parse cached skew results", e); }
+        }
+        const cachedBatch = localStorage.getItem('bq_batch_results');
+        if (cachedBatch) {
+            try { renderBatchCandidatesResults(JSON.parse(cachedBatch)); } catch (e) { console.warn("Failed to parse cached batch results", e); }
+        }
+        const cachedCostAttr = localStorage.getItem('bq_cost_attribution_results');
+        if (cachedCostAttr) {
+            try {
+                const parsedData = JSON.parse(cachedCostAttr);
+                renderCostAttributionResults(parsedData.attributions || parsedData);
+            } catch (e) { console.warn("Failed to parse cached cost attribution results", e); }
+        }
+        const cachedLinter = localStorage.getItem('bq_linter_results');
+        if (cachedLinter) {
+            try { renderLinterResults(JSON.parse(cachedLinter)); } catch (e) { console.warn("Failed to parse cached linter results", e); }
+        }
+        const cachedGov = localStorage.getItem('bq_gov_results');
+        if (cachedGov) {
+            try {
+                const govData = JSON.parse(cachedGov);
+                renderExpirationResults(govData.expiration_issues || []);
+                renderFilterResults(govData.filter_issues || []);
+            } catch (e) { console.warn("Failed to parse cached governance results", e); }
+        }
+        const cachedPerf = localStorage.getItem('bq_performance_results');
+        if (cachedPerf) {
+            try { renderPerformanceResults(JSON.parse(cachedPerf)); } catch (e) { console.warn("Failed to parse cached performance results", e); }
+        }
+        const cachedBi = localStorage.getItem('bq_bi_results');
+        if (cachedBi) {
+            try { renderBiResults(JSON.parse(cachedBi)); } catch (e) { console.warn("Failed to parse cached BI results", e); }
+        }
+        const cachedHbo = localStorage.getItem('bq_hbo_results');
+        if (cachedHbo) {
+            try { renderHboResults(JSON.parse(cachedHbo)); } catch (e) { console.warn("Failed to parse cached HBO results", e); }
+        }
+        const cachedHygiene = localStorage.getItem('bq_hygiene_results');
+        if (cachedHygiene) {
+            try { renderHygieneResults(JSON.parse(cachedHygiene)); } catch (e) { console.warn("Failed to parse cached hygiene results", e); }
+        }
+        const cachedTT = localStorage.getItem('bq_time_travel_results');
+        if (cachedTT) {
+            try { renderTimeTravelReduction(JSON.parse(cachedTT)); } catch (e) { console.warn("Failed to parse cached TT results", e); }
+        }
+        const cachedShard = localStorage.getItem('bq_shard_results');
+        if (cachedShard) {
+            try { renderShardConsolidation(JSON.parse(cachedShard)); } catch (e) { console.warn("Failed to parse cached shard results", e); }
+        }
+    }
+    window.loadAllCachedData = loadAllCachedData;
+
+    // Load all cached data on page startup
+    loadAllCachedData();
+
+    // Snapshot export/import wiring
+    const exportBtn = document.getElementById('btn-export-snapshot');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => Snapshot.exportSnapshot());
+    }
+    const importBtn = document.getElementById('btn-import-snapshot');
+    const importInput = document.getElementById('import-snapshot-input');
+    if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (file) Snapshot.importSnapshot(file);
+            e.target.value = ''; // reset so re-selecting the same file fires change
+        });
+    }
+    // Report button wiring
+    const reportGenBtn = document.getElementById('btn-report-generate');
+    if (reportGenBtn) reportGenBtn.addEventListener('click', () => ReportModule.onClick());
+    const reportGenEmptyBtn = document.getElementById('btn-report-generate-empty');
+    if (reportGenEmptyBtn) reportGenEmptyBtn.addEventListener('click', () => ReportModule.onClick());
+
+    // Theme Toggle (Light / Dark mode)
+    function applyTheme(theme) {
+        const isLight = theme === 'light';
+        document.documentElement.classList.toggle('light-theme', isLight);
+        document.documentElement.classList.toggle('dark-theme', !isLight);
+        // Deliberately NOT mirrored onto <body>. The token blocks are keyed on
+        // `.dark-theme` / `.light-theme`, so a class on both elements makes
+        // <body> re-declare the whole palette at its own level -- shadowing any
+        // <html>-scoped override for every descendant. theme-boot.js sets the
+        // class on <html> only; keep the single owner.
+        try {
+            localStorage.setItem('bq_theme', theme);
+        } catch (e) {}
+
+        const btn = document.getElementById('theme-toggle');
+        if (btn) {
+            btn.setAttribute('aria-pressed', isLight ? 'true' : 'false');
+            btn.title = isLight ? 'Switch to dark theme' : 'Switch to light theme';
+        }
+
+        if (window.Chart) {
+            syncChartDefaults();
+            if (typeof state !== 'undefined') {
+                [state.jobsScatterChart, state.actualProvisioningChart, state.slotsChart]
+                    .filter(Boolean)
+                    .forEach(c => {
+                        try {
+                            // Defaults alone do not reach a chart that declares
+                            // its own label colours; rewrite those in place.
+                            retintChart(c);
+                            c.update('none');
+                        } catch (_) {}
+                    });
+            }
+        }
+    }
+
+    function initThemeToggle() {
+        const btn = document.getElementById('theme-toggle');
+        if (!btn) return;
+        const isLight = document.documentElement.classList.contains('light-theme');
+        btn.setAttribute('aria-pressed', isLight ? 'true' : 'false');
+        btn.title = isLight ? 'Switch to dark theme' : 'Switch to light theme';
+        btn.addEventListener('click', () => {
+            const currentlyLight = document.documentElement.classList.contains('light-theme');
+            applyTheme(currentlyLight ? 'dark' : 'light');
+        });
+    }
+
+    // App Start
+    // Chart.js defaults must be themed before the first chart is built.
+    // applyTheme() cannot do this job: theme-boot.js may have derived the
+    // theme from the OS without persisting it, and applyTheme() writes
+    // localStorage — calling it here would silently convert "follow the OS"
+    // into an explicit preference.
+    syncChartDefaults();
+    initThemeToggle();
+    initUI();
+    ReportModule.init().catch(err => console.warn('[ReportModule] init failed:', err));
+});
+
+/* ============================================================
+   ReportModule — One-Click Executive FinOps Report Generator
+   ============================================================
+   Fetches the canonical module registry from the server, checks
+   localStorage cache, shows a pre-flight popup if data is missing,
+   runs a sequential sweep, then opens the rendered report in a
+   new tab. Follows the Snapshot IIFE pattern.
+   ============================================================ */
+const ReportModule = (() => {
+  let MODULES = [];       // populated from GET /api/report/manifest
+  let REPORT_KEYS = [];   // derived from MODULES + settings keys
+  const SETTINGS_KEYS = ['bq_org_project', 'bq_region', 'bq_admin_project', 'bq_focus_projects'];
+  let _sweepAbort = null; // AbortController for cancelling a sweep
+  let _sweepRunning = false;
+  let _lastReportId = null; // Track the last generated report for open-in-tab
+
+  const TIPS = [
+    'Editions pricing can save 30–70% over on-demand for steady workloads.',
+    'Partitioned tables reduce bytes scanned — lower cost, faster queries.',
+    'SELECT * scans all columns. Explicit lists can cut costs dramatically.',
+    'Batch-priority jobs run at no extra slot cost during off-peak hours.',
+    'Materialized views can serve repeated aggregations at zero slot cost.',
+    'Custom quotas prevent a single runaway query from blowing your budget.',
+    'Physical storage billing can halve costs for heavily compressed data.',
+    'DML batching reduces the number of metadata operations significantly.',
+  ];
+
+  async function init() {
+    try {
+      const res = await fetch('/api/report/manifest');
+      if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+      MODULES = await res.json();
+      REPORT_KEYS = MODULES
+        .flatMap(m => m.keys)
+        .concat(SETTINGS_KEYS);
+    } catch (err) {
+      console.warn('[ReportModule] Could not load manifest:', err);
+    }
+  }
+
+  function checkModuleCache() {
+    const cached = MODULES.filter(m => m.keys.every(k => localStorage.getItem(k) !== null));
+    const missing = MODULES.filter(m => !m.keys.every(k => localStorage.getItem(k) !== null));
+    return { cached, missing };
+  }
+
+  function collectSnapshot() {
+    const out = {};
+    const allowed = new Set(REPORT_KEYS);
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && allowed.has(key)) {
+        out[key] = localStorage.getItem(key);
+      }
+    }
+    // Include sweep metadata if present
+    const meta = localStorage.getItem('bq_report_meta');
+    if (meta) out.bq_report_meta = meta;
+    return out;
+  }
+
+  // ── Pre-flight Popup ──────────────────────────────────────────────
+
+  async function onClick() {
+    if (_sweepRunning) return;
+    try {
+      await init();
+    } catch (_) {}
+    if (MODULES.length === 0) {
+      showNotification('Report module registry not loaded. Please refresh the page.', 'error');
+      return;
+    }
+    const { cached, missing } = checkModuleCache();
+    showPreFlight(cached, missing);
+  }
+
+  function showPreFlight(cached, missing) {
+    // Remove existing overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const allCached = missing.length === 0;
+    const card = document.createElement('div');
+    card.className = 'report-preflight';
+
+    let statusHtml = '';
+    if (allCached) {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> All ${cached.length} modules have cached data.</div>
+        </div>`;
+    } else {
+      statusHtml = `
+        <div class="report-preflight-status">
+          <div class="report-preflight-item"><span class="status-icon">✅</span> ${cached.length} module${cached.length !== 1 ? 's' : ''} cached</div>
+          <div class="report-preflight-item"><span class="status-icon">⚠️</span> ${missing.length} module${missing.length !== 1 ? 's' : ''} need to run: <em>${missing.slice(0, 5).map(m => m.label).join(', ')}${missing.length > 5 ? '…' : ''}</em></div>
+        </div>`;
+    }
+
+    // AI Doctor opt-in checkbox (only shown if AI module is in missing list)
+    const aiMissing = missing.some(m => m.keys.includes('bq_ai_results'));
+    const aiOptIn = aiMissing ? `
+      <div class="report-ai-opt-in">
+        <input type="checkbox" id="report-ai-optin">
+        <label for="report-ai-optin">Include AI Doctor (slow — cross-project scan, 15–60s)</label>
+      </div>` : '';
+
+    card.innerHTML = `
+      <h3>⚡ Generate Assessment Report</h3>
+      ${statusHtml}
+      ${aiOptIn}
+      <div class="report-preflight-actions">
+        <button class="report-btn-secondary" id="report-cancel-btn">Cancel</button>
+        ${!allCached ? `<button class="report-btn-secondary" id="report-skip-btn" title="Generate report with available data only">Skip Missing</button>` : ''}
+        <button class="report-btn-primary" id="report-go-btn">${allCached ? 'Generate Report' : 'Run & Generate'}</button>
+      </div>`;
+
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    // Wire buttons
+    document.getElementById('report-cancel-btn').addEventListener('click', () => dismissOverlay());
+    const skipBtn = document.getElementById('report-skip-btn');
+    if (skipBtn) skipBtn.addEventListener('click', () => { dismissOverlay(); generateNow(); });
+    document.getElementById('report-go-btn').addEventListener('click', () => {
+      dismissOverlay();
+      if (allCached) {
+        generateNow();
+      } else {
+        const excludeAi = !aiMissing || !document.getElementById('report-ai-optin')?.checked;
+        const toRun = excludeAi ? missing.filter(m => !m.keys.includes('bq_ai_results')) : missing;
+        runSweep(toRun);
+      }
+    });
+
+    // Close on backdrop click
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismissOverlay(); });
+  }
+
+  function dismissOverlay() {
+    const overlay = document.getElementById('report-overlay');
+    if (overlay) {
+      overlay.classList.remove('active');
+      setTimeout(() => overlay.remove(), 300);
+    }
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+  }
+
+  // ── Sequential Sweep ──────────────────────────────────────────────
+
+  async function runSweep(modules) {
+    if (_sweepRunning) return;
+    _sweepRunning = true;
+    _sweepAbort = new AbortController();
+
+    const btn = document.getElementById('btn-report-generate');
+    if (btn) btn.disabled = true;
+
+    // Build sweep overlay
+    const existing = document.getElementById('report-overlay');
+    if (existing) existing.remove();
+    const backdrop = document.createElement('div');
+    backdrop.id = 'report-overlay';
+    backdrop.className = 'report-overlay-backdrop';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'report-sweep-overlay';
+
+    const stepsHtml = modules.map((m, i) =>
+      `<div class="report-step" id="report-step-${i}">
+        <span class="report-step-icon" id="report-step-icon-${i}">⏳</span>
+        <span>${m.label}</span>
+        <span class="report-step-timing" id="report-step-time-${i}"></span>
+      </div>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div class="report-sweep-logo">⚡</div>
+      <div class="report-sweep-title">Running Analysis Sweep</div>
+      <div class="report-sweep-subtitle">Collecting data for your assessment report…</div>
+      <div class="report-progress-container">
+        <div class="report-progress-bar"><div class="report-progress-fill" id="report-progress-fill"></div></div>
+        <div class="report-progress-text"><span id="report-progress-count">0 / ${modules.length}</span><span id="report-elapsed">0s</span></div>
+      </div>
+      <div class="report-stepper">${stepsHtml}</div>
+      <div class="report-tips"><span id="report-tip-text">💡 ${TIPS[0]}</span></div>
+      <div class="report-sweep-actions" id="report-sweep-actions">
+        <button class="report-btn-secondary" id="report-sweep-cancel" title="Stops new queries. Queries already running in BigQuery will continue.">Cancel</button>
+      </div>`;
+
+    backdrop.appendChild(overlay);
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => backdrop.classList.add('active'));
+
+    document.getElementById('report-sweep-cancel').addEventListener('click', () => {
+      if (_sweepAbort) _sweepAbort.abort();
+    });
+
+    // Tips carousel
+    let tipIdx = 0;
+    const tipInterval = setInterval(() => {
+      tipIdx = (tipIdx + 1) % TIPS.length;
+      const tipEl = document.getElementById('report-tip-text');
+      if (tipEl) tipEl.textContent = '\ud83d\udca1 ' + TIPS[tipIdx];
+    }, 8000);
+
+    // Elapsed timer
+    const startTime = Date.now();
+    const elapsedInterval = setInterval(() => {
+      const el = document.getElementById('report-elapsed');
+      if (el) el.textContent = formatElapsed(Date.now() - startTime);
+    }, 1000);
+
+    // Build request payload from state
+    const payload = buildSweepPayload();
+
+    // Sequential execution
+    const meta = {};
+    let completed = 0;
+    let anyFailed = false;
+
+    for (let i = 0; i < modules.length; i++) {
+      const mod = modules[i];
+      const stepEl = document.getElementById(`report-step-${i}`);
+      const iconEl = document.getElementById(`report-step-icon-${i}`);
+      const timeEl = document.getElementById(`report-step-time-${i}`);
+
+      if (_sweepAbort.signal.aborted) break;
+
+      if (stepEl) stepEl.classList.add('active');
+      if (iconEl) iconEl.textContent = '🔄';
+
+      const t0 = Date.now();
+      try {
+        const res = await fetch(mod.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildModulePayload(mod, payload)),
+          signal: _sweepAbort.signal,
+        });
+
+        const dt = Date.now() - t0;
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+
+        // Store result in localStorage (same pattern as existing modules)
+        for (const key of mod.keys) {
+          const val = extractKeyData(data, key, mod);
+          if (val !== undefined) {
+            safeSetLocalStorage(key, typeof val === 'string' ? val : JSON.stringify(val));
+          }
+        }
+
+        // Verify write (write failure = ⚠️)
+        const allWritten = mod.keys.every(k => localStorage.getItem(k) !== null);
+        if (iconEl) iconEl.textContent = allWritten ? '✅' : '⚠️';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add(allWritten ? 'done' : 'error'); }
+        if (timeEl) timeEl.textContent = formatMs(dt);
+
+        meta[mod.keys[0]] = { ran_at: new Date().toISOString(), lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'), duration_ms: dt };
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          if (iconEl) iconEl.textContent = '⏹️';
+          if (stepEl) { stepEl.classList.remove('active'); }
+          break;
+        }
+        anyFailed = true;
+        if (iconEl) iconEl.textContent = '❌';
+        if (stepEl) { stepEl.classList.remove('active'); stepEl.classList.add('error'); }
+        if (timeEl) timeEl.textContent = 'failed';
+        console.warn(`[ReportSweep] ${mod.label} failed:`, err);
+      }
+
+      completed++;
+      const fill = document.getElementById('report-progress-fill');
+      if (fill) fill.style.width = `${(completed / modules.length) * 100}%`;
+      const countEl = document.getElementById('report-progress-count');
+      if (countEl) countEl.textContent = `${completed} / ${modules.length}`;
+    }
+
+    clearInterval(tipInterval);
+    clearInterval(elapsedInterval);
+
+    // Store sweep metadata
+    safeSetLocalStorage('bq_report_meta', JSON.stringify(meta));
+
+    // Automatically populate all view tables from newly cached data
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (_) {}
+    }
+
+    // Show "Ready" state with View Report button
+    const actionsEl = document.getElementById('report-sweep-actions');
+    if (actionsEl) {
+      const aborted = _sweepAbort.signal.aborted;
+      const readyText = aborted ? '⏹️ Sweep Cancelled' : (anyFailed ? '⚠️ Sweep Complete (with errors)' : '✅ Ready');
+      actionsEl.innerHTML = `
+        <div class="report-sweep-ready">
+          <div class="ready-text">${readyText}</div>
+          <button class="report-btn-primary" id="report-view-btn">View Report</button>
+          <button class="report-btn-secondary" id="report-close-btn" style="margin-left: 0.5rem">Close</button>
+        </div>`;
+      document.getElementById('report-view-btn').addEventListener('click', () => {
+        dismissOverlay();
+        generateNow();
+      });
+      document.getElementById('report-close-btn').addEventListener('click', () => dismissOverlay());
+    }
+
+    _sweepRunning = false;
+    if (btn) btn.disabled = false;
+  }
+
+  // ── Report Generation ─────────────────────────────────────────────
+
+  async function generateNow() {
+    // Navigate to the Full Report view
+    if (typeof Router !== 'undefined') {
+      Router.navigate('full-report');
+    }
+
+    // Open tab SYNCHRONOUSLY within user gesture — before any await
+    const win = window.open(window.IS_SIMULATOR ? './sample_report.html' : '/report/pending', '_blank');
+    if (!win) {
+      showNotification('Popup blocked — please allow popups for this site.', 'error');
+      return;
+    }
+
+    // Update status UI
+    const emptyState = document.getElementById('report-empty-state');
+    const historyEl = document.getElementById('report-history');
+    if (emptyState) emptyState.style.display = 'none';
+    if (historyEl) historyEl.style.display = 'block';
+
+    try {
+      const snapshot = collectSnapshot();
+      const lookbackDays = parseInt(localStorage.getItem('bq_lookback_days') || '30');
+      const res = await fetch('/api/report/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshot, lookback_days: lookbackDays }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Server error' }));
+        throw new Error(detailToMessage(err.detail, 'Failed to generate report'));
+      }
+      const { report_id } = await res.json();
+      _lastReportId = report_id;
+      if (window.IS_SIMULATOR) {
+        win.location.replace('./sample_report.html');
+      } else {
+        win.location.replace('/report/view/' + encodeURIComponent(report_id));
+      }
+
+      // Append to history list
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const projName = localStorage.getItem('bq_org_project') || 'unknown-project';
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row';
+        const viewHref = window.IS_SIMULATOR ? './sample_report.html' : `/report/view/${encodeURIComponent(report_id)}`;
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-file-circle-check" style="color: #34d399; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">${escText(projName)}</div>
+              <div class="report-history-meta">${escText(ts)}</div>
+            </div>
+          </div>
+          <a href="${viewHref}" target="_blank" rel="noopener"
+             class="btn-secondary" style="text-decoration:none;font-size:0.85rem;padding:0.4rem 1rem;">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i> View Report
+          </a>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generated — check the new tab.', 'success');
+    } catch (err) {
+      if (!window.IS_SIMULATOR) {
+        win.location.replace('/report/error?reason=' + encodeURIComponent(err.message));
+      }
+      const listEl = document.getElementById('report-history-list');
+      if (listEl) {
+        const now = new Date();
+        const ts = now.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const row = document.createElement('div');
+        row.className = 'glass-card report-history-row report-history-failed';
+        row.innerHTML = `<div class="report-history-info">
+            <i class="fa-solid fa-circle-xmark" style="color: #f87171; font-size: 1.1rem;"></i>
+            <div>
+              <div class="report-history-title">Generation Failed</div>
+              <div class="report-history-meta">${escText(ts)} — ${escText(err.message)}</div>
+            </div>
+          </div>`;
+        listEl.prepend(row);
+      }
+      showNotification('Report generation failed: ' + err.message, 'error');
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────
+
+  function buildSweepPayload() {
+    return {
+      org_project_id: localStorage.getItem('bq_org_project') || '',
+      admin_project_id: localStorage.getItem('bq_admin_project') || '',
+      region: localStorage.getItem('bq_region') || 'US',
+      lookback_days: parseInt(localStorage.getItem('bq_lookback_days') || '30'),
+      max_bytes_billed_gb: parseInt(localStorage.getItem('bq_max_bytes_billed_gb') || '0'),
+      focus_projects: safeParseJSON(localStorage.getItem('bq_focus_projects') || '[]', []),
+    };
+  }
+
+  function buildModulePayload(mod, basePayload) {
+    const p = buildPayload(mod.endpoint, basePayload);
+    if (mod.endpoint === '/api/cost-attribution/calculate') {
+      const lookback = p.lookback_days || 30;
+      const endD = new Date();
+      const startD = new Date();
+      startD.setDate(endD.getDate() - lookback);
+      const fmt = d => d.toISOString().slice(0, 10);
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id || p.org_project_id,
+        region: p.region,
+        billing_month_start: localStorage.getItem('cb_month_start') || fmt(startD),
+        billing_month_end: localStorage.getItem('cb_month_end') || fmt(endD),
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+      };
+    }
+    if (mod.endpoint === '/api/slots/simulate') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+      };
+    }
+    if (mod.endpoint === '/api/slots/tiered_recommendations') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+      };
+    }
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      return {
+        org_project_id: p.org_project_id,
+        admin_project_id: p.admin_project_id,
+        region: p.region,
+        lookback_days: p.lookback_days || 30,
+        edition_slot_hr_rate: 0.06,
+        cooldown_window: 60,
+        max_bytes_billed_gb: p.max_bytes_billed_gb,
+        focus_projects: p.focus_projects,
+      };
+    }
+    return p;
+  }
+
+  function extractKeyData(responseData, key, mod) {
+    if (key in responseData) return responseData[key];
+    if (mod.endpoint === '/api/slots/fluid_simulation') {
+      if (key === 'bq_fluid_simulation_data' || key === 'bq_fluid_estimate_data') return responseData;
+    }
+    if (mod.endpoint === '/api/hbo/analyze') {
+      if (key === 'bq_hbo_results') return responseData;
+    }
+    if (mod.keys.length === 1) return responseData;
+    return responseData;
+  }
+
+  function formatElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  function formatMs(ms) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function escText(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  return { init, onClick };
+})();
+
+/**
+ * Initialize a DataTable only after verifying the table's DOM is internally
+ * consistent. Prevents the `RangeError: Maximum call stack size exceeded`
+ * recursion by failing loudly on a thead/tbody column mismatch.
+ *
+ * @param {string} selector  jQuery selector, e.g. '#fluid-estimate-table'
+ * @param {object} options   DataTables options
+ * @returns {DataTable|null} the DataTable instance, or null if skipped
+ *
+ * Known limitations:
+ * - Throws UNCAUGHT (no call site wraps it), so a mismatch aborts remaining render work mid-update.
+ * - Validates only at init, so rows added later via the DataTables API are unchecked.
+ */
+function safeInitDataTable(selector, options) {
+  const $table = $(selector);
+  if ($table.length === 0) {
+    console.warn(`[safeInitDataTable] ${selector} not found in DOM; skipping init.`);
+    return null;
+  }
+  const tableEl = $table[0];
+
+  // 1) Always tear down a prior instance cleanly without wiping DOM rows.
+  //    Callers re-render the <tbody> themselves and then call back in here, so
+  //    a second init would otherwise raise "Cannot reinitialise DataTable"
+  //    (datatables.net/tn/3). destroy() restores the row set DataTables
+  //    captured at init time, which would clobber the rows just rendered —
+  //    snapshot the live markup, destroy, then put the fresh rows back.
+  if ($.fn.DataTable && $.fn.DataTable.isDataTable(tableEl)) {
+    const liveBody = tableEl.tBodies[0];
+    const freshRows = liveBody ? liveBody.innerHTML : null;
+    $table.DataTable().destroy();
+    const restoredBody = tableEl.tBodies[0];
+    if (freshRows !== null && restoredBody) {
+      restoredBody.innerHTML = freshRows;
+    }
+  }
+
+  // 2) Determine the authoritative column count from the LAST header row
+  //    (handles multi-row / grouped headers correctly).
+  const headerRows = tableEl.tHead ? tableEl.tHead.rows : [];
+  if (headerRows.length === 0) {
+    console.error(`[safeInitDataTable] ${selector} has no <thead> rows.`);
+    return null;
+  }
+  const lastHeaderRow = headerRows[headerRows.length - 1];
+  const expectedCols = Array.from(lastHeaderRow.cells)
+    .reduce((sum, th) => sum + (th.colSpan || 1), 0);
+
+  // 3) Validate every body row. Skip "message" rows that use a single
+  //    full-width colspan cell (the canonical empty/skeleton pattern).
+  const body = tableEl.tBodies[0];
+  if (body) {
+    for (const [idx, row] of Array.from(body.rows).entries()) {
+      const cells = Array.from(row.cells);
+
+      // Canonical message row: exactly one cell spanning all columns. Allowed.
+      const isMessageRow =
+        cells.length === 1 && (cells[0].colSpan || 1) === expectedCols;
+      if (isMessageRow) continue;
+
+      const actualCols = cells.reduce((sum, td) => sum + (td.colSpan || 1), 0);
+      if (actualCols !== expectedCols) {
+        console.error(
+          `[safeInitDataTable] ${selector} column mismatch at body row ${idx}: ` +
+          `header expects ${expectedCols}, row has ${actualCols}. ` +
+          `Fix the row template or use a single colspan="${expectedCols}" cell ` +
+          `for empty/skeleton rows. (Aborting before DataTables recursion.)`
+        );
+        return null;
+      }
+    }
+  }
+
+  // 4) Safe to initialize. Force autoWidth:false unless explicitly overridden.
+  return $table.DataTable(Object.assign({ autoWidth: false }, options));
+}
+
+/* ============================================================
+   UI STATE HELPERS
+   Single module that handles: skeleton render, long-query progress,
+   empty/success/error rendering. All your fetch calls flow through this.
+   ============================================================ */
+
+const UIState = (() => {
+
+  // -- Skeleton renderers ---------------------------------------------------
+
+  /** Render N skeleton rows into a tbody, matching the column count. */
+  function renderTableSkeleton(tableEl, rowCount = 6) {
+    const headerRow = tableEl.tHead ? tableEl.tHead.rows[tableEl.tHead.rows.length - 1] : null;
+    const colCount = headerRow ? Array.from(headerRow.cells).reduce((sum, th) => sum + (th.colSpan || 1), 0) : 5;
+    const tbody = tableEl.querySelector('tbody');
+    if (!tbody) return;
+
+    const rows = Array.from({ length: rowCount }, () => `
+      <tr class="skeleton-table-row" aria-hidden="true">
+        <td colspan="${colCount}">
+          <span class="skeleton skeleton--text" style="width: 100%;"></span>
+        </td>
+      </tr>
+    `).join('');
+
+    tbody.innerHTML = rows;
+  }
+
+  /** Render skeleton KPI cards into a container. */
+  function renderKpiSkeleton(containerEl, count = 4) {
+    const card = `
+      <div class="skeleton-kpi" aria-hidden="true">
+        <span class="skeleton skeleton--text-sm"></span>
+        <span class="skeleton skeleton--number"></span>
+      </div>`;
+    containerEl.innerHTML = Array(count).fill(card).join('');
+  }
+
+  /** Render skeleton tier cards (3 cards matching your tier-card layout). */
+  function renderTierCardsSkeleton(containerEl) {
+    const card = `
+      <div class="skeleton-tier-card" aria-hidden="true">
+        <span class="skeleton skeleton--badge"></span>
+        <span class="skeleton skeleton--heading" style="margin-top: 0.75rem;"></span>
+        <span class="skeleton skeleton--text-sm"></span>
+        <span class="skeleton skeleton--number" style="margin: 1rem 0;"></span>
+        <span class="skeleton skeleton--button"></span>
+      </div>`;
+    containerEl.innerHTML = `
+      <div class="tier-cards-container">
+        ${card}${card}${card}
+      </div>`;
+  }
+
+  /** Render a chart-shaped skeleton block. */
+  function renderChartSkeleton(containerEl) {
+    containerEl.innerHTML =
+      '<span class="skeleton skeleton--chart" aria-hidden="true"></span>';
+  }
+
+  // -- Long-running query progress ------------------------------------------
+
+  /**
+   * Show a progress banner above a container with elapsed time.
+   * Returns { stop, abort } — call stop() on success, abort() to cancel.
+   *
+   * Usage:
+   *   const progress = UIState.startQueryProgress(container, {
+   *     message: 'Scanning slot usage across organization...',
+   *     onCancel: () => abortController.abort()
+   *   });
+   *   ...
+   *   progress.stop();
+   */
+  function startQueryProgress(containerEl, { message, onCancel } = {}) {
+    const banner = document.createElement('div');
+    banner.className = 'query-progress';
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    banner.innerHTML = `
+      <span class="query-progress__spinner" aria-hidden="true"></span>
+      <span class="query-progress__message">
+        ${escapeHtml(message || 'Running query...')}
+        <span class="query-progress__elapsed">0s</span>
+      </span>
+      ${onCancel ? '<button type="button" class="query-progress__cancel">Cancel</button>' : ''}
+    `;
+    containerEl.prepend(banner);
+
+    const elapsedEl = banner.querySelector('.query-progress__elapsed');
+    const cancelBtn = banner.querySelector('.query-progress__cancel');
+    const startedAt = Date.now();
+
+    const tick = setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      elapsedEl.textContent = `${seconds}s`;
+
+      // Escalate styling at 20s to signal "this is unusually long"
+      if (seconds >= 20) banner.classList.add('query-progress--slow');
+
+      // Update message at thresholds so the user knows we're still alive
+      if (seconds >= 30 && !banner.dataset.slowMsgShown) {
+        banner.dataset.slowMsgShown = '1';
+        banner.querySelector('.query-progress__message').firstChild.textContent =
+          'Still running — large org scans can take up to a minute. ';
+      }
+    }, 1000);
+
+    if (cancelBtn && onCancel) {
+      cancelBtn.addEventListener('click', () => {
+        onCancel();
+        stop();
+      });
+    }
+
+    function stop() {
+      clearInterval(tick);
+      banner.remove();
+    }
+
+    return { stop };
+  }
+
+  // -- Empty / success / error states ---------------------------------------
+
+  /**
+   * Render an empty state into a container.
+   * variant: 'neutral' | 'success' | 'error'
+   */
+  function renderEmpty(containerEl, {
+    variant = 'neutral',
+    icon,
+    title,
+    message,
+    actions = []  // [{ label, onClick, primary }]
+  }) {
+    const defaultIcons = {
+      neutral: 'fa-folder-open',
+      success: 'fa-circle-check',
+      error:   'fa-triangle-exclamation'
+    };
+    const iconClass = icon || defaultIcons[variant];
+
+    const actionsHtml = actions.length ? `
+      <div class="empty-state__actions">
+        ${actions.map((a, i) => `
+          <button type="button"
+                  class="empty-state__action empty-state__action--${a.primary ? 'primary' : 'secondary'}"
+                  data-action-index="${i}">
+            ${escapeHtml(a.label)}
+          </button>
+        `).join('')}
+      </div>
+    ` : '';
+
+    containerEl.innerHTML = `
+      <div class="empty-state empty-state--${variant}" role="status">
+        <div class="empty-state__icon" aria-hidden="true">
+          <i class="fa-solid ${iconClass}"></i>
+        </div>
+        <h3 class="empty-state__title">${escapeHtml(title)}</h3>
+        <p class="empty-state__message">${escapeHtml(message)}</p>
+        ${actionsHtml}
+      </div>
+    `;
+
+    // Wire up action buttons
+    containerEl.querySelectorAll('[data-action-index]').forEach(btn => {
+      const idx = parseInt(btn.dataset.actionIndex, 10);
+      btn.addEventListener('click', actions[idx].onClick);
+    });
+  }
+
+  /** Convenience: error state with technical details disclosure. */
+  function renderError(containerEl, { title, message, error, onRetry }) {
+    const detailsHtml = error ? `
+      <details class="empty-state__details">
+        <summary>Technical details</summary>
+        <pre>${escapeHtml(typeof error === 'string' ? error : JSON.stringify(error, null, 2))}</pre>
+      </details>
+    ` : '';
+
+    renderEmpty(containerEl, {
+      variant: 'error',
+      title: title || 'Something went wrong',
+      message: message || 'The query failed to complete. Check your permissions and try again.',
+      actions: onRetry ? [{ label: 'Retry', primary: true, onClick: onRetry }] : []
+    });
+
+    // Append details after renderEmpty wrote the DOM
+    if (detailsHtml) {
+      containerEl.querySelector('.empty-state').insertAdjacentHTML('beforeend', detailsHtml);
+    }
+  }
+
+  // -- Utilities ------------------------------------------------------------
+
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  return {
+    renderTableSkeleton,
+    renderKpiSkeleton,
+    renderTierCardsSkeleton,
+    renderChartSkeleton,
+    startQueryProgress,
+    renderEmpty,
+    renderError,
+    escapeHtml
+  };
+})();
+
+/* ============================================================
+   DASHBOARD CONTROLLER
+   ============================================================ */
+
+const Dashboard = (() => {
+
+  const CACHE_KEY = 'dashboard:cache';
+  const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+  // -- Public API ----------------------------------------------------------
+
+  function init() {
+    const refreshBtn = document.getElementById('btn-refresh-dashboard');
+    if (!refreshBtn) return;
+    if (refreshBtn.dataset.bound === '1') {
+      load();
+      return;
+    }
+    refreshBtn.dataset.bound = '1';
+    refreshBtn.addEventListener('click', () => load({ force: true }));
+    load();
+  }
+
+  async function load({ force = false } = {}) {
+    const cached = !force ? readCache() : null;
+
+    if (cached) {
+      try {
+        render(cached.data);
+        updateFreshness(cached.fetchedAt);
+        return;
+      } catch (cacheErr) {
+        console.warn('Cached dashboard data failed to render — refetching', cacheErr);
+        // Fall through to fresh fetch
+      }
+    }
+
+    renderSkeletons();
+    setRefreshSpinning(true);
+
+    try {
+      // Parallel fetch — each widget fails independently
+      const [kpis, opportunities, projects, anomalies] = await Promise.allSettled([
+        fetchKpis(),
+        fetchOpportunities(),
+        fetchTopProjects(),
+        fetchAnomalies()
+      ]);
+
+      const data = {
+        kpis: settled(kpis),
+        opportunities: settled(opportunities),
+        projects: settled(projects),
+        anomalies: settled(anomalies)
+      };
+
+      render(data);
+      writeCache(data);  // only cache after successful render
+      updateFreshness(Date.now());
+    } catch (err) {
+      console.error('Dashboard load failed', err);
+    } finally {
+      setRefreshSpinning(false);
+    }
+  }
+
+  // -- Skeleton rendering --------------------------------------------------
+
+  function renderSkeletons() {
+    const kpiContainer = document.getElementById('dashboard-kpis');
+    kpiContainer.innerHTML = Array(4).fill(`
+      <div class="kpi-card" aria-hidden="true">
+        <span class="skeleton skeleton--text-sm"></span>
+        <span class="skeleton skeleton--number"></span>
+        <span class="skeleton skeleton--text-sm" style="width:40%;"></span>
+      </div>
+    `).join('');
+
+    document.getElementById('dashboard-opportunities').innerHTML =
+      Array(5).fill(`
+        <div class="opportunity-row" aria-hidden="true">
+          <span class="skeleton skeleton--text-sm"></span>
+          <span class="skeleton skeleton--text"></span>
+          <span class="skeleton skeleton--badge"></span>
+          <span class="skeleton skeleton--text-sm" style="width:60px;"></span>
+        </div>
+      `).join('');
+
+    document.getElementById('dashboard-top-projects').innerHTML = `
+      <div class="bar-list">
+        ${Array(5).fill(`
+          <div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+              <span class="skeleton skeleton--text-sm"></span>
+              <span class="skeleton skeleton--text-sm" style="width:60px;"></span>
+            </div>
+            <div class="bar-row__bar"><div class="bar-row__fill" style="width:0;"></div></div>
+          </div>
+        `).join('')}
+      </div>`;
+
+    document.getElementById('dashboard-anomalies').innerHTML =
+      Array(3).fill(`
+        <div class="anomaly-row" aria-hidden="true">
+          <span class="skeleton skeleton--avatar" style="width:16px;height:16px;"></span>
+          <span class="skeleton skeleton--text"></span>
+          <span class="skeleton skeleton--text-sm" style="width:80px;"></span>
+        </div>
+      `).join('');
+  }
+
+  // -- Real rendering ------------------------------------------------------
+
+  function render(data) {
+    renderKpis(data.kpis);
+    renderOpportunities(data.opportunities);
+    renderTopProjects(data.projects);
+    renderAnomalies(data.anomalies);
+  }
+
+  function renderKpis(kpis) {
+    const container = document.getElementById('dashboard-kpis');
+    if (!kpis || kpis.stub === true) {
+      UIState.renderError(container, {
+        title: 'KPIs unavailable',
+        message: 'Could not load summary metrics.',
+        onRetry: () => load({ force: true })
+      });
+      return;
+    }
+
+    container.innerHTML = `
+      ${kpiCard({
+        label: 'Month-to-Date Spend',
+        value: formatCurrency(kpis.mtdSpend ?? 0),
+        delta: kpis.mtdSpendDelta,
+        deltaLabel: 'vs last month',
+        deltaDirection: (kpis.mtdSpendDelta ?? 0) > 0 ? 'up' : 'down'
+      })}
+      ${kpiCard({
+        label: 'Forecast (EOM)',
+        value: formatCurrency(kpis.forecastSpend ?? 0),
+        delta: null,
+        deltaLabel: `vs ${formatCurrency(kpis.lastMonthSpend ?? 0)} last month`
+      })}
+      ${kpiCard({
+        label: 'Potential Savings',
+        value: formatCurrency(kpis.potentialSavings ?? 0),
+        delta: null,
+        deltaLabel: `${kpis.opportunityCount ?? 0} opportunities`,
+        savings: true
+      })}
+      ${kpiCard({
+        label: 'Anomalies Detected',
+        value: (kpis.anomalyCount ?? 0).toString(),
+        delta: null,
+        deltaLabel: 'last 7 days'
+      })}
+    `;
+  }
+
+  function kpiCard({ label, value, delta, deltaLabel, deltaDirection, savings }) {
+    const deltaHtml = delta != null
+      ? `<span class="kpi-card__delta kpi-card__delta--${deltaDirection}">
+           <i class="fa-solid fa-arrow-${deltaDirection}"></i>
+           ${Math.abs(delta)}% ${deltaLabel}
+         </span>`
+      : `<span class="kpi-card__delta">${deltaLabel}</span>`;
+
+    return `
+      <div class="kpi-card ${savings ? 'kpi-card--savings' : ''}">
+        <span class="kpi-card__label">${label}</span>
+        <span class="kpi-card__value">${value}</span>
+        ${deltaHtml}
+      </div>`;
+  }
+
+  function renderOpportunities(items) {
+    const container = document.getElementById('dashboard-opportunities');
+
+    if (!items) {
+      UIState.renderError(container, {
+        title: 'Could not load opportunities',
+        onRetry: () => load({ force: true })
+      });
+      return;
+    }
+    if (items.length === 0) {
+      UIState.renderEmpty(container, {
+        variant: 'success',
+        title: 'No optimization opportunities',
+        message: 'Your environment looks well-optimized. Check back after the next billing cycle.'
+      });
+      return;
+    }
+
+    container.innerHTML = items.slice(0, 5).map((item, i) => `
+      <a class="opportunity-row" href="${safeDeepLinkHref(item.deepLink)}">
+        <span class="opportunity-row__rank">${i + 1}</span>
+        <span class="opportunity-row__label">${escapeHtml(item.label)}</span>
+        <span class="opportunity-row__module">${escapeHtml(item.module)}</span>
+        <span class="opportunity-row__savings">${formatCurrency(item.monthlySavings)}/mo</span>
+      </a>
+    `).join('');
+  }
+
+  function renderTopProjects(projects) {
+    const container = document.getElementById('dashboard-top-projects');
+
+    if (!projects) {
+      UIState.renderError(container, {
+        title: 'Could not load project costs',
+        onRetry: () => load({ force: true })
+      });
+      return;
+    }
+    if (projects.length === 0) {
+      UIState.renderEmpty(container, {
+        variant: 'neutral',
+        title: 'No project data yet',
+        message: 'Configure cost attribution settings to begin tracking project-level costs.',
+        actions: [{ label: 'Open Cost Attribution', primary: true,
+                    onClick: () => location.hash = '#cost-attribution' }]
+      });
+      return;
+    }
+
+    const max = Math.max(...projects.map(p => p.cost));
+    container.innerHTML = `
+      <div class="bar-list">
+        ${projects.slice(0, 5).map(p => `
+          <div>
+            <div class="bar-row">
+              <span class="bar-row__label">${escapeHtml(p.projectId)}</span>
+              <span class="bar-row__value">${formatCurrency(p.cost)}</span>
+            </div>
+            <div class="bar-row__bar">
+              <div class="bar-row__fill" style="width: ${(p.cost / max * 100).toFixed(1)}%;"></div>
+            </div>
+          </div>
+        `).join('')}
+      </div>`;
+  }
+
+  function renderAnomalies(anomalies) {
+    const container = document.getElementById('dashboard-anomalies');
+
+    if (!anomalies) {
+      UIState.renderError(container, {
+        title: 'Could not load anomalies',
+        onRetry: () => load({ force: true })
+      });
+      return;
+    }
+    if (anomalies.length === 0) {
+      UIState.renderEmpty(container, {
+        variant: 'success',
+        title: 'No anomalies detected',
+        message: 'Spend patterns over the last 7 days look normal.'
+      });
+      return;
+    }
+
+    container.innerHTML = anomalies.map(a => `
+      <div class="anomaly-row">
+        <i class="fa-solid fa-triangle-exclamation anomaly-row__icon
+           ${a.severity === 'critical' ? 'anomaly-row__icon--critical' : ''}"></i>
+        <span class="anomaly-row__text">${escapeHtml(a.message)}</span>
+        <a class="anomaly-row__action" href="${safeDeepLinkHref(a.deepLink)}">
+          Investigate <i class="fa-solid fa-arrow-right" style="font-size:0.6rem;"></i>
+        </a>
+      </div>
+    `).join('');
+  }
+
+  // -- Freshness pill ------------------------------------------------------
+
+  function updateFreshness(timestamp) {
+    const text = document.querySelector('#dashboard-freshness .freshness-pill__text');
+    const update = () => { text.textContent = `Updated ${timeAgo(timestamp)}`; };
+    update();
+    // Re-render every minute so "4m ago" stays accurate
+    if (Dashboard._freshTimer) clearInterval(Dashboard._freshTimer);
+    Dashboard._freshTimer = setInterval(update, 60 * 1000);
+  }
+
+  function setRefreshSpinning(on) {
+    document.querySelector('#btn-refresh-dashboard')
+      .classList.toggle('is-spinning', on);
+  }
+
+  // -- Cache ---------------------------------------------------------------
+
+  function readCache() {
+    try {
+      const raw = sessionStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (Date.now() - parsed.fetchedAt > CACHE_TTL_MS) return null;
+      return parsed;
+    } catch { return null; }
+  }
+
+  function writeCache(data) {
+    try {
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+        fetchedAt: Date.now(),
+        data
+      }));
+    } catch { /* quota exceeded — silent fail */ }
+  }
+
+  // -- Fetchers ------------------------------------------------------------
+  // TODO: wire these to your real backend endpoints.
+  // Each must resolve to the shape commented below, OR throw on failure.
+
+  async function fetchKpis() {
+    // Expected: { mtdSpend, mtdSpendDelta, forecastSpend, lastMonthSpend,
+    //             potentialSavings, opportunityCount, anomalyCount }
+    const r = await fetch('/api/dashboard/kpis');
+    if (!r.ok) throw new Error('kpis');
+    return r.json();
+  }
+
+  async function fetchOpportunities() {
+    // Expected: [{ label, module, monthlySavings, deepLink }, ...]
+    const r = await fetch('/api/dashboard/opportunities?limit=5');
+    if (!r.ok) throw new Error('opportunities');
+    return r.json();
+  }
+
+  async function fetchTopProjects() {
+    // Expected: [{ projectId, cost }, ...] — max 5
+    const r = await fetch('/api/dashboard/top-projects?limit=5');
+    if (!r.ok) throw new Error('projects');
+    return r.json();
+  }
+
+  async function fetchAnomalies() {
+    // Expected: [{ severity: 'warning'|'critical', html, deepLink }, ...]
+    const r = await fetch('/api/dashboard/anomalies');
+    if (!r.ok) throw new Error('anomalies');
+    return r.json();
+  }
+
+  // -- Utilities -----------------------------------------------------------
+
+  function settled(result) {
+    return result.status === 'fulfilled' ? result.value : null;
+  }
+
+  function formatCurrency(n) {
+    if (n == null) return '—';
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: n >= 1000 ? 0 : 2
+    }).format(n);
+  }
+
+  function timeAgo(timestamp) {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;').replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function safeDeepLinkHref(link) {
+    // deepLink values are always in-page hash-fragment navigation targets
+    // (e.g. "#capacity?reservation=..."). Reject anything else outright —
+    // an absolute/protocol-relative URL (including a javascript: URI) would
+    // execute if a compromised/malicious backend response ever supplied
+    // one, since HTML-escaping an href attribute does not neutralize a
+    // javascript: scheme.
+    return (typeof link === 'string' && link.startsWith('#')) ? link : '#';
+  }
+
+  return { init, load };
+})();
+
+const FluidScaling = (() => {
+  const SKELETON_ROWS = 8;       // number of skeleton rows to render during load
+
+  const fmtUsd = (n) => {
+    if (n == null || isNaN(n)) return '—';
+    if (n === 0) return '$0';
+    return '$' + Math.round(n).toLocaleString('en-US');
+  };
+
+  const fmtNumber = (n, decimals = 0) => {
+    if (n == null || isNaN(n)) return '—';
+    return Number(n).toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+  };
+
+  const fmtPct = (n) => {
+    if (n == null || isNaN(n)) return '—';
+    return Number(n).toFixed(1) + '%';
+  };
+
+  function init() {
+    const btn = document.getElementById('analyze-fluid-btn');
+    if (!btn || btn.dataset.bound === '1') return;
+
+    // Load saved data from Local Storage
+    const savedEstimate = localStorage.getItem('bq_fluid_estimate_data');
+    if (savedEstimate) {
+        try {
+            const parsed = JSON.parse(savedEstimate);
+            if (parsed && Array.isArray(parsed.reservations)) {
+                renderResults(parsed.reservations);
+                renderConfigStatus(parsed.config_status);
+            } else if (Array.isArray(parsed)) {
+                renderResults(parsed);
+            } else {
+                localStorage.removeItem('bq_fluid_estimate_data');
+            }
+        } catch (e) {
+            console.error('Failed to parse saved fluid estimate data', e);
+            localStorage.removeItem('bq_fluid_estimate_data');
+        }
+    }
+    
+    const savedSim = localStorage.getItem('bq_fluid_simulation_data');
+    if (savedSim) {
+        try {
+            const parsed = JSON.parse(savedSim);
+            if (parsed && (Array.isArray(parsed) || Array.isArray(parsed.patterns))) {
+                renderFluidSimResults(parsed);
+            } else {
+                localStorage.removeItem('bq_fluid_simulation_data');
+            }
+        } catch (e) {
+            console.error('Failed to parse saved fluid simulation data', e);
+            localStorage.removeItem('bq_fluid_simulation_data');
+        }
+    }
+
+    const copyBtn = document.getElementById('copy-fs-ddl-btn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+            const output = document.getElementById('fs-ddl-output');
+            if (output && output.value) {
+                copyToClipboard(output.value).then(() => {
+                    showNotification('DDL copied to clipboard!', 'success');
+                }).catch(err => {
+                    console.error('Failed to copy DDL', err);
+                    showNotification('Failed to copy DDL.', 'error');
+                });
+            }
+        });
+    }
+
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', load);
+  }
+
+  // --- Button loading helper (self-contained, no dependency on global setLoading) ---
+  function setBtnLoading(btn, isLoading) {
+    if (!btn) return;
+    const label   = btn.querySelector('.btn-label');
+    const spinner = btn.querySelector('.btn-spinner');
+    btn.disabled  = isLoading;
+    if (label)   label.textContent = isLoading ? 'Running…' : 'Run Estimation';
+    if (spinner) spinner.hidden    = !isLoading;
+    // --- Ongoing task tracking (mirrors global setLoading hook) ---
+    if (btn.id) {
+        if (isLoading) {
+            var taskLabel = TASK_LABELS[btn.id] || 'Fluid Scaling';
+            NotificationCenter.startTask(btn.id, taskLabel);
+        } else {
+            NotificationCenter.completeTask(btn.id);
+        }
+    }
+  }
+
+  // --- Status banner helper for the jobs panel ---
+  function setJobsStatus(state, message = '') {
+    const el = document.getElementById('fluid-jobs-status');
+    if (!el) return;
+    el.className = 'panel-status' + (state ? ' ' + state : '');
+    el.textContent = message;
+  }
+
+  async function load() {
+    const container = document.getElementById('view-fluid-scaling');
+    const btn       = document.getElementById('analyze-fluid-btn');
+    const tableEl   = document.getElementById('fluid-estimate-table');
+
+    if (!tableEl) return;
+
+    const orgProject = localStorage.getItem('bq_org_project') || '';
+    if (!orgProject) {
+      UIState.renderError(container, {
+        title: 'Missing Project',
+        message: 'Execution Project ID must be set in Settings before running an estimate.',
+      });
+      return;
+    }
+
+    const lookback = parseInt(document.getElementById('fs-lookback').value, 10) || 7;
+    const price    = parseFloat(document.getElementById('fs-price').value)     || 0.06;
+    const region   = localStorage.getItem('bq_region') || 'region-us';
+    const adminProject = localStorage.getItem('bq_admin_project') || '';
+
+    // Reset both tables
+
+    // Reset KPI cards to prevent showing old cached estimates during load
+    document.getElementById('fs-total-saved-hours').textContent = '—';
+    document.getElementById('fs-total-saved-usd').textContent   = '—';
+    document.getElementById('fs-total-monthly').textContent     = '—';
+    document.getElementById('fs-total-annual').textContent      = '—';
+    const statusPanel = document.getElementById('fs-org-rec-panel');
+    if (statusPanel) statusPanel.style.display = 'none';
+    const banner = document.getElementById('fluid-disclaimer-banner');
+    if (banner) banner.style.display = 'none';
+
+    UIState.renderTableSkeleton(tableEl, SKELETON_ROWS);
+    const simTableEl = document.getElementById('fluid-simulation-table');
+    if (simTableEl) {
+        UIState.renderTableSkeleton(simTableEl, SKELETON_ROWS);
+    }
+    setJobsStatus('loading', 'Loading job-level simulation…');
+    container.querySelectorAll('.query-progress').forEach(b => b.remove());
+
+    setBtnLoading(btn, true);
+    const progress = UIState.startQueryProgress(document.getElementById('analyze-fluid-btn').parentElement, {
+      message: 'Estimating Fluid Scaling savings. This may take a minute as we process timeline data...',
+    });
+
+    // Run BOTH fetches in parallel and tolerate partial failure
+    const [estimateResult, jobsResult] = await Promise.allSettled([
+      fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
+      fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb: state.maxBytesBilledGb }),
+    ]);
+
+    if (estimateResult.status === 'fulfilled') {
+        renderResults(estimateResult.value.reservations);
+        renderConfigStatus(estimateResult.value.config_status);
+        safeSetLocalStorage('bq_fluid_estimate_data', JSON.stringify(estimateResult.value));
+    } else {
+        console.error('Estimate fetch failed:', estimateResult.reason);
+        showNotification('Estimate fetch failed: ' + (estimateResult.reason?.message || estimateResult.reason), 'error');
+        renderResults([]);
+    }
+
+    if (jobsResult.status === 'fulfilled') {
+        renderFluidSimResults(jobsResult.value);
+        safeSetLocalStorage('bq_fluid_simulation_data', JSON.stringify(jobsResult.value));
+    } else {
+        console.error('Jobs fetch failed:', jobsResult.reason);
+        showNotification('Jobs fetch failed: ' + (jobsResult.reason?.message || jobsResult.reason), 'error');
+        setJobsStatus('error', 'Job-level simulation failed.');
+    }
+
+    setBtnLoading(btn, false);
+    if (progress) progress.stop();
+  }
+
+  // ---------------------------------------------------------------
+  // Fetch helpers — both throw on non-OK so Promise.allSettled catches
+  // ---------------------------------------------------------------
+  async function fetchEstimate({ orgProject, adminProject, region, lookback, price, maxBytesBilledGb }) {
+    const res = await fetch('/api/fluid-scaling/estimate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        org_project_id:    orgProject,
+        admin_project_id:  adminProject,
+        region,
+        lookback_days:     lookback,
+        price_per_slot_hr: price,
+        max_bytes_billed_gb: maxBytesBilledGb,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await safeReadDetail(res);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function fetchJobSimulation({ orgProject, region, lookback, price, maxBytesBilledGb }) {
+    const res = await fetch('/api/slots/fluid_simulation', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        org_project_id:       orgProject,
+        region,
+        lookback_days:        lookback,
+        edition_slot_hr_rate: price,
+        max_bytes_billed_gb:  maxBytesBilledGb,
+      }),
+    });
+    if (!res.ok) {
+      const detail = await safeReadDetail(res);
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    
+    // Guard: refuse to parse absurd payloads (prevents tab freeze / OOM)
+    const len = Number(res.headers.get('content-length') || 0);
+    const MAX_BYTES = 2 * 1024 * 1024; // 2 MB ceiling (GZipped)
+    if (len > MAX_BYTES) {
+      throw new Error(
+        `Simulation response too large (${(len / 1024 / 1024).toFixed(0)} MB). ` +
+        `The backend likely failed to collapse query patterns. Aborting render.`
+      );
+    }
+    return res.json();
+  }
+
+  async function safeReadDetail(res) {
+    try {
+      const j = await res.json();
+      // A 422 hands back an array of {loc,msg}; flatten it or callers
+      // interpolate it straight into a string as [object Object].
+      return j?.detail ? detailToMessage(j.detail) : null;
+    } catch { return null; }
+  }
+
+  // ---------------------------------------------------------------
+  // Renderers
+  // ---------------------------------------------------------------
+  function renderResults(data) {
+    const tableBody = document.querySelector('#fluid-estimate-table tbody');
+    if (!tableBody) return;
+
+    // Normalize data if it is the response wrapper object instead of the array
+    if (data && !Array.isArray(data) && Array.isArray(data.reservations)) {
+        data = data.reservations;
+    }
+
+    // Fallback to empty array if data is still not an array
+    if (!Array.isArray(data)) {
+        data = [];
+    }
+
+    // Destroy DataTable first if it already exists to prevent column count mismatch warnings on DOM mutation
+
+    // Calculate Totals
+    let totalSavedHours = 0;
+    let totalSavedUsd = 0;
+    let totalMonthly = 0;
+    let totalAnnual = 0;
+
+    if (data && data.length > 0) {
+        data.forEach(row => {
+            const savedHrs = Number(row.slot_hours_saved) || 0;
+            const savedUsd = Number(row.estimated_usd_saved_window) || 0;
+            const monthly = Number(row.extrapolated_monthly_usd) || 0;
+            const annual = Number(row.extrapolated_annual_usd) || 0;
+
+            totalSavedHours += savedHrs;
+            totalSavedUsd += savedUsd;
+            totalMonthly += monthly;
+            totalAnnual += annual;
+        });
+    }
+
+    // Inject Totals into cards
+    document.getElementById('fs-total-saved-hours').textContent = Math.round(totalSavedHours).toLocaleString();
+    document.getElementById('fs-total-saved-usd').textContent = `$${Math.round(totalSavedUsd).toLocaleString()}`;
+    document.getElementById('fs-total-monthly').textContent = `$${Math.round(totalMonthly).toLocaleString()}`;
+    document.getElementById('fs-total-annual').textContent = `$${Math.round(totalAnnual).toLocaleString()}`;
+
+    // If empty response
+    if (!data || data.length === 0) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="10" style="text-align:center; padding:1.5rem; color: #94a3b8;">
+            No active reservations or fluid scaling candidates found.
+          </td>
+        </tr>`;
+      return;
+    }
+
+    // Render Rows
+    tableBody.innerHTML = data.map(row => {
+      return `
+        <tr>
+          <td title="${UIState.escapeHtml(row.reservation_id)}">${UIState.escapeHtml(row.reservation_short_name)}</td>
+          <td><span class="badge badge-info">${UIState.escapeHtml(row.status)}</span></td>
+          <td>${fmtNumber(row.legacy_autoscaler_slot_hours, 1)}</td>
+          <td>${fmtNumber(row.fluid_autoscaler_slot_hours, 1)}</td>
+          <td title="Total used slot-hours (baseline-inclusive), matches doc's total_pure_used_slots / 3600">
+            ${fmtNumber(row.total_pure_used_slot_hours, 1)}
+          </td>
+          <td style="color: #4ade80;" title="Recoverable cooldown slot-hours (clamped model)">
+            ${fmtNumber(row.slot_hours_saved, 1)}
+          </td>
+          <td style="color: #4ade80; font-weight: bold;" title="Primary savings (clamped cooldown-waste model)">
+            ${fmtPct(row.clamped_pct_savings)}
+          </td>
+          <td style="color: #4ade80;">${fmtUsd(row.estimated_usd_saved_window)}</td>
+          <td style="color: #4ade80;">${fmtUsd(row.extrapolated_monthly_usd)}</td>
+          <td style="font-weight: bold; color: #4ade80;">${fmtUsd(row.extrapolated_annual_usd)}</td>
+        </tr>`;
+    }).join('');
+    
+    safeInitDataTable('#fluid-estimate-table', {
+        scrollX: true,
+        order: [[9, 'desc']] // Extrapolated annual savings (shifted to index 9)
+    });
+  }
+
+  function renderConfigStatus(configStatus) {
+    const panel  = document.getElementById('fs-org-rec-panel');
+    const text   = document.getElementById('fs-org-rec-text');
+    const output = document.getElementById('fs-ddl-output');
+    const container = document.getElementById('fs-ddl-container');
+    const builder = document.getElementById('fs-config-builder');
+
+    if (!panel || !configStatus) return;
+
+    panel.style.display = 'block';
+
+    if (configStatus.enabled) {
+      panel.style.borderColor = 'rgba(34, 197, 94, 0.5)'; // Green
+      text.innerHTML = `<i class="fa-solid fa-circle-check" style="color: #4ade80;"></i> Fluid Scaling is already enabled for all active reservations in this region. No action needed.`;
+      if (container) container.style.display = 'none';
+      if (output) output.value = '';
+      if (builder) builder.innerHTML = '';
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = 'none';
+    } else {
+      panel.style.borderColor = 'rgba(234, 179, 8, 0.5)'; // Yellow
+      const missingList = configStatus.missing_reservations.join(', ');
+      text.innerHTML = `<i class="fa-solid fa-circle-exclamation" style="color: #facc15;"></i> Fluid Scaling is NOT enabled for the following active reservations: <strong>${UIState.escapeHtml(missingList)}</strong>. Select which reservations to include and copy the generated DDL.`;
+      const copyBtn = document.getElementById('copy-fs-ddl-btn');
+      if (copyBtn) copyBtn.style.display = '';
+
+      if (container && output && builder) {
+        container.style.display = 'block';
+
+        // Read admin project / region from localStorage (same source as checkStatus)
+        const adminProject = localStorage.getItem('bq_admin_project') || localStorage.getItem('bq_org_project') || '';
+        const region = localStorage.getItem('bq_region') || 'region-us';
+        const regionNorm = region.startsWith('region-') ? region : 'region-' + region;
+
+        // Build reservation list: configured (pre-checked) + missing (unchecked)
+        const allReservations = [];
+        (configStatus.configured_reservations || []).forEach(r => allReservations.push({ name: r, enabled: true }));
+        (configStatus.missing_reservations || []).forEach(r => allReservations.push({ name: r, enabled: false }));
+        allReservations.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Regenerate DDL based on checked reservations
+        function regenerateDDL() {
+          const checked = [];
+          builder.querySelectorAll('input[type="checkbox"][data-res-name]').forEach(cb => {
+            if (cb.checked) checked.push(cb.dataset.resName);
+          });
+          checked.sort();
+          if (checked.length === 0) {
+            output.value = '-- No reservations selected';
+          } else {
+            const listStr = checked.map(r => `'${r}'`).join(', ');
+            output.value = `ALTER PROJECT \`${adminProject}\`\nSET OPTIONS (\n  \`${regionNorm}.preflight_fluid_autoscaling_reservations\` = [${listStr}]\n);`;
+          }
+        }
+
+        // Render checkbox table
+        let html = `<table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.15);">
+              <th style="padding: 0.5rem; text-align: left; width: 40px;">
+                <input type="checkbox" id="fs-select-all" title="Select / Deselect All"
+                  style="accent-color: #38bdf8; cursor: pointer; width: 16px; height: 16px;">
+              </th>
+              <th style="padding: 0.5rem; text-align: left; color: #94a3b8;">Reservation</th>
+              <th style="padding: 0.5rem; text-align: left; color: #94a3b8;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+        allReservations.forEach(r => {
+          const statusColor = r.enabled ? '#4ade80' : '#64748b';
+          const statusIcon  = r.enabled ? 'fa-circle-check' : 'fa-circle-minus';
+          const statusText  = r.enabled ? 'Enabled' : 'Not Enabled';
+          html += `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.15s;"
+                onmouseenter="this.style.background='rgba(255,255,255,0.04)'"
+                onmouseleave="this.style.background='transparent'">
+              <td style="padding: 0.5rem;">
+                <input type="checkbox" data-res-name="${UIState.escapeHtml(r.name)}" ${r.enabled ? 'checked' : ''}
+                  style="accent-color: #38bdf8; cursor: pointer; width: 16px; height: 16px;">
+              </td>
+              <td style="padding: 0.5rem; color: #e2e8f0; font-family: monospace;">${UIState.escapeHtml(r.name)}</td>
+              <td style="padding: 0.5rem;">
+                <i class="fa-solid ${statusIcon}" style="color: ${statusColor}; margin-right: 0.3rem;"></i>
+                <span style="color: ${statusColor};">${statusText}</span>
+              </td>
+            </tr>`;
+        });
+
+        html += `</tbody></table>`;
+        builder.innerHTML = html;
+
+        // Wire up Select All and individual checkboxes
+        const selectAll = builder.querySelector('#fs-select-all');
+        const allBoxes = builder.querySelectorAll('input[data-res-name]');
+
+        // Pre-check all by default (user came here to enable missing ones)
+        allBoxes.forEach(cb => { cb.checked = true; });
+        if (selectAll) selectAll.checked = true;
+
+        function updateSelectAll() {
+          if (selectAll) selectAll.checked = Array.from(allBoxes).every(c => c.checked);
+        }
+
+        if (selectAll) {
+          selectAll.addEventListener('change', () => {
+            allBoxes.forEach(cb => { cb.checked = selectAll.checked; });
+            regenerateDDL();
+          });
+        }
+
+        allBoxes.forEach(cb => {
+          cb.addEventListener('change', () => {
+            updateSelectAll();
+            regenerateDDL();
+          });
+        });
+
+        // Generate initial DDL (all checked by default)
+        if (selectAll) selectAll.checked = true;
+        regenerateDDL();
+      }
+    }
+  }
+
+  function renderFluidSimResults(payload) {
+    const tbody = document.querySelector('#fluid-simulation-table tbody');
+    if (!tbody) return;
+
+    // Destroy DataTable first if it already exists to prevent column count mismatch warnings on DOM mutation
+
+    // Extract rows based on new response model or fallback to payload if it's already an array
+    let rows = [];
+    if (payload) {
+        if (Array.isArray(payload)) {
+            rows = payload;
+        } else if (Array.isArray(payload.patterns)) {
+            rows = payload.patterns;
+        }
+    }
+
+    setJobsStatus('', '');  // clear status when we have data
+
+    // Tell the user this is a top-N view ranked by impact, not the full list.
+    const totalFound = payload?.total_patterns_found ?? rows.length;
+    const subtitle = document.getElementById('fluid-simulation-subtitle');
+    if (totalFound > rows.length) {
+        setJobsStatus('info', `Showing top ${rows.length} of ${totalFound.toLocaleString()} patterns by savings impact.`);
+        if (subtitle) {
+            subtitle.textContent = `Top ${rows.length} (query pattern × reservation) combinations ranked by estimated savings impact. The same pattern may appear once per reservation it runs on.`;
+        }
+    } else {
+        if (subtitle) {
+            subtitle.textContent = `Query pattern × reservation combinations ranked by estimated savings impact. The same pattern may appear once per reservation it runs on.`;
+        }
+    }
+
+    const MAX_RENDER_ROWS = 500;
+    if (rows.length > MAX_RENDER_ROWS) {
+        console.warn(`[FluidScaling] truncating ${rows.length} → ${MAX_RENDER_ROWS} rows`);
+        setJobsStatus('warning', `Showing top ${MAX_RENDER_ROWS} of ${rows.length} patterns.`);
+        rows = rows.slice(0, MAX_RENDER_ROWS);
+    }
+
+    // Render disclaimer if present
+    const banner = document.getElementById('fluid-disclaimer-banner');
+    if (banner) {
+        if (payload?.disclaimer && rows.length > 0) {
+            banner.textContent = payload.disclaimer;
+            banner.style.display = 'block';
+        } else {
+            banner.style.display = 'none';
+        }
+    }
+
+
+    if (rows.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="9" style="text-align:center; padding:1.5rem; color: #94a3b8;">
+            No job-level savings data returned for this window.
+          </td>
+        </tr>`;
+      return;
+    }
+
+    tbody.innerHTML = rows.map(row => {
+      const patternLabel = row.pattern_label || row.pattern_id || '—';
+      const reasons = row.exposure_reasons ? row.exposure_reasons.join('\n') : '';
+      const sampleJobId = row.sample_job_id || '';
+      const shortJobId = sampleJobId ? (sampleJobId.length > 16 ? sampleJobId.substring(0, 8) + '...' + sampleJobId.slice(-8) : sampleJobId) : '—';
+      
+      return `
+        <tr>
+          <td title="${UIState.escapeHtml(row.pattern_id)}">${UIState.escapeHtml(patternLabel)}</td>
+          <td class="font-mono" style="font-size: 0.75rem;" title="${UIState.escapeHtml(sampleJobId)}">${UIState.escapeHtml(shortJobId)}${sampleJobId ? ` <a href="${buildConsoleUrl('job', { project: row.project_id || state.orgProject, location: state.region, jobId: sampleJobId })}" target="_blank" rel="noopener noreferrer" class="job-id-link" title="Open in Console"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}</td>
+          <td>${UIState.escapeHtml(row.workload_type)}</td>
+          <td title="${UIState.escapeHtml(row.reservation_id || '')}">${UIState.escapeHtml(row.reservation_short_name || '—')}</td>
+          <td>${UIState.escapeHtml(String(row.job_count))}</td>
+          <td>${UIState.escapeHtml(String(row.avg_duration_seconds))}</td>
+          <td>${UIState.escapeHtml(String(row.avg_peak_slots))}</td>
+          <td title="${UIState.escapeHtml(reasons)}">${UIState.escapeHtml(String(row.cooldown_exposure_score))}</td>
+          <td><strong>${fmtUsd(row.indicative_savings_usd)}</strong></td>
+        </tr>`;
+    }).join('');
+
+    safeInitDataTable('#fluid-simulation-table', {
+      pageLength: 10,
+      order:      [[8, 'desc']], // Sort by Indicative Savings (Window) descending
+      scrollX:    true,
+      autoWidth:  false,
+      columnDefs: [
+        {
+          targets: 8,                         // Indicative Savings (Window)
+          type: 'num',
+          render: function (data, type) {
+            // For sorting/filtering, strip $ and commas → real number.
+            if (type === 'sort' || type === 'type') {
+              const n = parseFloat(String(data).replace(/[~$,]/g, ''));
+              return isNaN(n) ? 0 : n;
+            }
+            return data;  // display: keep the formatted value
+          }
+        }
+      ]
+    });
+  }
+
+  async function checkStatus() {
+    const orgProject = localStorage.getItem('bq_org_project') || '';
+    const adminProject = localStorage.getItem('bq_admin_project') || orgProject;
+    const region = localStorage.getItem('bq_region') || 'region-us';
+    if (!orgProject) return;
+
+    try {
+      const res = await fetch('/api/fluid-scaling/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          org_project_id: orgProject,
+          admin_project_id: adminProject,
+          region: region
+        })
+      });
+      if (res.ok) {
+        const statuses = await res.json();
+        const configured = [];
+        const missing = [];
+        let ddl = null;
+        
+        statuses.forEach(s => {
+          if (s.enabled) {
+            configured.push(s.reservation_id);
+          } else {
+            missing.push(s.reservation_id);
+          }
+        });
+        
+        if (missing.length > 0) {
+          const all_list = statuses.map(s => {
+            const parts = s.reservation_id.split(/[.:]/);
+            const shortName = parts[parts.length - 1];
+            return `'${shortName}'`;
+          }).join(', ');
+          ddl = `ALTER PROJECT \`${adminProject}\`\nSET OPTIONS (\n  \`${region.startsWith('region-') ? region : 'region-' + region}.preflight_fluid_autoscaling_reservations\` = [${all_list}]\n);`;
+        }
+        
+        renderConfigStatus({
+          enabled: missing.length === 0,
+          configured_reservations: configured,
+          missing_reservations: missing,
+          ddl: ddl
+        });
+      }
+    } catch (e) {
+      console.error('Failed to check fluid scaling status', e);
+    }
+  }
+
+  function formatCurrency(n) {
+    if (!isFinite(n)) return '$0';
+    return `$${Math.round(n).toLocaleString()}`;
+  }
+
+  return { init, load, checkStatus };
+})();
+
+/* ============================================================
+   ROUTER
+   Single source of truth: URL hash determines current view.
+   Event delegation on the nav means new links auto-work.
+   ============================================================ */
+
+const Router = (() => {
+  const DEFAULT_VIEW = 'storage';
+
+  const onShow = {};   // viewId -> function
+  const onHide = {};   // viewId -> function
+
+  function register(viewId, { show, hide } = {}) {
+    if (show) onShow[viewId] = show;
+    if (hide) onHide[viewId] = hide;
+  }
+
+  function getCurrentViewId() {
+    return (location.hash || `#${DEFAULT_VIEW}`).replace(/^#/, '').split('?')[0];
+  }
+
+  function getQueryParams() {
+    const hash = location.hash || '';
+    const queryStart = hash.indexOf('?');
+    if (queryStart === -1) return {};
+    return Object.fromEntries(new URLSearchParams(hash.slice(queryStart + 1)));
+  }
+
+  function navigate(viewId, params = {}) {
+    const query = new URLSearchParams(params).toString();
+    const newHash = `#${viewId}${query ? '?' + query : ''}`;
+    if (location.hash === newHash) {
+      render();
+    } else {
+      location.hash = newHash;
+    }
+  }
+
+  function render() {
+    const targetView = getCurrentViewId();
+    
+    // Global project check: redirect to settings if no project is set (ignore for dashboard/settings)
+    if (targetView !== 'settings' && targetView !== 'dashboard' && targetView !== 'about' && !state.orgProject) {
+        showNotification('Execution Project ID must be set in Settings before proceeding.', 'warning');
+        location.hash = '#settings';
+        return;
+    }
+    
+    const params = getQueryParams();
+
+    const allViews = document.querySelectorAll('.view');
+    const allNavLinks = document.querySelectorAll('[data-view]');
+
+    let foundView = null;
+    let previousView = null;
+
+    allViews.forEach(view => {
+      const wasActive = view.classList.contains('is-active');
+      const shouldBeActive = view.dataset.view === targetView;
+
+      if (wasActive && !shouldBeActive) {
+        previousView = view.dataset.view;
+      }
+      if (shouldBeActive) {
+        foundView = view;
+      }
+
+      view.classList.toggle('is-active', shouldBeActive);
+    });
+
+    if (!foundView) {
+      console.warn(`Router: no view found for "${targetView}", falling back to "${DEFAULT_VIEW}"`);
+      const fallback = document.querySelector(`.view[data-view="${DEFAULT_VIEW}"]`);
+      if (fallback) {
+        fallback.classList.add('is-active');
+        foundView = fallback;
+      }
+    }
+
+    allNavLinks.forEach(link => {
+      link.classList.toggle('is-active', link.dataset.view === targetView);
+    });
+
+    if (previousView && onHide[previousView]) {
+      try { onHide[previousView](); }
+      catch (e) { console.error(`onHide ${previousView}:`, e); }
+    }
+    if (foundView && onShow[foundView.dataset.view]) {
+      try { onShow[foundView.dataset.view](params); }
+      catch (e) { console.error(`onShow ${foundView.dataset.view}:`, e); }
+    }
+
+    document.title = `${capitalize(targetView)} · FinOps Optimizer`;
+    updateScopeBadge(targetView);
+
+    if (typeof window.loadAllCachedData === 'function') {
+      try { window.loadAllCachedData(); } catch (e) { console.warn('[Router] loadAllCachedData error:', e); }
+    }
+
+    const viewport = document.querySelector('.dashboard-viewport');
+    if (viewport) viewport.scrollTop = 0;
+  }
+
+  function capitalize(s) {
+    return s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, ' ');
+  }
+
+  function init() {
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a[data-view]');
+      if (!link) return;
+
+      const href = link.getAttribute('href') || '';
+      if (!href.startsWith('#')) return;
+
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+
+      e.preventDefault();
+      navigate(link.dataset.view);
+    });
+
+    window.addEventListener('hashchange', render);
+    render();
+  }
+
+  return { init, register, navigate, getCurrentViewId, getQueryParams };
+})();
+
+// Boot
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadScopeMap();
+  Router.init();
+});
+
+// Register Dashboard
+Router.register('dashboard', {
+  show: () => Dashboard.init()
+});
+
+// Register Fluid Scaling
+Router.register('fluid-scaling', {
+  show: () => {
+    FluidScaling.init();
+  }
+});
+
+// Register Full Report (inline)
+Router.register('full-report', {
+  show: () => {
+    ReportModule.init().catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// About Panel — fetches /api/about and populates the sidebar badge + view
+// ---------------------------------------------------------------------------
+(function initAboutPanel() {
+  let _aboutData = null;
+
+  async function fetchAbout() {
+    if (_aboutData) return _aboutData;
+    try {
+      const res = await fetch('/api/about');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      _aboutData = await res.json();
+    } catch (err) {
+      console.warn('About: failed to fetch /api/about:', err);
+      _aboutData = {
+        name: 'FinOps Optimizer for BigQuery',
+        version: '?.?.?',
+        release_date: '—',
+        releases: [],
+        repo_url: '#',
+        changelog_url: '#',
+        demo_url: '#',
+      };
+    }
+    return _aboutData;
+  }
+
+  // Populate sidebar badge on page load
+  document.addEventListener('DOMContentLoaded', async () => {
+    const data = await fetchAbout();
+    const badge = document.getElementById('sidebar-version-badge');
+    if (badge) badge.textContent = `v${data.version}`;
+  });
+
+  // Populate About view when navigated to
+  Router.register('about', {
+    show: async () => {
+      const data = await fetchAbout();
+
+      // Header
+      const nameEl = document.getElementById('about-app-name');
+      if (nameEl) nameEl.textContent = data.name;
+
+      const versionEl = document.getElementById('about-version');
+      if (versionEl) versionEl.textContent = `v${data.version}`;
+
+      const dateEl = document.getElementById('about-release-date');
+      if (dateEl) dateEl.textContent = data.release_date;
+
+      // Releases
+      const releasesContainer = document.getElementById('about-releases-container');
+      if (releasesContainer) {
+        releasesContainer.innerHTML = (data.releases || []).map((release, index) => {
+          const isLatest = index === 0;
+          const showDate = release.version !== release.release_date;
+          const highlights = release.highlights || [];
+          const MAX_VISIBLE = 5;
+          const hasOverflow = highlights.length > MAX_VISIBLE;
+          const cardId = `release-card-${index}`;
+
+          const renderItem = (h) => {
+              let formatted = h.replace(/^\[(\w+)\]\s*/, (_, tag) => {
+                  const colors = { Feature: '#38bdf8', Fixed: '#34d399', Security: '#fbbf24', Change: '#94a3b8', Issue: '#f87171', Breaking: '#f87171', Announcement: '#c084fc' };
+                  const c = colors[tag] || '#94a3b8';
+                  return `<span class="release-tag release-tag--${tag.toLowerCase()}" style="font-weight: 600; color: ${c};">[${tag}]</span> `;
+              });
+              formatted = formatted.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              formatted = formatted.replace(/`([^`]+)`/g, '<code class="release-code">$1</code>');
+              return `<li style="padding: 0.3rem 0; color: var(--text-secondary); font-size: 0.95rem;">
+                  <i class="fa-solid fa-check release-check" style="color: #34d399; margin-right: 0.5rem; font-size: 0.75rem; ${isLatest ? '' : 'opacity: 0.6;'}"></i>${formatted}
+              </li>`;
+          };
+
+          const visibleItems = highlights.slice(0, MAX_VISIBLE).map(renderItem).join('');
+          const hiddenItems = hasOverflow ? highlights.slice(MAX_VISIBLE).map(renderItem).join('') : '';
+          const toggleBtn = hasOverflow ? `
+              <button class="release-expand-btn" data-card="${cardId}"
+                  style="background: none; border: none; color: #38bdf8; cursor: pointer; font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0 0 0; display: flex; align-items: center; gap: 4px;">
+                  <i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i>
+                  Show all ${highlights.length} items
+              </button>` : '';
+
+          return `
+            <div class="about-release-card">
+                <div class="about-release-header">
+                    <h3 class="about-release-title" style="${isLatest ? '' : 'opacity: 0.85;'}">
+                        ${isLatest ? '<i class="fa-solid fa-sparkles" style="margin-right: 0.5rem;"></i>' : ''}${release.version}
+                    </h3>
+                    ${showDate ? `<span class="about-release-date">${release.release_date}</span>` : ''}
+                </div>
+                <ul style="list-style: none; padding: 0; margin: 0;">
+                    ${visibleItems}
+                </ul>
+                ${hasOverflow ? `<ul id="${cardId}-hidden" style="list-style: none; padding: 0; margin: 0; display: none;">${hiddenItems}</ul>` : ''}
+                ${toggleBtn}
+            </div>
+          `;
+        }).join('');
+
+        // Wire up expand/collapse buttons
+        releasesContainer.querySelectorAll('.release-expand-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const cardId = btn.dataset.card;
+                const hidden = document.getElementById(`${cardId}-hidden`);
+                if (!hidden) return;
+                const isHidden = hidden.style.display === 'none';
+                hidden.style.display = isHidden ? 'block' : 'none';
+                const chevron = btn.querySelector('i');
+                if (chevron) chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
+                const total = btn.textContent.match(/\d+/);
+                btn.innerHTML = isHidden
+                    ? `<i class="fa-solid fa-chevron-up" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show less`
+                    : `<i class="fa-solid fa-chevron-down" style="font-size: 0.55rem; transition: transform 0.2s;"></i> Show all ${total ? total[0] : ''} items`;
+            });
+        });
+      }
+
+      // Links
+      const changelogLink = document.getElementById('about-changelog-link');
+      if (changelogLink) changelogLink.href = data.changelog_url || '#';
+
+      const demoLink = document.getElementById('about-demo-link');
+      if (demoLink) demoLink.href = data.demo_url || '#';
+
+      const repoLink = document.getElementById('about-repo-link');
+      if (repoLink) repoLink.href = data.repo_url || '#';
+    }
+  });
+})();

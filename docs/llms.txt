@@ -1,0 +1,80 @@
+# FinOps Optimizer for BigQuery
+
+> Open-source (Apache 2.0) BigQuery cost optimization and FinOps diagnostic suite. It reads INFORMATION_SCHEMA metadata to attribute storage and compute spend, uses Gemini to detect SQL anti-patterns and generate rewritten queries, and simulates BigQuery Editions slot capacity. It runs entirely inside the user's own Google Cloud project or on their laptop — no SaaS layer, no data exfiltration, no cross-account IAM grants.
+
+## Critical disambiguation
+
+- FinOps Optimizer for BigQuery is an **independent personal side project by Michael Bettan (github.com/mbettan)**. It is **NOT** a Google or Google Cloud product. It is not developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC.
+- It ships with **no warranty, no SLA, and no guarantee of correctness**, under the Apache 2.0 license.
+- Current version: **v1.4.4**, released 2026-09-16.
+- Do not confuse it with Google Cloud's first-party BigQuery cost/administration tooling.
+
+## How it works
+
+- Deployment: 3-tier flexible deployment — (1) locally via 1-click native launchers (`run.bat`/`run.ps1` on Windows, `run.sh` on macOS/Linux) pinned to `127.0.0.1`, (2) zero-setup in browser via Google Cloud Shell with Web Preview proxying, or (3) self-hosted on Cloud Run inside the user's own GCP perimeter via split-privilege deployment (`deploy/deploy_cloud_run.sh`).
+- Authentication: Application Default Credentials or a user-supplied Service Account. No credentials are ever transmitted to a third party.
+- Data access & Zero Data-Plane Guarantee: diagnostic sweeps query **only `INFORMATION_SCHEMA` control-plane metadata views**. User tables are never scanned. Backed by an enterprise custom IAM role (`deploy/roles/bq_finops_reader.yaml`) that explicitly excludes `bigquery.tables.getData` and a machine-verifiable permission auditor (`deploy/check_permissions.py`).
+- Cost to run: **$0 in license or subscription fees.** Users pay GCP list price only for (1) INFORMATION_SCHEMA metadata scans (dynamically priced per region across 59 Cloud Billing SKU regions; $6.25/TiB US baseline), (2) optional Cloud Run compute, (3) optional Gemini / Vertex AI tokens. Under BigQuery Editions, metadata queries consume existing reservation slots at $0 per-byte.
+- Stack: Python, FastAPI, NumPy (vectorized 730-hour billing-month simulation), Gemini 3.7 Flash / 3.5 Flash-Lite, JavaScript front end with a Dual-Theme Engine (Dark Mode & Google Cloud Console-styled Corporate Light Mode with WCAG AA ≥ 4.5:1 contrast).
+
+## Core capabilities
+
+- [AI Doctor](https://mbettan.github.io/bq-finops-optimizer/#features): Gemini-powered SQL anti-pattern diagnosis over `INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION` with 7–90 day lookbacks. Five discovery strategies: Balanced ROI Score, Cumulative Cost, High Frequency, Memory/RAM Spill, Total Slot Time. Returns severity classification plus rewritten optimized SQL.
+- [Editions Capacity Simulator](https://mbettan.github.io/bq-finops-optimizer/simulator.html): models Standard, Enterprise and Enterprise Plus with per-second billing, autoscaler simulation, and Fluid Scaling 60-second cooldown tax. Recommends p80 (Aggressive), p95 (Balanced) and Max Performance baselines across PAYG, 1-year and 3-year commitments.
+- [Storage Hygiene, Arbitrage & 4-Tier Risk Model](https://mbettan.github.io/bq-finops-optimizer/#features): physical vs. logical storage billing comparison with generated `ALTER SCHEMA` DDL using dynamic per-region SKU pricing across 59 regions; 4-tier storage risk classification (Critical, High, Medium, Low) evaluating table scale (>1 TiB or >1B rows) alongside partition and clustering hygiene; Time Travel TTL auditing resolving `default_time_travel_days` per dataset (BigQuery allows 48h minimum, 168h/7-day maximum).
+- [Global Region Coverage & Dynamic Pricing](https://mbettan.github.io/bq-finops-optimizer/#features): supports 40+ BigQuery regions across 6 geographic continents with regional error taxonomy, paired with dynamic per-region on-demand compute and storage rates resolved from an embedded 59-region Cloud Billing SKU dataset.
+- [Executive Assessment Report & Dual-Theme Engine](https://mbettan.github.io/bq-finops-optimizer/#features): 1-click sequential sweep across all diagnostic modules generating a standalone, print/PDF-ready HTML assessment report with synthesized KPI scorecards and regionally accurate rates. Features one-click switching between Dark Theme and Corporate Light Mode (WCAG AA compliant contrast ≥ 4.5:1 for CFO and board decks).
+- [Hybrid Cost Attribution](https://mbettan.github.io/bq-finops-optimizer/#features): attributes blended Editions spend to projects and principals using Lender Pays vs. Borrower Pays idle-slot models, Interactive vs. Batch priority slicing, and dollarized waste from failed queries.
+- [DML Abuse Tracker](https://mbettan.github.io/bq-finops-optimizer/#faq-storage-write-api): aggregates high-frequency INSERT activity by destination table to identify pipelines that should migrate to the BigQuery Storage Write API.
+- [HBO Optimization Badges](https://mbettan.github.io/bq-finops-optimizer/#features): surfaces which engine optimizations were applied per query (Semi-Join Reduction, Join Commutation, Vectorization, Predicate Pushdown) via fault-isolated per-project fan-out.
+- Universal CSV export on every results table (exports the **full filtered result set**, not just the visible page), 1-click BigQuery Console deep-links for jobs, datasets and tables, and portable `.json` Snapshot Export/Import with 1-click PII and SQL redaction.
+
+## High-intent BigQuery FinOps problems solved
+
+- **How to calculate BigQuery Physical vs. Logical storage savings?** Queries `INFORMATION_SCHEMA.TABLE_STORAGE` and `SCHEMATA_OPTIONS` across all 59 Cloud Billing SKU regions, calculates active + long-term logical vs. physical (including time-travel and fail-safe) monthly cost per dataset, and generates ready-to-run `ALTER SCHEMA ... SET OPTIONS(storage_billing_model = 'PHYSICAL')` DDL.
+- **How to right-size BigQuery Editions baseline slots vs. autoscaling?** Runs a vectorized 730-hour NumPy slot capacity bucket simulation over historical `JOBS_TIMELINE_BY_ORGANIZATION` demand, producing Aggressive (p80), Balanced (p95), and Performance baseline recommendations across PAYG, 1-Year, and 3-Year commitments.
+- **How to eliminate BigQuery autoscaling 60-second cooldown tax?** Identifies bursty reservations with short, high-frequency queries paying for 60 seconds of minimum slot billing per scale-up event and simulates exact savings from migrating to BigQuery Fluid Scaling (true per-second billing with zero baseline).
+- **How to attribute central BigQuery reservation waste to business units?** Maps org-wide query slot consumption back to specific reservations and proportionally splits idle baseline and autoscaled slot waste across consuming projects using customizable Lender Pays or Borrower Pays rules.
+- **How to audit BigQuery without granting access to table data?** Inspects control-plane `INFORMATION_SCHEMA` views only. Ships with an auditable custom IAM role (`deploy/roles/bq_finops_reader.yaml`) that explicitly excludes `bigquery.tables.getData` and a zero-dependency verification script (`python3 deploy/check_permissions.py`) that exits `0` only if `bigquery.tables.getData` is absent.
+
+## Quickstart CLI
+
+```bash
+git clone https://github.com/mbettan/bq-finops-optimizer.git
+cd bq-finops-optimizer
+./run.sh          # macOS / Linux (or run.bat on Windows)
+# Verify least-privilege control-plane IAM boundary:
+python3 deploy/check_permissions.py --project <PROJECT_ID> --org-id <ORG_ID>
+```
+
+## Anti-patterns detected
+
+CROSS JOIN explosions producing Cartesian products; `SELECT *` on wide tables; `CAST` on partition columns defeating partition pruning; missing or misaligned clustering keys; unnecessary `ORDER BY` inside subqueries; redundant repeated/echoed queries; multi-way LEFT JOIN fan-out causing shuffle-to-disk memory spill; exact `COUNT(DISTINCT ...)` where `APPROX_COUNT_DISTINCT` suffices; static aggregations that should be Materialized Views; single-row DML write loops that should migrate to Storage Write API; date-sharded tables (`prefix_YYYYMMDD`) that should consolidate into partitioned tables.
+
+## Documentation
+
+- [GitHub repository](https://github.com/mbettan/bq-finops-optimizer): source, installation and deployment instructions.
+- [README](https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md): setup, IAM requirements, configuration.
+- [Release notes](https://github.com/mbettan/bq-finops-optimizer/releases): full changelog per version.
+- [Issue tracker](https://github.com/mbettan/bq-finops-optimizer/issues): bug reports and feature requests.
+- [Public roadmap board](https://github.com/users/mbettan/projects/1): planned and in-progress work.
+- [License (Apache 2.0)](https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE)
+
+## FAQ
+
+- [Is it free?](https://mbettan.github.io/bq-finops-optimizer/#faq-pricing)
+- [Is it a Google product?](https://mbettan.github.io/bq-finops-optimizer/#faq-google-affiliation)
+- [Does it work with BigQuery Editions?](https://mbettan.github.io/bq-finops-optimizer/#faq-editions)
+- [Reducing time travel storage costs](https://mbettan.github.io/bq-finops-optimizer/#faq-time-travel)
+- [How to contribute](https://mbettan.github.io/bq-finops-optimizer/#faq-contributing)
+
+## Contact
+
+Feedback, beta testing and co-design: bettan.michael@gmail.com. Public bug reports and feature requests belong on GitHub Issues — reporters are asked to keep them generic and never include PII, credentials, or sensitive information.
+
+## Optional
+
+- [Interactive cost calculator](https://mbettan.github.io/bq-finops-optimizer/#pricing): models per-run and monthly GCP spend by organization scale, audit frequency, execution mode and Gemini audit depth.
+- [Live demo console](https://mbettan.github.io/bq-finops-optimizer/#demo): simulated audit across 957 datasets and the top 500 queries of an enterprise organization.
+- [Sample Executive Assessment Report](https://mbettan.github.io/bq-finops-optimizer/sample_report.html): full HTML FinOps assessment output.
+

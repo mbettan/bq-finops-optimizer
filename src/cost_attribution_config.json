@@ -1,0 +1,11 @@
+{
+  "waste_rule": "A",
+  "central_cost_center_project": null,
+  "borrowing_rule": "lender_pays",
+  "reservations": {
+    "defaultdefaultdefaudefaultdefaultltdefaultdefault": {
+      "sku_rate": 0.04004000044,
+      "total_admin_bill": 1000100010001000.0
+    }
+  }
+}

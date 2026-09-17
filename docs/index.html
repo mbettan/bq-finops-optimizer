@@ -1,0 +1,2929 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinOps Optimizer for BigQuery — Open Source GCP Cost &amp; Slot Optimization Suite</title>
+    <meta name="description"
+        content="Open-source BigQuery FinOps toolkit &amp; simulator. Right-size Editions slot capacity, capture physical vs. logical storage arbitrage, eliminate Fluid Scaling cooldown taxes, and audit SQL anti-patterns via INFORMATION_SCHEMA with zero data-plane access.">
+    <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <link rel="canonical" href="https://mbettan.github.io/bq-finops-optimizer/">
+    <link rel="alternate" type="text/plain" title="LLM Context (llms.txt)" href="https://mbettan.github.io/bq-finops-optimizer/llms.txt">
+    <link rel="alternate" type="application/atom+xml" title="FinOps Optimizer releases"
+        href="https://github.com/mbettan/bq-finops-optimizer/releases.atom">
+    <link rel="sitemap" type="application/xml" href="https://mbettan.github.io/bq-finops-optimizer/sitemap.xml">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://mbettan.github.io/bq-finops-optimizer/">
+    <meta property="og:title" content="FinOps Optimizer for BigQuery — Open Source Cost &amp; Slot Optimization">
+    <meta property="og:description"
+        content="Right-size BigQuery Editions slots, capture 40–70% physical storage arbitrage, detect SQL anti-patterns with Gemini AI, and simulate Fluid Scaling savings — 100% open source with zero data-plane access.">
+    <meta property="og:site_name" content="FinOps Optimizer">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="FinOps Optimizer dashboard showing BigQuery slot simulation, storage arbitrage, and AI Doctor query diagnosis">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="FinOps Optimizer for BigQuery — Open Source GCP Cost &amp; Slot Optimization">
+    <meta name="twitter:description"
+        content="Right-size BigQuery Editions slots, capture physical storage arbitrage, and audit SQL anti-patterns via INFORMATION_SCHEMA. Zero SaaS fees, zero data-plane access.">
+    <meta name="twitter:image" content="https://mbettan.github.io/bq-finops-optimizer/static/social-preview.png">
+    <meta name="twitter:image:alt" content="FinOps Optimizer dashboard showing BigQuery cost analysis and slot simulation">
+
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "FinOps Optimizer",
+        "alternateName": ["FinOps Optimizer for BigQuery", "BQ FinOps Optimizer"],
+        "url": "https://mbettan.github.io/bq-finops-optimizer/"
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "FinOps Optimizer",
+        "description": "Open-source BigQuery FinOps diagnostic and simulation suite. Right-size Editions slot capacity, capture physical storage arbitrage, mitigate Fluid Scaling cooldown taxes, and detect SQL anti-patterns using deterministic linters and Gemini AI — with zero data-plane access.",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Cloud Cost Optimization",
+        "operatingSystem": "Cross-platform",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "isAccessibleForFree": true,
+        "softwareVersion": "1.4.4",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "url": "https://mbettan.github.io/bq-finops-optimizer/",
+        "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
+        "softwareHelp": "https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md",
+        "codeRepository": "https://github.com/mbettan/bq-finops-optimizer",
+        "programmingLanguage": ["Python", "JavaScript", "SQL"],
+        "author": {
+            "@type": "Person",
+            "name": "Michael Bettan",
+            "url": "https://github.com/mbettan",
+            "sameAs": ["https://github.com/mbettan"]
+        },
+        "publisher": { "@type": "Person", "name": "Michael Bettan", "url": "https://github.com/mbettan" },
+        "datePublished": "2026-07-15",
+        "dateModified": "2026-09-17",
+        "inLanguage": "en",
+        "mainEntityOfPage": "https://mbettan.github.io/bq-finops-optimizer/",
+        "disambiguatingDescription": "Independent open-source project. Not a Google or Google Cloud product, and not endorsed or supported by Google.",
+        "keywords": "BigQuery cost optimization, BigQuery FinOps, GCP cost management, BigQuery slot analysis, SQL anti-pattern detection, Gemini SQL optimization, BigQuery Editions simulator, INFORMATION_SCHEMA analysis, physical vs logical storage billing, Fluid Scaling",
+        "releaseNotes": "Enterprise BigQuery FinOps toolkit featuring 730-hour vectorized slot simulation, Fluid Scaling cooldown tax modeling, Logical vs. Physical storage arbitrage, Hybrid Cost Attribution, AI Doctor SQL auditing, and Zero Data-Plane Access.",
+        "featureList": [
+            "Executive Assessment Report Generator & Comprehensive Analysis Sweep",
+            "AI Doctor — Gemini-powered SQL anti-pattern diagnosis and query rewriting",
+            "Interactive Runtime Economics & FinOps ROI Calculator",
+            "Editions Capacity Simulator for Standard, Enterprise and Enterprise Plus",
+            "Physical vs. logical storage billing arbitrage with ALTER SCHEMA DDL",
+            "Slot utilization timeline and p80/p95/max baseline recommendations",
+            "Hybrid cost attribution with Lender Pays and Borrower Pays idle-slot models",
+            "Query Anti-Pattern Linter with owner-level waste roll-up",
+            "Time Travel TTL auditing per dataset",
+            "DML abuse tracking for Storage Write API migration candidates",
+            "CSV export of the full filtered result set on every table",
+            "BigQuery Console deep-links for jobs, datasets and tables"
+        ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://mbettan.github.io/bq-finops-optimizer/" },
+            { "@type": "ListItem", "position": 2, "name": "Editions Capacity Simulator", "item": "https://mbettan.github.io/bq-finops-optimizer/simulator.html" }
+        ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": "How does the AI Doctor optimize BigQuery queries?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The AI Doctor pulls real queries from INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION, classifies anti-pattern severity with Gemini, and generates rewritten optimized SQL with estimated cost savings."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Where does FinOps Optimizer use AI, and where does it not?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "AI (Gemini) is used exclusively in the AI Doctor module for semantic SQL analysis, anti-pattern classification, and query rewriting. Every other module — Storage Optimizer, Compute Analyzer, Slot Timeline, Editions Simulator, Top Spenders, Anti-Pattern Linter — is fully deterministic, built on pure SQL aggregations, vectorized NumPy computation, and rule-based heuristics. This design maximizes reproducibility: identical inputs always produce identical outputs, with no LLM variability in cost calculations or capacity recommendations."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is FinOps Optimizer free?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes, it is fully open source under the Apache 2.0 license. There are zero SaaS fees — you only pay for your own BigQuery compute and Agent Platform usage. The tool runs entirely on your local machine or within your own Cloud Run environment."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is FinOps Optimizer a Google Cloud product?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "No. FinOps Optimizer is an independent, personal side project. It is not developed, maintained, supported, or endorsed by Google. It comes with no warranty, no SLA, and no guarantee of correctness. Use it at your own risk."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What permissions does it need, and can it read my data?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "No. The tool only queries INFORMATION_SCHEMA metadata views (job telemetry, table schemas, dataset options). It deliberately excludes bigquery.tables.getData, meaning it cannot read a single row of customer data. A formal least-privilege IAM role (deploy/roles/bq_finops_reader.yaml) ships with the project, and a machine-verifiable permission auditor (deploy/check_permissions.py) lets your security team independently confirm the data-plane boundary before granting access."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Does it create a database or store any data?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "No. FinOps Optimizer is fully stateless. It does not create a database, write to disk, or persist any results between runs. Every audit queries BigQuery INFORMATION_SCHEMA live, renders the results in your browser, and discards them when you close the session. There is no backend storage, no cache layer, and no telemetry phone-home. The only artifact you keep is the optional CSV or HTML report you choose to export."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What BigQuery anti-patterns does it detect?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The tool detects common anti-patterns including CROSS JOIN explosions, SELECT * on wide tables, CAST defeating partition pruning, missing clustering keys, unnecessary ORDER BY in subqueries, and redundant repeated queries."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How do I save, export, or share my results?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Every results table has a Download CSV button that exports the full filtered result set (not just the visible page). You can also generate a standalone Executive HTML Report for offline sharing. Between runs, the browser caches your settings (project IDs, region) and last results in localStorage so a page refresh does not lose your work. No data is sent to any server — localStorage stays in your browser and you can clear it at any time from the Settings panel."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How is it different from BigQuery cost recommendations in the Google Cloud Console?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "The Console's built-in recommendations cover a limited set of static rules (e.g. partition expiration, unused tables). FinOps Optimizer goes further: it runs Gemini-powered semantic analysis on your actual SQL, detects cross-join explosions and CAST anti-patterns that defeat partition pruning, generates rewritten optimized queries, simulates Editions capacity trade-offs across your full workload, and attributes spend to individual owners — all without sending data outside your perimeter."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Does it work with BigQuery Editions?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. The tool models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis. It recommends optimal edition and capacity tier for your workload."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Are you looking for beta testers and co-design partners?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Absolutely! We want to work with real users who are willing to test FinOps Optimizer in their own environments and share feedback. If you're interested, reach out directly at bettan.michael@gmail.com."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "How can I contribute or help?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "There are several ways to contribute: open issues on GitHub for bugs or feature requests (please keep them generic and never include PII or sensitive information), submit pull requests if you've fixed a bug or improved the code, or share private feedback directly at bettan.michael@gmail.com."
+                }
+            }
+        ]
+    }
+    </script>
+
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="author" content="mbettan">
+    <meta name="google-site-verification" content="EUy2FT8B1694vgEZEiwfaZ-mAV1uPcQKsQl8uyq4pxk">
+
+
+
+    <link rel="stylesheet" href="style.css">
+
+
+    <!-- Preconnect to all external font origins -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+
+    <!-- Preload critical font files to eliminate the CSS→woff2 waterfall -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://fonts.gstatic.com/s/sora/v17/xMQ9uFFYT72X5wkB_18qmnndmSdSnh2BAfO5mnuyOo1lfiQwV6-xo6eeIw.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2">
+
+    <!-- Google Fonts (render-blocking — needed for first paint) -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Font Awesome — load non-render-blocking, swap in after paint -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+        media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"></noscript>
+
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="static/favicon-192.png">
+    <link rel="apple-touch-icon" href="static/favicon.png">
+</head>
+
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    <!-- ░░ ATMOSPHERE ░░ -->
+    <div class="atmosphere" aria-hidden="true">
+        <div class="aurora aurora-1"></div>
+        <div class="aurora aurora-2"></div>
+        <div class="aurora aurora-3"></div>
+        <div class="stars"></div>
+        <div class="grid-overlay"></div>
+        <div class="noise"></div>
+    </div>
+
+    <div class="scroll-progress" id="scroll-progress" aria-hidden="true"></div>
+
+    <!-- ░░ NAV ░░ -->
+    <nav id="navbar" role="navigation" aria-label="Main navigation">
+        <div class="nav-shell container">
+            <a href="#top" class="logo" aria-label="FinOps Optimizer home">
+                <span class="logo-mark" aria-hidden="true">
+                    <img src="static/favicon.png" alt="FinOps Optimizer Logo" width="36" height="36">
+                </span>
+                <span class="logo-type">FinOps&nbsp;<em>Optimizer</em></span>
+            </a>
+            <div class="nav-links" id="nav-links">
+                <a href="#demo">Demo</a>
+                <a href="#features">Capabilities</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#roadmap">Roadmap</a>
+                <a href="#releases">Releases</a>
+                <a href="#trust">Security</a>
+                <a href="#workflow">Workflow</a>
+                <a href="#faq">FAQ</a>
+                <a href="simulator.html">Simulator</a>
+            </div>
+            <div class="nav-actions">
+                <!-- The label span is hidden below 768px, so the link needs its
+                     own accessible name or it degrades to a bare icon. -->
+                <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-github" target="_blank" rel="noopener noreferrer" aria-label="Star FinOps Optimizer on GitHub">
+                    <i class="fab fa-github" aria-hidden="true"></i><span>Star on GitHub</span>
+                </a>
+                <button class="nav-hamburger" id="nav-hamburger" type="button" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="nav-links">
+                    <i class="fas fa-bars" id="hamburger-icon" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main id="main-content">
+
+    <!-- ░░ HERO ░░ -->
+    <header class="hero" id="top">
+        <div class="container hero-inner">
+            <div class="hero-copy">
+                <div class="hero-badges">
+                    <span class="chip chip-live"><span class="chip-dot"></span>Open Source · Apache 2.0</span>
+                    <span class="chip chip-version"><i class="fas fa-shield-halved"></i>Zero Data-Plane Access</span>
+                </div>
+
+                <h1 class="hero-title">
+                    <span class="sr-only">BigQuery Cost Optimization — </span>
+                    Stop Guessing.<br>
+                    <span class="text-aurora">Start Attributing</span><br>
+                    Every BigQuery Dollar.
+                </h1>
+
+                <p class="hero-sub">
+                    An enterprise BigQuery FinOps diagnostic and simulation engine. Right-size Editions slot capacity,
+                    capture physical storage arbitrage, eliminate 60-second autoscale cooldown taxes, and audit SQL
+                    anti-patterns with deterministic linters and Gemini AI.
+                    <strong>Run locally, in Google Cloud Shell, or on Serverless Cloud Run — 100% inside your GCP perimeter.</strong>
+                </p>
+
+                <div class="cta-group">
+                    <a href="simulator.html" class="btn btn-primary">
+                        <i class="fas fa-play"></i>Launch the Simulator
+                        <span class="btn-shine" aria-hidden="true"></span>
+                    </a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-outline" target="_blank" rel="noopener noreferrer">
+                        <i class="fab fa-github"></i>View Source
+                    </a>
+                </div>
+
+                <p class="mobile-note">
+                    <i class="fas fa-desktop" aria-hidden="true"></i>
+                    The full simulator is a desktop experience — open it on a larger screen for the complete console.
+                </p>
+
+                <div class="hero-metrics" aria-label="Product statistics">
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-count="20" data-suffix="+">20+</span>
+                        <span class="hero-metric-label">FinOps Engines</span>
+                    </div>
+                    <div class="hero-metric-divider" aria-hidden="true"></div>
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-count="0" data-suffix="">0</span>
+                        <span class="hero-metric-label">Table Rows Scanned</span>
+                    </div>
+                    <div class="hero-metric-divider" aria-hidden="true"></div>
+                    <div class="hero-metric">
+                        <span class="hero-metric-value" data-count="760" data-suffix="+">760+</span>
+                        <span class="hero-metric-label">Security &amp; FinOps Tests</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live dashboard mockup -->
+            <div class="hero-visual" aria-hidden="true">
+                <div class="dash-glow"></div>
+                <div class="dash-window">
+                    <div class="dash-chrome">
+                        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+                        <span class="dash-chrome-title"><i class="fas fa-satellite-dish"></i> org-wide · region-us · live</span>
+                    </div>
+                    <div class="dash-body">
+                        <div class="dash-kpis">
+                            <div class="dash-kpi">
+                                <span class="dash-kpi-label">Monthly Waste Found</span>
+                                <span class="dash-kpi-value good">$48,290</span>
+                                <span class="dash-kpi-delta up"><i class="fas fa-arrow-trend-down"></i> −31.4% spend</span>
+                            </div>
+                            <div class="dash-kpi">
+                                <span class="dash-kpi-label">Cooldown Tax</span>
+                                <span class="dash-kpi-value warn">$6,112</span>
+                                <span class="dash-kpi-delta"><i class="fas fa-stopwatch"></i> Fluid Scaling ready</span>
+                            </div>
+                        </div>
+<div class="dash-chart">
+    <div class="dash-chart-head">
+        <span>Slot Utilization · 24h</span>
+        <span class="dash-baseline-tag">p95 baseline · 100 slots</span>
+                            </div>
+                            <div class="dash-bars">
+                                <div class="dash-baseline"></div>
+                                <span style="--h:22%"></span><span style="--h:34%"></span><span style="--h:48%"></span>
+                                <span style="--h:71%"></span><span style="--h:92%" class="spike"></span><span style="--h:58%"></span>
+                                <span style="--h:41%"></span><span style="--h:30%"></span><span style="--h:52%"></span>
+                                <span style="--h:86%" class="spike"></span><span style="--h:44%"></span><span style="--h:27%"></span>
+                                <span style="--h:19%"></span><span style="--h:35%"></span><span style="--h:15%"></span>
+                                <span style="--h:24%"></span>
+                            </div>
+                            </div>
+
+                        <div class="dash-ticker">
+                            <span class="ticker-badge"><i class="fas fa-robot"></i> AI Doctor</span>
+                            <span class="ticker-text" id="ticker-text">AI Doctor: Multi-Strategy ROI Engine prioritized 5 discovery modes across 7–90d org lookbacks</span>
+                        </div>
+                        </div>
+                        </div>
+
+                <div class="float-card float-card-1">
+                    <i class="fas fa-database"></i>
+                    <div><strong>957 datasets</strong><span>audited in 42s</span></div>
+                </div>
+                <div class="float-card float-card-2">
+                    <i class="fas fa-wand-magic-sparkles"></i>
+                    <div><strong>Gemini Insight</strong><span>7 anti-patterns detected</span></div>
+                </div>
+                </div>
+                </div>
+                </header>
+                
+                <!-- ░░ MARQUEE ░░ -->
+                <div class="marquee" aria-hidden="true">
+                    <div class="marquee-track">
+                        <!-- duplicated for seamless loop -->
+                        <span><i class="fas fa-database"></i> BigQuery</span>
+                        <span><i class="fas fa-server"></i> FastAPI</span>
+                        <span><i class="fab fa-python"></i> Python</span>
+                        <span><i class="fas fa-brain"></i> Gemini</span>
+                        <span><i class="fas fa-square-root-variable"></i> NumPy</span>
+                        <span><i class="fab fa-google"></i> Cloud Run</span>
+                        <span><i class="fas fa-chart-line"></i> INFORMATION_SCHEMA</span>
+                        <span><i class="fas fa-database"></i> BigQuery</span>
+                        <span><i class="fas fa-server"></i> FastAPI</span>
+                        <span><i class="fab fa-python"></i> Python</span>
+                        <span><i class="fas fa-brain"></i> Gemini</span>
+                        <span><i class="fas fa-square-root-variable"></i> NumPy</span>
+                        <span><i class="fab fa-google"></i> Cloud Run</span>
+                        <span><i class="fas fa-chart-line"></i> INFORMATION_SCHEMA</span>
+                    </div>
+                </div>
+
+    <!-- ░░ INTERACTIVE DEMO CONSOLE ░░ -->
+    <section id="demo" aria-label="Interactive demo">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><span class="chip-dot"></span>Interactive Console</span>
+                <h2>Behold the <span class="text-aurora">Scale of Savings</span></h2>
+                <p>A simulated audit across <strong>957 datasets</strong> and the <strong>top 500 queries</strong> of an enterprise
+                    organization. Switch engines below.</p>
+            </div>
+
+            <div class="console reveal">
+                <div class="console-tabs" role="tablist" aria-label="Demo modules">
+                    <button class="console-tab is-active" role="tab" data-panel="panel-storage" aria-selected="true">
+                        <i class="fas fa-hard-drive"></i><span>Storage Optimizer</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-compute" aria-selected="false">
+                        <i class="fas fa-microchip"></i><span>Compute Analyzer</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-timeline" aria-selected="false">
+                        <i class="fas fa-chart-column"></i><span>Slot Timeline</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-profiler" aria-selected="false">
+                        <i class="fas fa-fingerprint"></i><span>Workload Profiler</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-spenders" aria-selected="false">
+                        <i class="fas fa-crown"></i><span>Top Spenders</span>
+                    </button>
+                    <button class="console-tab" role="tab" data-panel="panel-matrix" aria-selected="false">
+                        <i class="fas fa-table-cells"></i><span>Edition Matrix</span>
+                    </button>
+                    <!-- ░░ AI DOCTOR DEMO — TAB BUTTON ░░ -->
+                    <button class="console-tab" role="tab" data-panel="panel-ai-doctor" aria-selected="false">
+                        <i class="fas fa-user-md"></i><span>AI Doctor</span>
+                    </button>
+                </div>
+
+                <p class="console-swipe-hint" aria-hidden="true">
+                    <i class="fas fa-arrows-left-right"></i> Swipe for all 7 modules
+                </p>
+
+                <div class="console-stage">
+                    <!-- Storage -->
+                    <div class="console-panel is-active" id="panel-storage" role="tabpanel">
+                        <div class="panel-caption">
+                            <p>Physical vs. logical storage billing — with the exact <code>ALTER SCHEMA</code> DDL to capture every
+                                dollar.</p>
+                            <span class="panel-kpi" id="storage-total-kpi">—</span>
+                        </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Project</th>
+                                        <th>Dataset</th>
+                                        <th class="num">Logical Cost</th>
+                                        <th class="num">Physical Cost</th>
+                                        <th>Rec</th>
+                                        <th class="num">Savings / mo</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+                    <!-- Compute -->
+                    <div class="console-panel" id="panel-compute" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Job-level pricing arbitrage: which workloads belong on <strong>Editions slots</strong> and which belong
+                                <strong>On-Demand</strong>.</p>
+                        </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Job ID</th>
+                                        <th>User</th>
+                                        <th class="num">On-Demand</th>
+                                        <th class="num">Editions</th>
+                                        <th>Profile</th>
+                                        <th class="num">Delta</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-compute-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+                    <!-- Timeline -->
+                    <div class="console-panel" id="panel-timeline" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>High-resolution slot utilization to find the perfect baseline and expose <strong>autoscale
+                                    spillover</strong>.</p>
+                        </div>
+                        <div class="timeline-chart">
+                            <div class="timeline-baseline">
+                                <span class="timeline-baseline-label">Recommended p95 baseline · 100 slots</span>
+                            </div>
+                            <div class="timeline-bars">
+                                <span style="--h:20%"></span><span style="--h:35%"></span><span style="--h:50%"></span>
+                                <span style="--h:75%"></span><span style="--h:90%" class="spike" data-tip="Peak"></span>
+                                <span style="--h:60%"></span><span style="--h:40%"></span><span style="--h:30%"></span>
+                                <span style="--h:55%"></span><span style="--h:85%" class="spike"></span>
+                                <span style="--h:45%"></span><span style="--h:25%"></span><span style="--h:20%"></span>
+                                <span style="--h:15%"></span><span style="--h:10%"></span>
+                            </div>
+                            <div class="timeline-legend">
+                                <span><i class="legend-swatch swatch-base"></i>Baseline coverage</span>
+                                <span><i class="legend-swatch swatch-spill"></i>Autoscale spillover</span>
+                            </div>
+                            </div>
+                            </div>
+
+                    <!-- Profiler -->
+                    <div class="console-panel" id="panel-profiler" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Top offending query patterns causing inefficient autoscaler activations and the <strong>60-second cooldown
+                                    tax</strong>.</p>
+                        </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width:28%">Query Pattern</th>
+                                        <th>Project</th>
+                                        <th class="num">Frequency</th>
+                                        <th class="num">Avg Slot-hrs</th>
+                                        <th class="num">Avg Dur (s)</th>
+                                        <th class="num">Avg Bytes</th>
+                                        <th>Rec</th>
+                                        </tr>
+                                        </thead>
+                                <tbody id="mock-profiler-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+                    <!-- Spenders -->
+                    <div class="console-panel" id="panel-spenders" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Who is actually spending? Attribute real multi-engine spend across <strong>Reservations & On-Demand</strong>, track <strong>Wasted Spend</strong> from failed queries, and identify immediate savings.</p>
+                        </div>
+                        <div class="table-shell">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Principal</th>
+                                        <th>Billing Mode</th>
+                                        <th class="num">Queries</th>
+                                        <th class="num">Data Billed</th>
+                                        <th class="num">Slot Hours</th>
+                                        <th class="num">Actual Spend</th>
+                                        <th class="num">Waste</th>
+                                        <th class="num">Potential Savings</th>
+                                        <th style="width:16%">Share</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mock-top-spenders-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Matrix -->
+                    <div class="console-panel" id="panel-matrix" role="tabpanel" hidden>
+                        <div class="panel-caption">
+                            <p>Vectorized <strong>Edition Matrix simulation</strong> — the optimal baseline vs. autoscale trade-off across
+                                PAYG, 1-year and 3-year commitments.</p>
+                        </div>
+                        <div class="table-shell matrix-shell">
+                            <table class="data-table matrix-table">
+                                <thead>
+                                    <tr class="matrix-groups">
+                                        <th colspan="2">In Buckets</th>
+                                        <th colspan="2">Below Baseline</th>
+                                        <th colspan="2">Autoscale</th>
+                                        <th colspan="1">AS Cost</th>
+                                        <th colspan="3" class="grp-amber">Baseline Cost</th>
+                                        <th colspan="3" class="grp-blue">Total Monthly</th>
+                                    </tr>
+                                    <tr>
+                                        <th>Bucket</th>
+                                        <th class="sep">Min</th>
+                                        <th>Slots</th>
+                                        <th class="sep">Util %</th>
+                                        <th>Slot-hrs</th>
+                                        <th class="sep">Slot-mo</th>
+                                        <th class="sep">EE PAYG</th>
+                                        <th>PAYG</th>
+                                        <th>1 Yr</th>
+                                        <th class="sep">3 Yr</th>
+                                        <th>PAYG</th>
+                                        <th>1 Yr</th>
+                                        <th>3 Yr</th>
+                                    </tr>
+                                    </thead>
+                                <tbody id="mock-simulation-table-body"></tbody>
+                                </table>
+                                </div>
+                                </div>
+
+<!-- ░░ AI DOCTOR DEMO — PANEL ░░ -->
+<div class="console-panel" id="panel-ai-doctor" role="tabpanel" aria-label="AI Doctor demo" hidden>
+  <div class="ai-doctor-demo">
+
+    <!-- ░░ A) EXECUTIVE KPI STRIP ░░ -->
+    <div class="aid-kpis reveal">
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Audited Spend</span>
+        <span class="aid-kpi-value"><em>$</em>14,720</span>
+        <span class="aid-kpi-sub">last 30 days</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Severity</span>
+        <span class="aid-kpi-value aid-kpi-sev">
+          <span><i class="aid-dot aid-dot-red"></i>3 HIGH</span>
+          <span><i class="aid-dot aid-dot-amber"></i>2 MED</span>
+          <span><i class="aid-dot aid-dot-green"></i>1 LOW</span>
+        </span>
+        <span class="aid-kpi-sub">6 queries diagnosed</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Schema Coverage</span>
+        <span class="aid-kpi-value">87%</span>
+        <span class="aid-kpi-sub">13/15 DDLs retrieved</span>
+      </div>
+      <div class="aid-kpi spotlight">
+        <span class="aid-kpi-label">Data Scanned</span>
+        <span class="aid-kpi-value">2.4 <em>TiB</em></span>
+        <span class="aid-kpi-sub">across 6 queries</span>
+      </div>
+    </div>
+
+    <!-- ░░ B) FILTER PILLS ░░ -->
+    <div class="aid-pills reveal" role="group" aria-label="Filter diagnostic results">
+      <button type="button" class="aid-pill is-active" data-filter="all">All <span class="aid-pill-count">6</span></button>
+      <button type="button" class="aid-pill" data-filter="high"><i class="aid-dot aid-dot-red"></i>High <span class="aid-pill-count">3</span></button>
+      <button type="button" class="aid-pill" data-filter="medium"><i class="aid-dot aid-dot-amber"></i>Medium <span class="aid-pill-count">2</span></button>
+      <button type="button" class="aid-pill" data-filter="migration"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Migration <span class="aid-pill-count">2</span></button>
+      <button type="button" class="aid-pill" data-filter="schemagap"><i class="fas fa-puzzle-piece" aria-hidden="true"></i>Schema Gap <span class="aid-pill-count">1</span></button>
+      <button type="button" class="aid-pill" data-filter="repeat"><i class="fas fa-rotate" aria-hidden="true"></i>Repeat <span class="aid-pill-count">3</span></button>
+    </div>
+
+    <!-- ░░ C) RESULTS TABLE ░░ -->
+    <div class="aid-table-wrap reveal">
+      <table class="aid-table">
+        <thead>
+          <tr>
+            <th scope="col">Job ID</th>
+            <th scope="col">User</th>
+            <th scope="col">Slot-ms</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Original Cost</th>
+            <th scope="col">Original Query</th>
+            <th scope="col">Schema</th>
+            <th scope="col">Gemini Advice</th>
+            <th scope="col">Optimized SQL</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <!-- ROW 1 — HIGH · Full table scan -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-migration="1" data-repeat="1">
+            <td><code class="aid-jobid" title="job_etl_full_scan_2026_07_28_a1b2c3d4">job_etl_full_sc...</code></td>
+            <td class="aid-user">airflow-etl@company.com</td>
+            <td class="aid-num">48,720,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>3.0 TiB</strong>
+              <span class="aid-cost-usd">~$296,868 / yr</span>
+              <span class="aid-repeat-badge" title="Runs 14 times per day"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;14/day</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT *
+FROM `prod-analytics.warehouse.events`
+WHERE event_type = 'purchase'
+ORDER BY created_at DESC
+LIMIT 1000</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">2/2 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; Critical: Full Table Scan Without Partition Filter</h4>
+                  <p><strong>Problem:</strong> This query scans the entire <code>events</code> table (3.1 TiB) without a partition filter on <code>_PARTITIONDATE</code>. Since this job runs <strong>14 times per day</strong>, the annualized cost is <strong>~$297K</strong>.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>SELECT *</code> pulling all 47 columns when only 5 are used downstream</li>
+                    <li>No partition pruning on a date-partitioned table</li>
+                    <li>No clustering key alignment (<code>event_type</code> is a clustering column but appears only in WHERE)</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Add <code>WHERE _PARTITIONDATE &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)</code> to prune partitions</li>
+                    <li>Replace <code>SELECT *</code> with explicit column list</li>
+                    <li>Estimated <strong>97% scan reduction</strong> (~3.0 TiB &#8594; ~94 GiB per run)</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  event_id,
+  user_id,
+  event_type,
+  revenue_usd,
+  created_at
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+  AND event_type = 'purchase'
+ORDER BY created_at DESC
+LIMIT 1000</pre>
+              </div>
+              <button type="button" class="aid-yaml-toggle" aria-expanded="false">
+                &#129668; Migration API Config Applied <i class="fas fa-chevron-down" aria-hidden="true"></i>
+              </button>
+              <pre class="aid-yaml" hidden>translationConfigDetails:
+  sourceDialect: bigquery
+  requestedDialect: bigquery
+  runeEnforcedRules:
+    - addPartitionFilter
+    - convertSelectStar</pre>
+            </td>
+          </tr>
+
+          <!-- ROW 2 — HIGH · Cross join explosion -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-repeat="1">
+            <td><code class="aid-jobid" title="job_report_cross_join_e5f6g7h8">job_report_cro...</code></td>
+            <td class="aid-user">bi-dashboard@company.com</td>
+            <td class="aid-num">92,150,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>1.5 TiB</strong>
+              <span class="aid-cost-usd">$0 billed (Editions)</span>
+              <span class="aid-repeat-badge" title="Runs 7 times per day"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;7/day</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  d.dim_date,
+  p.product_name,
+  c.customer_segment,
+  SUM(f.revenue) AS total_revenue
+FROM `prod-analytics.warehouse.fact_sales` f
+CROSS JOIN `prod-analytics.warehouse.dim_dates` d
+JOIN `prod-analytics.warehouse.dim_products` p ON f.product_id = p.product_id
+JOIN `prod-analytics.warehouse.dim_customers` c ON f.customer_id = c.customer_id
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">3/3 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; Critical: CROSS JOIN Producing Cartesian Product</h4>
+                  <p><strong>Problem:</strong> The <code>CROSS JOIN</code> with <code>dim_dates</code> creates a Cartesian product &#8212; every sales row is multiplied by every calendar date. With 1.5 TiB scanned across Editions (billed = $0), this consumes massive slot capacity.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>CROSS JOIN</code> without a matching key (should use <code>sale_date = dim_date</code>)</li>
+                    <li>No date filter on the fact table &#8212; scans entire history</li>
+                    <li>Revenue is aggregated across an inflated row set, producing incorrect totals</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Replace <code>CROSS JOIN</code> with a date-keyed <code>JOIN</code> or simply use the <code>sale_date</code> column directly</li>
+                    <li>Add a <code>WHERE</code> clause for partition pruning</li>
+                    <li>Estimated <strong>99% slot reduction</strong> by eliminating the Cartesian explosion</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  f.sale_date AS dim_date,
+  p.product_name,
+  c.customer_segment,
+  SUM(f.revenue) AS total_revenue
+FROM `prod-analytics.warehouse.fact_sales` f
+JOIN `prod-analytics.warehouse.dim_products` p ON f.product_id = p.product_id
+JOIN `prod-analytics.warehouse.dim_customers` c ON f.customer_id = c.customer_id
+WHERE f.sale_date &gt;= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 3 — HIGH · Repeated micro-query -->
+          <tr class="aid-row aid-row-high" data-severity="HIGH" data-repeat="1">
+            <td><code class="aid-jobid" title="job_micro_cast_query_i9j0k1l2">job_micro_cast...</code></td>
+            <td class="aid-user">looker-svc@company.com</td>
+            <td class="aid-num">1,250,000</td>
+            <td><span class="aid-badge aid-badge-high"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>HIGH</span></td>
+            <td class="aid-cost">
+              <strong>200 GiB</strong>
+              <span class="aid-cost-usd">~$11,726 / yr</span>
+              <span class="aid-repeat-badge" title="Runs 8,760 times per year (hourly)"><i class="fas fa-rotate" aria-hidden="true"></i>&#215;8,760/yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT COUNT(*)
+FROM `prod-analytics.logs.user_events`
+WHERE CAST(event_timestamp AS STRING) LIKE '2026-07-28%'</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">1/1 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128308; High Frequency: 8,760 Executions with CAST Anti-Pattern</h4>
+                  <p><strong>Problem:</strong> This query runs <strong>every hour</strong> (8,760&#215;/year). The <code>CAST(timestamp AS STRING)</code> defeats partition pruning and forces a full column scan on every invocation.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>CAST(event_timestamp AS STRING)</code> prevents the query optimizer from using the partition index</li>
+                    <li><code>LIKE '2026-07-28%'</code> is a string comparison when a direct timestamp range would be prunable</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Replace <code>CAST/LIKE</code> with a native <code>TIMESTAMP</code> range comparison</li>
+                    <li>Enables partition pruning: ~200 GiB &#8594; ~5 GiB per run</li>
+                    <li>Estimated annual savings: <strong>~$11K</strong> from scan reduction alone</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT COUNT(*)
+FROM `prod-analytics.logs.user_events`
+WHERE event_timestamp &gt;= TIMESTAMP('2026-07-28')
+  AND event_timestamp &lt; TIMESTAMP('2026-07-29')</pre>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 4 — MEDIUM · Memory spill -->
+          <tr class="aid-row aid-row-medium" data-severity="MEDIUM" data-migration="1" data-schemagap="1">
+            <td><code class="aid-jobid" title="job_ml_feature_spill_m3n4o5p6">job_ml_feature...</code></td>
+            <td class="aid-user">data-science@company.com</td>
+            <td class="aid-num">34,500,000</td>
+            <td><span class="aid-badge aid-badge-medium"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>MEDIUM</span></td>
+            <td class="aid-cost">
+              <strong>512 GiB</strong>
+              <span class="aid-cost-usd">~$1,252 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT DISTINCT
+  u.user_id,
+  u.signup_date,
+  COUNT(DISTINCT o.order_id) AS order_count,
+  SUM(o.amount) AS lifetime_value,
+  AVG(s.session_duration) AS avg_session,
+  MAX(e.last_login) AS recency
+FROM `prod-analytics.core.users` u
+LEFT JOIN `prod-analytics.core.orders` o ON u.user_id = o.user_id
+LEFT JOIN `prod-analytics.core.sessions` s ON u.user_id = s.user_id
+LEFT JOIN `prod-analytics.core.events` e ON u.user_id = e.user_id
+GROUP BY 1, 2</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-warn">3/4 DDLs &#9888;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128993; Memory Spill: Multi-Table Fan-Out Causing Shuffle to Disk</h4>
+                  <p><strong>Problem:</strong> Four <code>LEFT JOIN</code>s on the same key without pre-aggregation causes a fan-out explosion. BigQuery spilled <strong>12.4 GiB</strong> to disk across 3 stages.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li><code>SELECT DISTINCT</code> combined with <code>GROUP BY</code> &#8212; redundant and expensive</li>
+                    <li>Multi-way join without subquery pre-aggregation creates an O(n&#8308;) intermediate result</li>
+                    <li>1 of 4 table schemas could not be retrieved (cross-project permission)</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Pre-aggregate each dimension table in subqueries before joining</li>
+                    <li>Remove the outer <code>DISTINCT</code> (the <code>GROUP BY</code> already deduplicates)</li>
+                    <li>Estimated <strong>80% memory reduction</strong> &#8212; eliminates disk spill entirely</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  u.user_id,
+  u.signup_date,
+  COALESCE(o.order_count, 0) AS order_count,
+  COALESCE(o.lifetime_value, 0) AS lifetime_value,
+  COALESCE(s.avg_session, 0) AS avg_session,
+  e.recency AS recency
+FROM `prod-analytics.core.users` u
+LEFT JOIN (
+  SELECT user_id, COUNT(DISTINCT order_id) AS order_count, SUM(amount) AS lifetime_value
+  FROM `prod-analytics.core.orders`
+  GROUP BY 1
+) o ON u.user_id = o.user_id
+LEFT JOIN (
+  SELECT user_id, AVG(session_duration) AS avg_session
+  FROM `prod-analytics.core.sessions`
+  GROUP BY 1
+) s ON u.user_id = s.user_id
+LEFT JOIN (
+  SELECT user_id, MAX(last_login) AS recency
+  FROM `prod-analytics.core.events`
+  GROUP BY 1
+) e ON u.user_id = e.user_id</pre>
+              </div>
+              <button type="button" class="aid-yaml-toggle" aria-expanded="false">
+                &#129668; Migration API Config Applied <i class="fas fa-chevron-down" aria-hidden="true"></i>
+              </button>
+              <pre class="aid-yaml" hidden>translationConfigDetails:
+  sourceDialect: bigquery
+  requestedDialect: bigquery
+  runeEnforcedRules:
+    - rewriteDistinctToGroupBy</pre>
+            </td>
+          </tr>
+
+          <!-- ROW 5 — MEDIUM · MV candidate -->
+          <tr class="aid-row aid-row-medium" data-severity="MEDIUM">
+            <td><code class="aid-jobid" title="job_mv_refresh_stale_q7r8s9t0">job_mv_refresh...</code></td>
+            <td class="aid-user">scheduler-svc@company.com</td>
+            <td class="aid-num">18,200,000</td>
+            <td><span class="aid-badge aid-badge-medium"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>MEDIUM</span></td>
+            <td class="aid-cost">
+              <strong>307 GiB</strong>
+              <span class="aid-cost-usd">~$2,012 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  region,
+  product_category,
+  DATE_TRUNC(order_date, MONTH) AS month,
+  SUM(quantity * unit_price) AS revenue,
+  COUNT(DISTINCT customer_id) AS unique_customers
+FROM `prod-analytics.sales.orders`
+JOIN `prod-analytics.sales.products` USING (product_id)
+WHERE order_date &gt;= '2024-01-01'
+GROUP BY 1, 2, 3</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">2/2 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128993; Redundant Aggregation &#8212; Materialized View Candidate</h4>
+                  <p><strong>Problem:</strong> This exact aggregation pattern (region &#215; category &#215; month) runs <strong>4 times daily</strong> with identical <code>GROUP BY</code> output. Each run scans 307 GiB.</p>
+                  <p><strong>Anti-patterns detected:</strong></p>
+                  <ul>
+                    <li>Aggregation query with a static <code>WHERE</code> clause scanning 2+ years of history every time</li>
+                    <li>No incremental processing &#8212; re-computes the full result on every run</li>
+                  </ul>
+                  <p><strong>Recommended fix:</strong></p>
+                  <ul>
+                    <li>Create a BigQuery <strong>Materialized View</strong> with <code>enable_refresh = true</code> and <code>refresh_interval_minutes = 60</code></li>
+                    <li>The MV would serve subsequent reads from its pre-aggregated cache at zero scan cost</li>
+                    <li>Estimated <strong>90% cost reduction</strong> (~$2K/year savings)</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-no-rewrite">
+                <i class="fas fa-layer-group" aria-hidden="true"></i>
+                No rewrite &#8212; Materialized View recommended (see advice)
+              </div>
+            </td>
+          </tr>
+
+          <!-- ROW 6 — LOW · Approx count opportunity -->
+          <tr class="aid-row aid-row-low" data-severity="LOW">
+            <td><code class="aid-jobid" title="job_dashboard_kpi_u1v2w3x4">job_dashboard_...</code></td>
+            <td class="aid-user">analyst@company.com</td>
+            <td class="aid-num">2,100,000</td>
+            <td><span class="aid-badge aid-badge-low"><i class="fas fa-circle-check" aria-hidden="true"></i>LOW</span></td>
+            <td class="aid-cost">
+              <strong>10 GiB</strong>
+              <span class="aid-cost-usd">~$24 / yr</span>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-orig">
+                <button type="button" class="aid-copy" aria-label="Copy original SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Original query">SELECT
+  COUNT(DISTINCT user_id) AS unique_users,
+  COUNT(*) AS total_events,
+  COUNTIF(event_type = 'conversion') AS conversions
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
+              </div>
+            </td>
+            <td><span class="aid-schema aid-schema-ok">1/1 DDLs &#10003;</span></td>
+            <td>
+              <div class="aid-advice">
+                <div class="aid-advice-body">
+                  <h4>&#128994; Minor: APPROX_COUNT_DISTINCT Opportunity</h4>
+                  <p><strong>Problem:</strong> <code>COUNT(DISTINCT user_id)</code> on a high-cardinality column uses exact HyperLogLog computation. For a dashboard KPI, approximate counts are typically acceptable.</p>
+                  <p><strong>Recommendation:</strong></p>
+                  <ul>
+                    <li>Replace <code>COUNT(DISTINCT user_id)</code> with <code>APPROX_COUNT_DISTINCT(user_id)</code></li>
+                    <li>&#9888;&#65039; <strong>Trade-off:</strong> ~1% accuracy reduction in exchange for ~50% memory savings</li>
+                    <li>This is already a well-partitioned query with low total cost ($24/year) &#8212; optimization is optional</li>
+                  </ul>
+                </div>
+              </div>
+            </td>
+            <td>
+              <div class="aid-sql aid-sql-opt">
+                <button type="button" class="aid-copy" aria-label="Copy optimized SQL"><i class="fas fa-copy" aria-hidden="true"></i></button>
+                <pre title="Optimized query">SELECT
+  APPROX_COUNT_DISTINCT(user_id) AS unique_users,
+  COUNT(*) AS total_events,
+  COUNTIF(event_type = 'conversion') AS conversions
+FROM `prod-analytics.warehouse.events`
+WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
+              </div>
+              <span class="aid-approx-flag" title="Approximate function trade-off"><i class="fas fa-scale-unbalanced" aria-hidden="true"></i>~1% accuracy trade-off</span>
+            </td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+
+    <p class="aid-empty" hidden><i class="fas fa-filter-circle-xmark" aria-hidden="true"></i> No queries match this filter.</p>
+
+  </div>
+</div>
+<!-- ░░ /AI DOCTOR DEMO — PANEL ░░ -->
+                                </div>
+                                </div>
+        </div>
+    </section>
+
+    <!-- ░░ FEATURES ░░ -->
+    <section id="features" aria-label="Capabilities">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section">Capabilities</span>
+                <h2>Zero-Friction <span class="text-aurora">BigQuery Cost Optimization</span></h2>
+                <p>Run the tool where your data lives. No third-party SaaS, no data exfiltration. One mission: eliminate waste.</p>
+            </div>
+
+            <div class="bento reveal-group">
+
+                <!-- 1. AI Doctor & SQL Anti-Pattern Suite (Full Width Flagship) -->
+                <article class="card card-full card-premium spotlight reveal">
+                    <span class="pill pill-new">✦ Flagship AI + SQL Linter</span>
+                    <div class="premium-grid">
+                        <div>
+                            <div class="card-icon icon-ai"><i class="fas fa-user-md"></i></div>
+                            <h3>AI Doctor &amp; SQL Anti-Pattern Suite</h3>
+                            <p>Combines <strong>Gemini 3.7 Flash semantic SQL auditing</strong> with a deterministic <strong>SQL Anti-Pattern Linter</strong> across <code>JOBS_BY_ORGANIZATION</code>. Ranks query templates via 5 ROI discovery strategies, rolls up "Wall of Shame" waste by owner, detects single-row DML write loops, Materialized View refresh overhead, and Join Skew, and generates rewritten SQL.</p>
+                            <div class="gemini-tag"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Powered by Gemini 3.7 Flash · BigQuery AI.GENERATE Native</div>
+                        </div>
+                        <div>
+                            <p class="premium-label">5 Discovery Priority Strategies</p>
+                            <div class="pattern-pills">
+                                <span>⚖️ Balanced ROI Score</span>
+                                <span>💰 Cumulative Cost</span>
+                                <span>🔄 High Frequency</span>
+                                <span>💾 Memory RAM Spill</span>
+                                <span>⏱️ Total Slot Time</span>
+                            </div>
+                            <p class="premium-label" style="margin-top: 0.75rem;">Deterministic &amp; AI Capabilities</p>
+                            <div class="pattern-pills">
+                                <span>Owner-Level Anti-Pattern Roll-Up</span>
+                                <span>DML Write Loop Detection</span>
+                                <span>Multi-Stage Shuffle Spill Unnesting</span>
+                                <span>Interactive SQL Translator Bridge</span>
+                            </div>
+                            <div class="code-strip">
+                                <span class="code-strip-lang">SQL</span>
+                                <code>SET @@reservation = 'projects/…/reservations/batch-etl';</code>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
+                <!-- 2. Slot Capacity & Editions Simulation (Wide 4-col) -->
+                <article class="card card-wide spotlight reveal">
+                    <span class="pill pill-enhanced">⚡ Compute &amp; Slot Simulation</span>
+                    <div class="card-icon icon-teal"><i class="fas fa-chart-bar"></i></div>
+                    <h3>Editions Capacity &amp; Slot Bucket Simulator</h3>
+                    <p>Vectorized NumPy engine modeling slot consumption across a full 730-hour billing month. Pinpoints optimal baseline recommendations (<strong>p80 Aggressive</strong>, <strong>p95 Balanced</strong>, <strong>Max Performance</strong>) across PAYG, 1-Year, and 3-Year commitments while comparing On-Demand vs. Editions workload arbitrage.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Vectorized 730h Month Model</span>
+                        <span><i class="fas fa-check"></i>Tiered Baseline Recommendations</span>
+                        <span><i class="fas fa-check"></i>Baseline vs. Autoscale Trade-Off</span>
+                        <span><i class="fas fa-check"></i>On-Demand vs. Editions Arbitrage</span>
+                    </div>
+                </article>
+
+                <!-- 3. Fluid Scaling & Cooldown Tax Simulator (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-new">⏱️ Autoscale Optimization</span>
+                    <div class="card-icon icon-cyan"><i class="fas fa-stopwatch"></i></div>
+                    <h3>Fluid Scaling &amp; Cooldown Tax Simulator</h3>
+                    <p>Exposes hidden autoscaling waste where high-frequency short queries pay a <strong>60-second minimum cooldown tax</strong>. Simulates exact monthly savings from migrating bursty reservations to <strong>Fluid Scaling</strong> (true per-second billing with zero baseline).</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>60-Second Cooldown Tax Detection</span>
+                        <span><i class="fas fa-check"></i>Per-Second Billing Simulation</span>
+                        <span><i class="fas fa-check"></i>High-Frequency Trickle Isolation</span>
+                    </div>
+                </article>
+
+                <!-- 4. Storage Hygiene & Physical Arbitrage (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-enhanced">💾 Storage &amp; Physical Arbitrage</span>
+                    <div class="card-icon icon-green"><i class="fas fa-hard-drive"></i></div>
+                    <h3>Storage Arbitrage &amp; Table Hygiene</h3>
+                    <p>Capture 40–70% compression savings by identifying datasets cheaper on <strong>Physical Storage billing</strong> with one-click <code>ALTER SCHEMA</code> DDL. Grades unpartitioned/unclustered table risk across a 4-tier scale, reduces Time-Travel TTL bloat to 48h, and consolidates date-sharded tables.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Logical vs. Physical Arbitrage DDL</span>
+                        <span><i class="fas fa-check"></i>Time Travel Reduction (48h min)</span>
+                        <span><i class="fas fa-check"></i>Shard Consolidation &amp; 4-Tier Risk</span>
+                    </div>
+                </article>
+
+                <!-- 5. Hybrid Cost Attribution & Spender Analytics (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-enhanced">📊 Chargeback &amp; Attribution</span>
+                    <div class="card-icon icon-amber"><i class="fas fa-calculator"></i></div>
+                    <h3>Hybrid Cost Attribution Engine</h3>
+                    <p>Eliminate central admin-project waste dumping. Map org-wide slot usage back to reservations and proportionally reallocate idle baseline and autoscaled slots across business units using <strong>Lender Pays</strong> or <strong>Borrower Pays</strong> chargeback rules.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Proportional Idle Waste Chargeback</span>
+                        <span><i class="fas fa-check"></i>Lender vs. Borrower Pays Models</span>
+                        <span><i class="fas fa-check"></i>Top Spenders &amp; Priority Mix</span>
+                    </div>
+                </article>
+
+                <!-- 6. 1-Click Executive Assessment & Redacted Snapshots (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-enhanced">📑 Reporting &amp; Offline Sharing</span>
+                    <div class="card-icon icon-rose"><i class="fas fa-file-invoice-dollar"></i></div>
+                    <h3>Executive Assessment &amp; Snapshots</h3>
+                    <p>Generate a standalone executive HTML/PDF FinOps scorecard across all diagnostic modules in one click, or export a portable <code>.json</code> snapshot with <strong>1-click PII &amp; SQL redaction</strong> so colleagues can hydrate the full UI offline without BigQuery credentials.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>1-Click Executive HTML/PDF Report</span>
+                        <span><i class="fas fa-check"></i>Offline .json Snapshot Hydration</span>
+                        <span><i class="fas fa-check"></i>1-Click PII &amp; SQL Redaction</span>
+                    </div>
+                </article>
+
+                <!-- 7. HBO Proof-of-Value & Zero Data-Plane Governance (2-col) -->
+                <article class="card spotlight reveal">
+                    <span class="pill pill-enhanced">🛡️ Optimization &amp; Security</span>
+                    <div class="card-icon icon-teal"><i class="fas fa-shield-halved"></i></div>
+                    <h3>HBO Proof-of-Value &amp; Zero Data-Plane</h3>
+                    <p>Quantify <strong>History-Based Optimization (HBO)</strong> execution savings via query hash matching with 130-day plan expiration alerts. Strict control-plane boundary: inspects <code>INFORMATION_SCHEMA</code> only, never requests <code>bigquery.tables.getData</code>, verified by <code>check_permissions.py</code>.</p>
+                    <div class="mini-tags">
+                        <span><i class="fas fa-check"></i>Zero Data-Plane Table Access</span>
+                        <span><i class="fas fa-check"></i>HBO Execution Savings &amp; Alerts</span>
+                        <span><i class="fas fa-check"></i>Universal CSV &amp; Console Deep-Links</span>
+                    </div>
+                </article>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ TRUST ░░ -->
+    <section id="trust" class="trust" aria-label="Trust and security">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-shield-halved"></i>100% Data Sovereignty</span>
+                <h2>Trust Through <span class="text-aurora">Absolute Transparency</span></h2>
+                <p>Third-party FinOps SaaS vendors demand broad cross-account IAM roles, exposing your most
+                    sensitive billing metadata. <strong>FinOps Optimizer is deployed entirely inside your local environment
+                        or private cloud infrastructure.</strong> Your data never leaves your perimeter.</p>
+            </div>
+
+            <div class="trust-grid reveal-group">
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-server"></i></div>
+                    <h3>Zero Data Exfiltration</h3>
+                    <p>Deployed entirely inside your local environment or Cloud Run. No hidden telemetry, no phoning home, no third-party storage.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-user-shield"></i></div>
+                    <h3>Keep Your IAM Keys</h3>
+                    <p>Never grant cross-project Service Account access to external vendors. You own the runtime.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-code"></i></div>
+                    <h3>Open Source Clarity</h3>
+                    <p>Inspect every line. Apache 2.0 licensed — you know exactly what executes against your warehouse.</p>
+                </div>
+                <div class="trust-card spotlight reveal">
+                    <div class="trust-icon"><i class="fas fa-vial"></i></div>
+                    <h3>600+ Security Tests</h3>
+                    <p>Rigorously tested, sanitized and hardened against credential leaks and SQL injection.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ WORKFLOW ░░ -->
+    <section id="workflow" aria-label="Workflow">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section">The Process</span>
+                <h2>From BigQuery Audit to <span class="text-aurora">Execution</span></h2>
+                <p>A streamlined loop designed for FinOps practitioners and Cloud administrators.</p>
+            </div>
+
+            <div class="flow reveal-group">
+                <div class="flow-line" aria-hidden="true"></div>
+            
+                <div class="flow-step reveal">
+                    <div class="flow-node">01</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon"><i class="fas fa-link"></i></div>
+                        <h3>Connect</h3>
+                        <p>Authenticate via ADC or Service Account. Target your Organization Project ID and region.</p>
+                    </div>
+                </div>
+                <div class="flow-step reveal">
+                    <div class="flow-node">02</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon"><i class="fas fa-magnifying-glass-dollar"></i></div>
+                        <h3>Scan &amp; Analyze</h3>
+                        <p>Pull metadata and compute costs against your negotiated regional pricing — on demand, never auto-polled.</p>
+                    </div>
+                </div>
+                <div class="flow-step reveal">
+                    <div class="flow-node">03</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon icon-green"><i class="fas fa-bolt"></i></div>
+                        <h3>Apply &amp; Save</h3>
+                        <p>Review recommendations and generated DDL. Apply directly from the UI and start saving immediately.</p>
+                    </div>
+                </div>
+                <div class="flow-step reveal">
+                    <div class="flow-node">04</div>
+                    <div class="flow-card spotlight">
+                        <div class="card-icon icon-amber"><i class="fas fa-shield-halved"></i></div>
+                        <h3>Govern &amp; Guard</h3>
+                        <p>Enforce billing caps, run migration guardrails, and keep the Query Doctor on continuous patrol.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ PRICING & SIMULATOR SECTION ░░ -->
+    <section id="pricing" class="cost-section" aria-labelledby="pricing-heading">
+        <div class="container" id="cost-estimator-widget" tabindex="-1" style="scroll-margin-top: 90px;">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-calculator" aria-hidden="true"></i>Transparent Economics</span>
+                <h2 id="pricing-heading">Zero SaaS Tax. <span class="text-aurora">Model Your GCP Bill.</span></h2>
+                <p>100% open source with zero license fees. Runs entirely within your Google Cloud perimeter. Model your exact BigQuery metadata scans, Cloud Run compute, and Agent Platform costs below.</p>
+            </div>
+
+            <!-- Cost Simulator Widget Shell -->
+            <div class="cost-calculator-shell reveal">
+                
+                <!-- Centralized Debounced Status Announcer for Screen Readers -->
+                <div id="mk-cost-live-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+                <!-- Top Summary Strip (KPI Cards) -->
+                <div class="cost-kpi-grid">
+                    <div class="cost-kpi-card cost-kpi-hero hero">
+                        <span class="cost-kpi-label-hero">Total Estimated Cost</span>
+                        <div id="mk-cost-kpi-total" class="cost-kpi-num cost-kpi-num-lg">$18.31</div>
+                        <div id="mk-cost-kpi-period" class="cost-kpi-sub">Estimated spend per month (30 runs)</div>
+                    </div>
+
+                    <div class="cost-kpi-card">
+                        <div class="cost-kpi-header">
+                            <span class="cost-kpi-label"><i class="fas fa-database" aria-hidden="true" style="color: #38bdf8; margin-right: 5px;"></i>BigQuery</span>
+                            <span style="font-size: 0.7rem; color: #38bdf8;">On-Demand</span>
+                        </div>
+                        <div id="mk-cost-kpi-bq" class="cost-kpi-num cost-kpi-num-md" style="color: #38bdf8;">$18.31</div>
+                        <div id="mk-cost-kpi-bq-sub" class="cost-kpi-sub">$6.25/TiB · ~$0.61 / run (30x/mo)</div>
+                        <div class="cost-kpi-note">On BigQuery Editions? $0.00 incremental — see below</div>
+                    </div>
+
+                    <div class="cost-kpi-card">
+                        <div class="cost-kpi-header">
+                            <span class="cost-kpi-label"><i class="fas fa-server" aria-hidden="true" style="color: #34d399; margin-right: 5px;"></i>Cloud Run</span>
+                            <span id="mk-cost-kpi-run-badge" style="font-size: 0.7rem; color: #94a3b8;">Local ($0)</span>
+                        </div>
+                        <div id="mk-cost-kpi-run" class="cost-kpi-num cost-kpi-num-md" style="color: #34d399;">$0.00</div>
+                        <div id="mk-cost-kpi-run-sub" class="cost-kpi-sub">Self-hosted / $0 compute</div>
+                    </div>
+
+                    <div class="cost-kpi-card">
+                        <div class="cost-kpi-header">
+                            <span class="cost-kpi-label"><i class="fas fa-brain" aria-hidden="true" style="color: #a78bfa; margin-right: 5px;"></i>Agent Platform</span>
+                            <span id="mk-cost-kpi-ai-badge" style="font-size: 0.7rem; color: #94a3b8;">Optional ($0)</span>
+                        </div>
+                        <div id="mk-cost-kpi-ai" class="cost-kpi-num cost-kpi-num-md" style="color: #a78bfa;">$0.00</div>
+                        <div id="mk-cost-kpi-ai-sub" class="cost-kpi-sub">Deterministic Heuristics (0 AI)</div>
+                    </div>
+                </div>
+
+                <!-- Main Interactive Grid: Controls (Left) & Composition/Breakdown (Right) -->
+                <div class="cost-calc-grid">
+                    <!-- Left Panel: Interactive Functional Selectors & Sliders -->
+                    <div class="cost-control-panel">
+                        <h3 class="cost-panel-title">
+                            <i class="fas fa-sliders" aria-hidden="true" style="color: #38bdf8;"></i> Simulation Parameters
+                        </h3>
+
+                        <!-- 1. Organization Footprint & Scale Profile -->
+                        <div class="cost-slider-group">
+                            <div class="cost-slider-header">
+                                <span><i class="fas fa-building" aria-hidden="true" style="color: #38bdf8; margin-right: 6px;"></i>Organization Scale Profile</span>
+                                <span id="mk-lbl-cost-org-profile" class="cost-slider-val">Medium</span>
+                            </div>
+                            <!-- Profile Quick Presets (Accessible Radiogroup) -->
+                            <div class="cost-toggle-pills" id="mk-toggle-org-profile" role="radiogroup" aria-label="Organization scale profile" style="margin-bottom: 0.35rem;">
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-tier-idx="0" data-tier="small" data-projects="3">Small</button>
+                                <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-tier-idx="1" data-tier="medium" data-projects="25">Medium</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-tier-idx="2" data-tier="large" data-projects="100">Large</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-tier-idx="3" data-tier="x-large" data-projects="350">X-Large</button>
+                            </div>
+                            <!-- Desktop Discrete Slider (Visual affordance; aria-hidden to prevent duplicate AT announcement) -->
+                            <div class="cost-slider-container" style="--pill-count: 4;">
+                                <input type="range" id="mk-slider-cost-projects" class="cost-range-input" min="0" max="3" step="1" value="1" aria-hidden="true" tabindex="-1">
+                            </div>
+                            
+                            <!-- Derived Technical Footprint & Profile Assumptions Box -->
+                            <div class="cost-technical-footprint">
+                                <div>
+                                    <div class="cost-footprint-label">Est. Datasets</div>
+                                    <strong id="mk-lbl-calc-datasets" class="cost-footprint-val">~250 datasets</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Tables &amp; Partitions</div>
+                                    <strong id="mk-lbl-calc-tables" class="cost-footprint-val">~5,000 (500k part.)</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Daily Query Volume</div>
+                                    <strong id="mk-lbl-calc-queries" class="cost-footprint-val">~50k / day</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Metadata Scanned</div>
+                                    <strong id="mk-lbl-calc-meta" class="cost-footprint-val" style="color: #38bdf8;">100 GiB / run</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Cost Per Run (List)</div>
+                                    <strong id="mk-lbl-calc-scanfee" class="cost-footprint-val" style="color: #34d399;">~$0.61 / run</strong>
+                                </div>
+                                <div>
+                                    <div id="mk-lbl-calc-projects-title" class="cost-footprint-label">Projects</div>
+                                    <strong id="mk-lbl-calc-projects" class="cost-footprint-val" style="color: #38bdf8;">25 projects</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 2. Execution Mode Toggle (Local vs Cloud Run) -->
+                        <div class="cost-slider-group">
+                            <div class="cost-slider-header">
+                                <span><i class="fas fa-server" aria-hidden="true" style="color: #34d399; margin-right: 6px;"></i>Execution Mode</span>
+                                <span id="mk-lbl-cost-env" class="cost-slider-val" style="color: #34d399;">Run Locally</span>
+                            </div>
+                            <div class="cost-toggle-pills" id="mk-toggle-cost-env" role="radiogroup" aria-label="Execution compute environment">
+                                <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-env="local">
+                                    <i class="fas fa-laptop" aria-hidden="true" style="margin-right: 4px;"></i> Run Locally
+                                </button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-env="cloudrun">
+                                    <i class="fas fa-cloud" aria-hidden="true" style="margin-right: 4px;"></i> Run Cloud Run
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 3. Audit Frequency Selector -->
+                        <div class="cost-slider-group">
+                            <div class="cost-slider-header">
+                                <span><i class="fas fa-clock" aria-hidden="true" style="color: #34d399; margin-right: 6px;"></i>Audit Frequency</span>
+                                <span id="mk-lbl-cost-freq" class="cost-slider-val" style="color: #34d399;">Daily (30x)</span>
+                            </div>
+                            <!-- Frequency Presets: Monthly, Bi-Weekly, Weekly, Daily, Hourly -->
+                            <div class="cost-toggle-pills" id="mk-toggle-cost-freq" role="radiogroup" aria-label="Audit frequency cadence" style="margin-bottom: 0.35rem;">
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-freq-idx="0">Monthly<br><span class="cost-pill-sub">(1x)</span></button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-freq-idx="1">Bi-Weekly<br><span class="cost-pill-sub">(2x)</span></button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-freq-idx="2">Weekly<br><span class="cost-pill-sub">(4x)</span></button>
+                                <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-freq-idx="3">Daily<br><span class="cost-pill-sub">(30x)</span></button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-freq-idx="4">Hourly<br><span class="cost-pill-sub">(720x)</span></button>
+                            </div>
+                            <!-- Desktop Discrete Slider -->
+                            <div class="cost-slider-container is-5" style="--pill-count: 5;">
+                                <input type="range" id="mk-slider-cost-freq" class="cost-range-input" min="0" max="4" step="1" value="3" aria-hidden="true" tabindex="-1">
+                            </div>
+                        </div>
+
+                        <!-- 4. Agent Platform (Optional) -->
+                        <div class="cost-slider-group" style="margin-bottom: 0;">
+                            <div class="cost-slider-header">
+                                <span><i class="fas fa-brain" aria-hidden="true" style="color: #a78bfa; margin-right: 6px;"></i>Agent Platform</span>
+                                <span id="mk-lbl-cost-ai-queries" class="cost-slider-val" style="color: #a78bfa;">Off (0 - Heuristic Only)</span>
+                            </div>
+                            
+                            <!-- Scale Profile Presets for AI Agent: Off, Top 5, Top 25, Top 50, Org 200 -->
+                            <div class="cost-toggle-pills" id="mk-toggle-ai-tier" role="radiogroup" aria-label="Agent Platform investigation depth" style="margin-bottom: 0.35rem;">
+                                <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-agent-idx="0">Off (0)</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-agent-idx="1">Top 5</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-agent-idx="2">Top 25</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-agent-idx="3">Top 50</button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-agent-idx="4">Org (200)</button>
+                            </div>
+                            
+                            <!-- Desktop Discrete Slider -->
+                            <div class="cost-slider-container is-5" style="--pill-count: 5;">
+                                <input type="range" id="mk-slider-cost-ai-queries" class="cost-range-input" min="0" max="4" step="1" value="0" aria-hidden="true" tabindex="-1">
+                            </div>
+
+                            <!-- LLM Model Selector -->
+                            <div class="cost-toggle-pills" id="mk-toggle-ai-model" role="radiogroup" aria-label="Gemini model selection" style="margin-top: 0.5rem;">
+                                <button type="button" role="radio" aria-checked="true" tabindex="0" class="cost-toggle-pill active" data-model="flash">
+                                    <i class="fas fa-bolt" aria-hidden="true" style="color: #38bdf8; margin-right: 4px;"></i> Gemini 3.7 Flash
+                                </button>
+                                <button type="button" role="radio" aria-checked="false" tabindex="-1" class="cost-toggle-pill" data-model="flash-lite">
+                                    <i class="fas fa-feather" aria-hidden="true" style="color: #34d399; margin-right: 4px;"></i> Gemini 3.5 Flash-Lite
+                                </button>
+                            </div>
+
+                            <!-- Derived Agent Footprint Box -->
+                            <div class="cost-ai-footprint">
+                                <div>
+                                    <div class="cost-footprint-label">Investigations</div>
+                                    <strong id="mk-lbl-calc-ai-queries" class="cost-footprint-val">0 / sweep (Off)</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Context Budget</div>
+                                    <strong id="mk-lbl-calc-ai-tokens" class="cost-footprint-val">0 tokens</strong>
+                                </div>
+                                <div>
+                                    <div class="cost-footprint-label">Agent Cost / Sweep</div>
+                                    <strong id="mk-lbl-calc-ai-runfee" class="cost-footprint-val" style="color: #a78bfa;">$0.00 / sweep</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right Panel: Spend Proportion & Itemized Cost Breakdown -->
+                    <div class="cost-breakdown-panel">
+                        <div>
+                            <h3 class="cost-panel-title">
+                                <i class="fas fa-chart-pie" aria-hidden="true" style="color: #38bdf8;"></i> Spend Proportion
+                            </h3>
+
+                            <!-- Cost Component Proportion Bar (role="img" with dynamic aria-label) -->
+                            <div class="cost-proportion-bar" role="img" aria-label="BigQuery 100%, Cloud Run 0%, Agent Platform 0%">
+                                <div id="mk-cost-bar-bq" class="cost-bar-bq" style="width: 100%;" title="BigQuery Metadata Scans"></div>
+                                <div id="mk-cost-bar-run" class="cost-bar-run" style="width: 0%;" title="Cloud Run Compute"></div>
+                                <div id="mk-cost-bar-ai" class="cost-bar-ai" style="width: 0%;" title="Agent Platform"></div>
+                            </div>
+                            <div class="cost-prop-legend">
+                                <span><i class="fas fa-circle" aria-hidden="true" style="color: #38bdf8; font-size: 0.6rem; margin-right: 4px;"></i>BigQuery (<span id="mk-lbl-pct-bq">100%</span>)</span>
+                                <span><i class="fas fa-circle" aria-hidden="true" style="color: #34d399; font-size: 0.6rem; margin-right: 4px;"></i>Cloud Run (<span id="mk-lbl-pct-run">0%</span>)</span>
+                                <span><i class="fas fa-circle" aria-hidden="true" style="color: #a78bfa; font-size: 0.6rem; margin-right: 4px;"></i>Agent Platform (<span id="mk-lbl-pct-ai">0%</span>)</span>
+                            </div>
+
+                            <!-- Transparent Itemized Cost Table -->
+                            <h3 class="cost-panel-title" style="margin-bottom: 0.6rem;">
+                                <i class="fas fa-receipt" aria-hidden="true" style="color: #38bdf8;"></i> Itemized Expense Breakdown
+                            </h3>
+                            <div class="table-shell" style="margin-bottom: 0.75rem;">
+                                <table class="data-table" style="font-size: 0.82rem;">
+                                    <caption class="sr-only">Itemized GCP Resource Costs per Run and Estimated Monthly Spend</caption>
+                                    <thead>
+                                        <tr>
+                                            <th scope="col">Layer / Resource</th>
+                                            <th scope="col">Unit Rate</th>
+                                            <th scope="col" class="num">Per Run</th>
+                                            <th scope="col" class="num">Monthly Spend</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong style="color: #38bdf8;"><i class="fas fa-database" aria-hidden="true" style="margin-right: 6px;"></i>BigQuery</strong></td>
+                                            <td style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;">$6.25 / TiB</td>
+                                            <td class="num" id="mk-tbl-run-bq" style="color: #f8fafc;">$0.61</td>
+                                            <td class="num strong" id="mk-tbl-mo-bq" style="color: #38bdf8;">$18.31</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong style="color: #34d399;"><i class="fas fa-server" aria-hidden="true" style="margin-right: 6px;"></i>Cloud Run</strong></td>
+                                            <td id="mk-tbl-rate-run" style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;">$0.00 (Local)</td>
+                                            <td class="num" id="mk-tbl-run-run" style="color: #f8fafc;">$0.00</td>
+                                            <td class="num strong" id="mk-tbl-mo-run" style="color: #34d399;">$0.00</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong style="color: #a78bfa;"><i class="fas fa-brain" aria-hidden="true" style="margin-right: 6px;"></i>Agent Platform</strong></td>
+                                            <td id="mk-tbl-rate-ai" style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;"><a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" rel="noopener noreferrer" class="cost-external-link">Gemini 3.7 Flash</a> (Off)</td>
+                                            <td class="num" id="mk-tbl-run-ai" style="color: #f8fafc;">$0.00</td>
+                                            <td class="num strong" id="mk-tbl-mo-ai" style="color: #a78bfa;">$0.00</td>
+                                        </tr>
+                                        <tr style="border-top: 1px solid rgba(255,255,255,0.15); background: rgba(56, 189, 248, 0.05);">
+                                            <td><strong style="color: #f8fafc;">Projected Spend</strong></td>
+                                            <td style="color: var(--ink-2, #94a3b8); font-size: 0.78rem;">—</td>
+                                            <td class="num strong" id="mk-tbl-run-total" style="color: #f8fafc;">$0.61</td>
+                                            <td class="num strong" id="mk-tbl-mo-total" style="color: #38bdf8; font-size: 0.95rem;">$18.31</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Contextual High-Spend Advisory Banner (Revealed when monthly > $500) -->
+                            <div id="mk-cost-high-spend-advisory" class="cost-high-spend-advisory">
+                                <i class="fas fa-lightbulb" aria-hidden="true" style="color: #fbbf24; margin-right: 6px;"></i>
+                                <strong>FinOps Recommendation:</strong> High-frequency scans at this scale query significant metadata volume (<span id="mk-cost-advisory-volume">~2.9 TiB/month</span>). If your organization utilizes <strong>BigQuery Editions with Slot Reservations</strong>, queries consume existing idle reservation capacity with <strong>$0 on-demand fees</strong>.
+                            </div>
+
+                            <!-- BigQuery Editions Callout Card -->
+                            <div class="cost-editions-card">
+                                <div>
+                                    <div class="cost-editions-icon"><i class="fas fa-shield-alt" aria-hidden="true"></i></div>
+                                    <div class="cost-editions-body">
+                                        <strong class="cost-editions-title">BigQuery Editions &amp; Slot Reservations</strong>
+                                        <p class="cost-editions-desc">
+                                            If your organization operates under <strong>BigQuery Editions</strong> (Standard, Enterprise, Enterprise Plus) with Slot Reservations, diagnostic metadata sweeps consume idle slots from your existing reservations with <strong>$0.00 incremental on-demand query byte charges</strong>.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Architecture & Cost Footnotes -->
+                        <div class="cost-footnotes">
+                            <p>
+                                <i class="fas fa-info-circle" aria-hidden="true" style="color: #38bdf8; margin-right: 4px;"></i>
+                                <strong>Zero User Table Scans:</strong> Diagnostic sweeps only query <code>INFORMATION_SCHEMA</code> views. User datasets and table partitions are never scanned.
+                            </p>
+                            <p>
+                                <i class="fas fa-globe-americas" aria-hidden="true" style="color: #34d399; margin-right: 4px;"></i>
+                                <strong>Pricing Baseline:</strong> Estimates modeled on US Region On-Demand list prices ($6.25/TiB). No free-tier deductions included. Rounded for display; monthly totals computed on unrounded run metrics.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Client-side Interactive Calculator Script Engine -->
+    <script src="static/pricing.js"></script>
+    <script src="static/calculator.js"></script>
+
+    <!-- ░░ PRODUCT ROADMAP ░░ -->
+    <section id="roadmap" class="roadmap-section" aria-label="Product Roadmap">
+        <div class="container">
+            <!-- Section Header with Inline Live Sync Status -->
+            <div class="section-header reveal">
+                <div class="roadmap-header-status">
+                    <span class="chip chip-section"><i class="fas fa-map-location-dot" aria-hidden="true"></i>Product Roadmap</span>
+                    <div class="roadmap-sync-badge" id="roadmap-sync-badge" role="status" aria-live="polite">
+                        <i class="fas fa-circle" aria-hidden="true"></i><span id="roadmap-sync-text">Live from GitHub</span>
+                    </div>
+                </div>
+                <h2>Public Product <span class="text-aurora">Roadmap</span></h2>
+                <p>Transparent, community-driven development for FinOps Optimizer. Track upcoming capabilities, active engineering, and recent releases.</p>
+            </div>
+
+            <!-- Full-Width Aligned Filter Toolbar (flush with the 3-column board) -->
+            <div class="roadmap-controls reveal">
+                <div class="roadmap-filters" id="roadmap-filters" role="group" tabindex="0" aria-label="Filter roadmap by module">
+                    <button class="roadmap-filter-btn is-active" type="button" data-filter="all">All Modules</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="slots-optimizer">Slots Optimizer</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="ai-doctor">AI Doctor</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="cost-attribution">Cost Attribution</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="storage-hygiene">Storage Hygiene</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="governance">Governance</button>
+                    <button class="roadmap-filter-btn" type="button" data-filter="settings-core">Settings &amp; Core</button>
+                </div>
+            </div>
+
+            <!-- 3-Column Lifecycle Board with Collapsible Wrapper -->
+            <div class="roadmap-grid-wrapper" id="roadmap-grid-wrapper">
+                <div class="roadmap-grid reveal-group">
+                    <!-- Column 1: Generally Available (Done) -->
+                    <div class="roadmap-col">
+                        <div class="roadmap-col-header">
+                            <span class="roadmap-col-title" style="color: #34d399;"><i class="fas fa-check-circle"></i>Generally Available (Done)</span>
+                            <span class="roadmap-col-count" id="count-ga">11</span>
+                        </div>
+                    <div class="roadmap-items-list" id="list-ga">
+                        <!-- Populated dynamically via JS with fallback cards -->
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/11" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="cost-attribution feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Top Spenders: Actual Spend, Reservation vs On-Demand &amp; Waste Engine</span>
+                                <span class="roadmap-card-id">#11</span>
+                            </div>
+                            <p class="roadmap-card-desc">Actual spend attribution and dollarized non-productive waste engine with frequency-ranked primary reservations.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-cost">cost-attribution</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/12" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="batch-vs-interactive feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Interactive vs. Batch Priority Engine: Lineage Workload Slicing</span>
+                                <span class="roadmap-card-id">#12</span>
+                            </div>
+                            <p class="roadmap-card-desc">Workload-centric priority analyzer classifying UNDER_BATCHED and OVER_BATCHED pipelines with remediation snippets.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">batch-vs-interactive</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/13" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Universal CSV Export across All Results Tables with UTF-8 BOM</span>
+                                <span class="roadmap-card-id">#13</span>
+                            </div>
+                            <p class="roadmap-card-desc">Automatic Download CSV injection across every DataTables view preserving active search and filter state.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/20" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">AI Doctor: Echo Suppression, DML Optimization &amp; 1-Click Translator Bridge</span>
+                                <span class="roadmap-card-id">#20</span>
+                            </div>
+                            <p class="roadmap-card-desc">Suppresses identical query echoes, supports DML rewrites, and bridges into BigQuery Interactive SQL Translator.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Column 2: Planned (v1.5.0) -->
+                <div class="roadmap-col">
+                    <div class="roadmap-col-header">
+                        <span class="roadmap-col-title" style="color: #38bdf8;"><i class="fas fa-clock"></i>Planned (Committed)</span>
+                        <span class="roadmap-col-count" id="count-planned">6</span>
+                    </div>
+                    <div class="roadmap-items-list" id="list-planned">
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/60" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="cost-attribution settings-core ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Interactive Runtime Economics &amp; FinOps ROI Calculator: Live Cost Modeling, Editions Support &amp; Shareable Scenarios</span>
+                                <span class="roadmap-card-id">#60</span>
+                            </div>
+                            <p class="roadmap-card-desc">Interactive pricing and ROI engine modeling BigQuery metadata scan costs, Cloud Run compute, and Gemini AI platform tokens with URL state sharing and report exports.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-cost">cost-attribution</span>
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/7" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="slots-optimizer feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Interactive Sliders (Play Axes) for PXX and Autoscale Queueing Simulation</span>
+                                <span class="roadmap-card-id">#7</span>
+                            </div>
+                            <p class="roadmap-card-desc">Interactive sliders for PXX targets and autoscale ceilings to simulate expected queueing time and cost impact in real-time.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">slots-optimizer</span>
+                                <span class="roadmap-tag roadmap-tag-community">community-reported</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/8" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Dynamic Project Dropdowns via Cloud Resource Manager Discovery</span>
+                                <span class="roadmap-card-id">#8</span>
+                            </div>
+                            <p class="roadmap-card-desc">Resource Manager and active project discovery so users only enter one project ID and pick the rest via dropdowns.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/9" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="governance storage-hygiene feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Partition Guardrail Cardinality, Table Size &amp; Unpruned Query Waste</span>
+                                <span class="roadmap-card-id">#9</span>
+                            </div>
+                            <p class="roadmap-card-desc">Enhance Partition Guardrail auditor to show partition counts, table sizes, and estimated waste from unpruned scans.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-gov">governance</span>
+                                <span class="roadmap-tag roadmap-tag-storage">storage-hygiene</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/10" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request community-reported">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Pre-Run API Enablement Discovery &amp; Guided Action Buttons</span>
+                                <span class="roadmap-card-id">#10</span>
+                            </div>
+                            <p class="roadmap-card-desc">Proactively detect disabled APIs (like Vertex AI) to disable action buttons and show inline enablement guidance.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                                <span class="roadmap-tag roadmap-tag-ui">ui-ux</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/1" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="settings-core ui-ux feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Custom Date/Time Range for Historical Analysis (Start Date &amp; End Date)</span>
+                                <span class="roadmap-card-id">#1</span>
+                            </div>
+                            <p class="roadmap-card-desc">Allows specifying explicit calendar start and end timestamps rather than trailing relative lookback days.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-settings">settings-core</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Column 3: Backlog & Ideas -->
+                <div class="roadmap-col">
+                    <div class="roadmap-col-header">
+                        <span class="roadmap-col-title" style="color: #94a3b8;"><i class="fas fa-lightbulb"></i>Under Consideration</span>
+                        <span class="roadmap-col-count" id="count-backlog">7</span>
+                    </div>
+                    <div class="roadmap-items-list" id="list-backlog">
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/22" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="slots-optimizer ui-ux feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Actionable Query-Level @@reservation Routing Snippet Generator</span>
+                                <span class="roadmap-card-id">#22</span>
+                            </div>
+                            <p class="roadmap-card-desc">1-click snippet generator emitting SET @@reservation statements for candidate routing into reservations or on-demand.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-slots">slots-optimizer</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/23" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="governance storage-hygiene feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Static Migration Guardrails: Proactive Schema Auditor for Big Tables</span>
+                                <span class="roadmap-card-id">#23</span>
+                            </div>
+                            <p class="roadmap-card-desc">Statically scans metadata to flag massive unclustered tables (>10GB / >50M rows) on day one before queries run.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-gov">governance</span>
+                                <span class="roadmap-tag roadmap-tag-storage">storage-hygiene</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/24" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor cost-attribution feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Failed Compute Profiler: Query-Level OOM &amp; resourcesExceeded Diagnostics</span>
+                                <span class="roadmap-card-id">#24</span>
+                            </div>
+                            <p class="roadmap-card-desc">Isolates failing query SQL, extracts error reasons, calculates burned slot-hours, and diagnoses memory overflow.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                                <span class="roadmap-tag roadmap-tag-cost">cost-attribution</span>
+                            </div>
+                        </a>
+                        <a href="https://github.com/mbettan/bq-finops-optimizer/issues/25" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="ai-doctor batch-vs-interactive feature-request">
+                            <div class="roadmap-card-header">
+                                <span class="roadmap-card-title">Concurrent Duplicate Query Analyzer (Request Coalescing &amp; Overlap)</span>
+                                <span class="roadmap-card-id">#25</span>
+                            </div>
+                            <p class="roadmap-card-desc">Sweep-line window algorithm identifying overlapping simultaneous query executions to quantify recoverable slot waste.</p>
+                            <div class="roadmap-card-tags">
+                                <span class="roadmap-tag roadmap-tag-ai">ai-doctor</span>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="roadmap-fade-overlay" id="roadmap-fade-overlay" aria-hidden="true"></div>
+        </div>
+
+        <!-- See More / See Less Toggle -->
+        <div class="roadmap-see-more-wrap">
+            <button id="btn-roadmap-toggle" class="btn-release-toggle" type="button" aria-expanded="false" aria-controls="roadmap-grid-wrapper">
+                <i class="fas fa-chevron-down" aria-hidden="true"></i><span>See More Roadmap Items</span>
+            </button>
+        </div>
+
+        <!-- Bottom CTA Banner -->
+        <div class="roadmap-cta-bar reveal">
+                <div class="roadmap-cta-text">
+                    <h3>Explore the Interactive Kanban &amp; Timeline</h3>
+                    <p>Track live issue progress, filter by release milestones, or submit your own feature requests directly on GitHub.</p>
+                </div>
+                <div class="roadmap-cta-actions">
+                    <a href="https://github.com/users/mbettan/projects/1" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="background: rgba(255,255,255,0.05);">
+                        <i class="fab fa-github"></i>View Project Board ↗
+                    </a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/issues/new/choose" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
+                        <i class="fas fa-plus"></i>Submit Feature Request
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ RELEASES & CHANGELOG ░░ -->
+    <section id="releases" class="releases-section" aria-label="Release Notes">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-clock-rotate-left"></i>Changelog</span>
+                <h2>Product <span class="text-aurora">Release History</span></h2>
+                <p>Historical log of releases, architectural milestones, and shipped capabilities across versions.</p>
+            </div>
+
+            <div class="releases-layout reveal">
+                <!-- Left Nav / Version Timeline -->
+                <div class="releases-nav" id="releases-nav" role="tablist" aria-label="Release versions">
+                    <button class="release-nav-btn is-active" data-version="v1.4.4" role="tab" aria-selected="true">
+                        <span>v1.4.4</span>
+                        <span class="release-nav-date">Sep 16, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.3" role="tab" aria-selected="false">
+                        <span>v1.4.3</span>
+                        <span class="release-nav-date">Aug 13, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.2" role="tab" aria-selected="false">
+                        <span>v1.4.2</span>
+                        <span class="release-nav-date">Aug 13, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.1" role="tab" aria-selected="false">
+                        <span>v1.4.1</span>
+                        <span class="release-nav-date">Aug 12, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.0" role="tab" aria-selected="false">
+                        <span>v1.4.0</span>
+                        <span class="release-nav-date">Aug 8, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.3.0" role="tab" aria-selected="false">
+                        <span>v1.3.0</span>
+                        <span class="release-nav-date">Jul 30, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.3" role="tab" aria-selected="false">
+                        <span>v1.2.3</span>
+                        <span class="release-nav-date">Jul 25, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.2" role="tab" aria-selected="false">
+                        <span>v1.2.2</span>
+                        <span class="release-nav-date">Jul 22, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.1" role="tab" aria-selected="false">
+                        <span>v1.2.1</span>
+                        <span class="release-nav-date">Jul 18, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.2.0" role="tab" aria-selected="false">
+                        <span>v1.2.0</span>
+                        <span class="release-nav-date">Jul 15, 2026</span>
+                    </button>
+                </div>
+
+                <!-- Right Detail Card -->
+                <div class="release-detail-card" id="release-detail-card">
+                    <div class="release-detail-header">
+                        <div class="release-tag-pill" id="release-title-badge">
+                            <span id="release-version-text">v1.4.4</span>
+                            <span class="latest-pill" id="release-latest-pill">Latest Release</span>
+                        </div>
+                        <div class="release-meta">
+                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>September 16, 2026</span>
+                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.4" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
+                                <i class="fab fa-github"></i>View on GitHub ↗
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="release-content-wrapper" id="release-content-wrapper">
+                        <div class="release-content" id="release-body-content">
+                            <h3>🌟 Highlights &amp; Major Capabilities</h3>
+                            <ul>
+                                <li><strong>59-Region Dynamic SKU Pricing Engine:</strong> Replaced US-only defaults with live per-region Cloud Billing SKU rates for On-Demand, Logical/Physical Storage, and Editions across 59 global BigQuery regions.</li>
+                                <li><strong>Corporate Light Mode &amp; Dual Theme Architecture:</strong> Added Google Cloud Console-styled Corporate Light Mode with strict WCAG AA contrast compliance (≥ 4.5:1) and zero-FOUC bootstrap (<code>theme-boot.js</code>).</li>
+                                <li><strong>4-Tier Storage Risk Model &amp; Native Windows Support:</strong> Upgraded Storage Optimizer risk grading into a 4-tier scale (Critical, High, Medium, Low) and added one-click Windows launchers (<code>run.bat</code> / <code>run.ps1</code>).</li>
+                                <li><strong>Enterprise Least-Privilege IAM &amp; Cloud Run Automation:</strong> Formal control-plane IAM specification (<code>deploy/roles/bq_finops_reader.yaml</code>) excluding <code>bigquery.tables.getData</code>, plus automated Cloud Run &amp; Cloud Shell deployment.</li>
+                            </ul>
+                        </div>
+                        <div class="release-fade-overlay" id="release-fade-overlay"></div>
+                    </div>
+
+                    <div class="release-see-more-wrap" id="release-see-more-wrap">
+                        <button type="button" class="btn-release-toggle" id="release-see-more-btn" aria-label="Expand or collapse release notes">
+                            <i class="fas fa-chevron-down"></i><span>See More</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ CTA ░░ -->
+    <section class="cta-final" aria-label="Get started">
+        <div class="container">
+            <div class="cta-card reveal">
+                <div class="cta-orb" aria-hidden="true"></div>
+                <h2>Ready to Reclaim Your<br><span class="text-aurora">BigQuery Budget?</span></h2>
+                <p>Deploy the open-source optimizer today and audit your entire organization in minutes.</p>
+                <div class="cta-group">
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+                        <i class="fab fa-github"></i>Get Started on GitHub
+                        <span class="btn-shine" aria-hidden="true"></span>
+                    </a>
+                    <a href="simulator.html" class="btn btn-outline">
+                        <i class="fas fa-play"></i>Try the Simulator
+                    </a>
+                </div>
+                <p class="mobile-note">
+                    <i class="fas fa-desktop" aria-hidden="true"></i>
+                    The simulator is built for desktop screens.
+                </p>
+                <div class="cta-deploy">
+                    <span class="code-strip-lang">bash</span>
+                    <code>gcloud run deploy bq-finops-optimizer --image gcr.io/$PROJECT/bq-finops</code>
+                    <button class="copy-btn" id="copy-deploy" aria-label="Copy deploy command"><i class="far fa-copy"></i></button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ░░ FAQ ░░ -->
+    <section id="faq" class="faq-section" aria-label="Frequently asked questions">
+        <div class="container">
+            <div class="section-header reveal">
+                <span class="chip chip-section"><i class="fas fa-circle-question"></i>FAQ</span>
+                <h2>Frequently Asked <span class="text-aurora">Questions</span></h2>
+                <p>Everything you need to know about reducing BigQuery costs with AI-powered query optimization.</p>
+            </div>
+
+            <div class="faq-grid reveal-group">
+                <details class="faq-item reveal" id="faq-ai-doctor" open>
+                    <summary class="faq-question">
+                        <span>How does the AI Doctor optimize BigQuery queries?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The AI Doctor pulls real queries from <code>INFORMATION_SCHEMA.JOBS_BY_ORGANIZATION</code> across your entire Google Cloud organization. It evaluates each query using five Discovery Priority strategy modes — Balanced ROI Score, Cumulative Cost, High Frequency, Memory RAM Spill, and Total Slot Time — then classifies anti-pattern severity with <strong>Gemini AI</strong> and generates rewritten optimized SQL with estimated cost savings.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-ai-scope">
+                    <summary class="faq-question">
+                        <span>Where does FinOps Optimizer use AI, and where does it not?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p><strong>AI (Gemini) is used exclusively in the AI Doctor module</strong> — for semantic SQL analysis, anti-pattern classification, and query rewriting. Every other module is fully deterministic:</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Storage Optimizer</strong> — pure SQL aggregation over <code>INFORMATION_SCHEMA</code> with regional SKU pricing math.</li>
+                            <li><strong>Compute Analyzer &amp; Slot Timeline</strong> — vectorized NumPy computation over job metadata.</li>
+                            <li><strong>Editions Simulator</strong> — deterministic 730-hour billing month model with no LLM involvement.</li>
+                            <li><strong>Top Spenders &amp; Anti-Pattern Linter</strong> — rule-based heuristics and SQL aggregation.</li>
+                        </ul>
+                        <p style="margin-top: 0.6rem;">This design is intentional: <strong>identical inputs always produce identical outputs</strong> for cost calculations and capacity recommendations, with no LLM variability. AI is reserved for the one task where semantic understanding genuinely adds value — reading SQL and diagnosing what's wrong.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-pricing">
+                    <summary class="faq-question">
+                        <span>Is FinOps Optimizer free?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes, it is fully open source under the <strong>Apache 2.0 license</strong>. There are zero SaaS fees — you only pay for your own BigQuery compute and Agent Platform usage. The tool runs entirely on your local machine or within your own Cloud Run environment.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-google-affiliation">
+                    <summary class="faq-question">
+                        <span>Is FinOps Optimizer a Google Cloud product?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p><strong>No.</strong> FinOps Optimizer is an independent, personal side project. It is <strong>not</strong> developed, maintained, supported, or endorsed by Google. BigQuery and Google Cloud are trademarks of Google LLC. This tool comes with <strong>no warranty, no SLA, and no guarantee of correctness or completeness</strong>. It is provided as-is under the Apache 2.0 license — use it at your own risk.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-permissions">
+                    <summary class="faq-question">
+                        <span>What permissions does it need, and can it read my data?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p><strong>No — it cannot read your data.</strong> The tool only queries <code>INFORMATION_SCHEMA</code> metadata views (job telemetry, table schemas, dataset options). It deliberately excludes <code>bigquery.tables.getData</code>, meaning it cannot read a single row of customer data.</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Least-privilege IAM role</strong> — a formal custom role ships with the project (<code>deploy/roles/bq_finops_reader.yaml</code>) that isolates control-plane telemetry from the data plane.</li>
+                            <li><strong>Machine-verifiable audit</strong> — run <code>deploy/check_permissions.py</code> to independently confirm that <code>bigquery.tables.getData</code> is <strong>not held</strong> before granting access.</li>
+                            <li><strong>No write permissions</strong> — the role cannot create, update, or delete tables, datasets, or reservations.</li>
+                        </ul>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-stateless">
+                    <summary class="faq-question">
+                        <span>Does it create a database or store any data?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p><strong>No.</strong> FinOps Optimizer is fully stateless. It does not create a database, write to disk, or persist any results between runs.</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Live queries only</strong> — every audit queries BigQuery <code>INFORMATION_SCHEMA</code> in real time, renders the results in your browser, and discards them when you close the session.</li>
+                            <li><strong>No backend storage</strong> — no database, no cache layer, no local files written behind the scenes.</li>
+                            <li><strong>No telemetry</strong> — the application does not phone home, track usage, or send data to any external service.</li>
+                        </ul>
+                        <p style="margin-top: 0.6rem;">The only artifacts you keep are the optional CSV exports or HTML reports you choose to download.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-anti-patterns">
+                    <summary class="faq-question">
+                        <span>What BigQuery anti-patterns does it detect?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The tool detects common BigQuery anti-patterns including <code>CROSS JOIN</code> explosions, <code>SELECT *</code> on wide tables, <code>CAST</code> defeating partition pruning, missing clustering keys, unnecessary <code>ORDER BY</code> in subqueries, and redundant repeated queries. Gemini classifies each finding by severity (High, Medium, Low) and provides a rewritten optimized query with detailed reasoning.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-export">
+                    <summary class="faq-question">
+                        <span>How do I save, export, or share my results?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Multiple options, all client-side:</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>CSV export</strong> — every results table has a Download CSV button that exports the <strong>full filtered result set</strong>, not just the rows visible on the current page. Job IDs, datasets and tables deep-link straight into the BigQuery Console.</li>
+                            <li><strong>Executive HTML Report</strong> — generates a standalone, self-contained HTML file you can email or attach to a Jira ticket, with Corporate Light Mode for CFO-ready presentations.</li>
+                            <li><strong>Browser cache (localStorage)</strong> — your settings (project IDs, region, safety caps) and last audit results are cached in the browser so a page refresh does not lose your work. No data is sent anywhere — localStorage stays in your browser and you can clear it at any time from the Settings panel.</li>
+                        </ul>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-differentiator">
+                    <summary class="faq-question">
+                        <span>How is it different from BigQuery cost recommendations in the Google Cloud Console?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>The Console's built-in recommendations cover a limited set of static rules — partition expiration, unused tables, and slot right-sizing hints. FinOps Optimizer goes significantly further:</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Semantic SQL analysis</strong> — Gemini reads your actual query SQL and detects anti-patterns like <code>CROSS JOIN</code> explosions, <code>CAST</code> defeating partition pruning, and <code>SELECT *</code> on wide tables.</li>
+                            <li><strong>Rewritten optimized queries</strong> — not just advice, but production-ready SQL you can copy and deploy.</li>
+                            <li><strong>Editions capacity simulation</strong> — models slot utilization across a full 730-hour billing month with baseline vs. autoscale trade-offs the Console doesn't offer.</li>
+                            <li><strong>Owner-level attribution</strong> — attributes actual spend to individual users and service accounts across Reservations and On-Demand billing.</li>
+                            <li><strong>Zero data exfiltration</strong> — runs entirely on your laptop or Cloud Run, never sending data to a third-party SaaS.</li>
+                        </ul>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-editions">
+                    <summary class="faq-question">
+                        <span>Does it work with BigQuery Editions?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes. The Editions Capacity Simulator models Standard, Enterprise, and Enterprise Plus editions with per-second billing, autoscaler simulation, and Fluid Scaling cooldown tax analysis. It recommends the optimal edition and slot capacity tier (p80, p95, max) for your workload — and calculates the exact On-Demand Equivalent Cost for each BigQuery Editions reservation.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-beta-testers">
+                    <summary class="faq-question">
+                        <span>Are you looking for beta testers and co-design partners?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Absolutely! We want to work with real users who are willing to test FinOps Optimizer in their own environments and share honest feedback. Whether you're a FinOps practitioner, a Cloud administrator, or a data engineering lead — we'd love to hear from you. Reach out directly at <a href="mailto:bettan.michael@gmail.com" style="color: var(--cyan); text-decoration: underline;">bettan.michael@gmail.com</a>.</p>
+                    </div>
+                </details>
+
+                <details class="faq-item reveal" id="faq-contributing">
+                    <summary class="faq-question">
+                        <span>How can I contribute or help?</span>
+                        <i class="fas fa-chevron-down faq-chevron" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>There are several ways to get involved:</p>
+                        <ul style="margin: 0.5rem 0 0; padding-left: 1.2rem; color: var(--ink-2); line-height: 1.7;">
+                            <li><strong>Report bugs</strong> — open an issue on <a href="https://github.com/mbettan/bq-finops-optimizer/issues" target="_blank" rel="noopener noreferrer" style="color: var(--cyan); text-decoration: underline;">GitHub Issues</a>. Please keep reports generic and <strong>never include PII, credentials, or sensitive information</strong>.</li>
+                            <li><strong>Request features</strong> — open a GitHub issue describing the use case you'd like to see supported.</li>
+                            <li><strong>Submit pull requests</strong> — if you've fixed a bug, improved performance, or added a feature, PRs are welcome.</li>
+                            <li><strong>Share private feedback</strong> — if you prefer to share feedback confidentially, reach out at <a href="mailto:bettan.michael@gmail.com" style="color: var(--cyan); text-decoration: underline;">bettan.michael@gmail.com</a>.</li>
+                        </ul>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    </main>
+
+    <!-- ░░ FOOTER ░░ -->
+    <footer class="site-footer" role="contentinfo">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <a href="#top" class="logo" aria-label="FinOps Optimizer home">
+                        <span class="logo-mark" aria-hidden="true">
+                            <img src="static/favicon.png" alt="FinOps Optimizer Logo" width="36" height="36">
+                        </span>
+                        <span class="logo-type">FinOps&nbsp;<em>Optimizer</em></span>
+                    </a>
+                    <p>Open-source diagnostic, simulation and governance suite for Google Cloud BigQuery cost optimization.</p>
+                </div>
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <a href="#features">Capabilities</a>
+                    <a href="#pricing">Pricing</a>
+                    <a href="#roadmap">Roadmap</a>
+                    <a href="#releases">Release Notes</a>
+                    <a href="#demo">Live Demo</a>
+                    <a href="simulator.html">Simulator</a>
+                    <a href="#workflow">Workflow</a>
+                    <a href="#faq">FAQ</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener noreferrer">GitHub</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/README.md" target="_blank" rel="noopener noreferrer">Documentation</a>
+                    <a href="https://github.com/mbettan/bq-finops-optimizer/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 FinOps Optimizer · Open Source under Apache 2.0 · Not affiliated with Google Cloud or Google LLC.</p>
+                <a href="https://github.com/mbettan/bq-finops-optimizer" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><i
+                        class="fab fa-github"></i></a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        (() => {
+            'use strict';
+
+        /* ── Scroll progress + navbar ── */
+        const navbar = document.getElementById('navbar');
+        const progress = document.getElementById('scroll-progress');
+        const onScroll = () => {
+            navbar.classList.toggle('scrolled', window.scrollY > 32);
+            const max = document.documentElement.scrollHeight - innerHeight;
+            progress.style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+        };
+        addEventListener('scroll', onScroll, { passive: true });
+        onScroll();
+
+        /* ── Mobile menu ── */
+        const hamburger = document.getElementById('nav-hamburger');
+        const navLinks = document.getElementById('nav-links');
+        const icon = document.getElementById('hamburger-icon');
+        const setMenu = open => {
+            navLinks.classList.toggle('mobile-open', open);
+            hamburger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            icon.className = open ? 'fas fa-times' : 'fas fa-bars';
+            document.body.style.overflow = open ? 'hidden' : '';
+        };
+        hamburger.addEventListener('click', () => setMenu(!navLinks.classList.contains('mobile-open')));
+        navLinks.querySelectorAll('a').forEach(a => a.addEventListener('click', () => setMenu(false)));
+        addEventListener('keydown', e => {
+            if (e.key === 'Escape' && navLinks.classList.contains('mobile-open')) {
+                setMenu(false);
+                hamburger.focus();
+            }
+        });
+        // Rotating the phone into the desktop layout leaves the overlay stuck
+        // open with body scroll locked, so drop it at the breakpoint.
+        // MediaQueryList.addEventListener is Safari 14+; fall back to resize.
+        const wide = matchMedia('(min-width: 769px)');
+        const onWide = () => { if (wide.matches) setMenu(false); };
+        if (wide.addEventListener) wide.addEventListener('change', onWide);
+        else addEventListener('resize', onWide, { passive: true });
+
+        /* ── Reveal on scroll ── */
+        const io = new IntersectionObserver(entries => {
+            entries.forEach(e => {
+                if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+            });
+        }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+        document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+        /* ── Animated counters ── */
+        const animate = (el, target, prefix, suffix) => {
+            const t0 = performance.now(), dur = 1400;
+            const tick = now => {
+                const p = Math.min((now - t0) / dur, 1);
+                const eased = 1 - Math.pow(1 - p, 3);
+                el.textContent = prefix + Math.round(eased * target) + suffix;
+                if (p < 1) requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+        };
+        const cio = new IntersectionObserver(entries => {
+            entries.forEach(e => {
+                if (!e.isIntersecting) return;
+                const el = e.target;
+                animate(el, +el.dataset.count, el.dataset.prefix || '', el.dataset.suffix || '');
+                cio.unobserve(el);
+            });
+        }, { threshold: 0.6 });
+        document.querySelectorAll('[data-count]').forEach(el => cio.observe(el));
+
+        /* ── Spotlight (mouse-tracking glow) ──
+           Only bind on real pointers. On touch it fired on every scroll-drag
+           and forced a layout read of ~30 cards per event for a hover effect
+           phones can't show anyway. The node list is static, so cache it and
+           coalesce the writes into one frame. */
+        if (matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            const spots = Array.from(document.querySelectorAll('.spotlight'));
+            let queued = false, px = 0, py = 0;
+            document.addEventListener('pointermove', e => {
+                px = e.clientX; py = e.clientY;
+                if (queued) return;
+                queued = true;
+                requestAnimationFrame(() => {
+                    queued = false;
+                    spots.forEach(card => {
+                        const r = card.getBoundingClientRect();
+                        if (r.bottom < 0 || r.top > innerHeight) return;
+                        card.style.setProperty('--mx', (px - r.left) + 'px');
+                        card.style.setProperty('--my', (py - r.top) + 'px');
+                    });
+                });
+            }, { passive: true });
+        }
+
+        /* ── Hero ticker rotation ── */
+        const tickerMsgs = [
+            'HBO: Semi-Join Reduction + Join Commutation badges resolved for 10 jobs across 3 projects in 1.2s',
+            'AI Doctor: Multi-Strategy ROI Engine prioritized 5 discovery modes across 7–90d org lookbacks',
+            'HBO: Per-project JOBS_BY_PROJECT enrichment — fault-isolated fan-out, one 403 never blocks others',
+            'AI Doctor: Memory RAM Spill strategy surfaced intermediate shuffle-to-disk query offenders',
+            'HBO: Edition-aware pricing ($0.04–$0.10/hr) projected 63% slot savings on batch workloads',
+            'AI Doctor: Editions Hybrid Fallback computed On-Demand equivalent cost for $0 billed byte reservations',
+            'Linter: 1,284 anti-pattern hits rolled up to 17 owners — service accounts filtered out in one click',
+            'Storage Hygiene: default_time_travel_days resolved for 340 datasets in a single batched UNION ALL',
+            'DML Abuse: 12 destination tables averaging 900+ inserts/day flagged for the Storage Write API',
+            'Export: full filtered result set — not just the visible page — downloaded as CSV from any table'
+        ];
+        const ticker = document.getElementById('ticker-text');
+        let tIdx = 0;
+        setInterval(() => {
+            // The ticker sits inside .hero-visual, which is display:none on small
+            // phones — and a backgrounded tab shouldn't be repainting either.
+            if (document.hidden || ticker.offsetParent === null) return;
+            tIdx = (tIdx + 1) % tickerMsgs.length;
+            ticker.style.opacity = 0;
+            setTimeout(() => { ticker.textContent = tickerMsgs[tIdx]; ticker.style.opacity = 1; }, 350);
+        }, 4200);
+
+        /* ── Demo console tabs ── */
+        const tabs = document.querySelectorAll('.console-tab');
+        tabs.forEach(tab => tab.addEventListener('click', () => {
+            tabs.forEach(t => { t.classList.remove('is-active'); t.setAttribute('aria-selected', 'false'); });
+            tab.classList.add('is-active');
+            tab.setAttribute('aria-selected', 'true');
+            document.querySelectorAll('.console-panel').forEach(p => {
+                const active = p.id === tab.dataset.panel;
+                p.classList.toggle('is-active', active);
+                p.hidden = !active;
+            });
+        }));
+
+        /* ── Copy deploy command ── */
+        const copyBtn = document.getElementById('copy-deploy');
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard?.writeText('gcloud run deploy bq-finops-optimizer --image gcr.io/$PROJECT/bq-finops');
+            copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => copyBtn.innerHTML = '<i class="far fa-copy"></i>', 1600);
+        });
+
+        /* ════════ MOCK DATA ════════ */
+        const getEl = id => document.getElementById(id);
+        const money = v => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        const mockData = [
+            { project: "ecommerce-web-5", dataset: "user_profiles_0", logical_cost: 766.34, physical_cost: 871.21, recommendation: "Logical", savings: 104.88 },
+            { project: "finance-prod-1", dataset: "ab_testing_1", logical_cost: 1402.07, physical_cost: 863.53, recommendation: "Physical", savings: 538.55 },
+            { project: "marketing-analytics-5", dataset: "transactions_2", logical_cost: 408.22, physical_cost: 279.89, recommendation: "Physical", savings: 128.33 },
+            { project: "iot-events-4", dataset: "order_history_3", logical_cost: 342.95, physical_cost: 199.75, recommendation: "Physical", savings: 143.21 },
+            { project: "identity-services-2", dataset: "click_stream_4", logical_cost: 1245.73, physical_cost: 759.80, recommendation: "Physical", savings: 485.93 },
+            { project: "marketing-analytics-2", dataset: "users_5", logical_cost: 13.92, physical_cost: 17.97, recommendation: "Logical", savings: 4.05 },
+            { project: "marketing-analytics-4", dataset: "transactions_6", logical_cost: 5.32, physical_cost: 7.00, recommendation: "Logical", savings: 1.69 },
+            { project: "ecommerce-web-1", dataset: "inventory_7", logical_cost: 428.19, physical_cost: 210.42, recommendation: "Physical", savings: 217.77 },
+            { project: "finance-prod-3", dataset: "user_profiles_8", logical_cost: 441.84, physical_cost: 220.99, recommendation: "Physical", savings: 220.86 },
+            { project: "data-warehouse-prod-4", dataset: "users_9", logical_cost: 4.09, physical_cost: 1.93, recommendation: "Physical", savings: 2.16 },
+            { project: "finance-prod-4", dataset: "pricing_model_10", logical_cost: 11.54, physical_cost: 7.19, recommendation: "Logical", savings: 4.35 },
+            { project: "iot-events-2", dataset: "pricing_model_11", logical_cost: 1682.51, physical_cost: 1388.42, recommendation: "Physical", savings: 294.09 },
+            { project: "iot-events-3", dataset: "users_12", logical_cost: 116.56, physical_cost: 139.76, recommendation: "Logical", savings: 23.20 },
+            { project: "iot-events-2", dataset: "users_13", logical_cost: 545.79, physical_cost: 373.87, recommendation: "Physical", savings: 171.92 },
+            { project: "marketing-analytics-4", dataset: "inventory_14", logical_cost: 19.70, physical_cost: 14.51, recommendation: "Physical", savings: 5.19 },
+            { project: "ecommerce-web-1", dataset: "transactions_15", logical_cost: 81.88, physical_cost: 65.51, recommendation: "Physical", savings: 16.37 },
+            { project: "data-warehouse-prod-1", dataset: "pricing_model_16", logical_cost: 18.83, physical_cost: 22.01, recommendation: "Logical", savings: 3.18 },
+            { project: "identity-services-4", dataset: "device_logs_17", logical_cost: 1075.08, physical_cost: 501.31, recommendation: "Physical", savings: 573.77 },
+            { project: "recommendation-engine-2", dataset: "ab_testing_18", logical_cost: 7.40, physical_cost: 6.14, recommendation: "Physical", savings: 1.26 },
+            { project: "iot-events-5", dataset: "transactions_19", logical_cost: 174.86, physical_cost: 135.47, recommendation: "Physical", savings: 39.39 },
+            { project: "finance-prod-5", dataset: "transactions_20", logical_cost: 11.43, physical_cost: 5.34, recommendation: "Physical", savings: 6.08 },
+            { project: "finance-prod-2", dataset: "click_stream_21", logical_cost: 14.23, physical_cost: 12.39, recommendation: "Logical", savings: 1.83 },
+            { project: "identity-services-1", dataset: "transactions_22", logical_cost: 337.61, physical_cost: 166.72, recommendation: "Physical", savings: 170.89 },
+            { project: "finance-prod-2", dataset: "click_stream_23", logical_cost: 637.49, physical_cost: 819.84, recommendation: "Logical", savings: 182.35 },
+            { project: "identity-services-1", dataset: "audit_logs_24", logical_cost: 1060.40, physical_cost: 499.16, recommendation: "Physical", savings: 561.24 }
+        ];
+
+        let storageTotal = 0;
+        getEl('mock-table-body').innerHTML = mockData.map(r => {
+            const isPhys = r.physical_cost < r.logical_cost;
+            const rec = isPhys ? 'Physical' : 'Logical';
+            const savings = Math.abs(r.logical_cost - r.physical_cost);
+            storageTotal += savings;
+            return `<tr>
+                <td class="mono muted">${r.project}</td>
+                <td class="strong">${r.dataset}</td>
+                <td class="num muted">${money(r.logical_cost)}</td>
+                <td class="num muted">${money(r.physical_cost)}</td>
+                <td><span class="tag ${isPhys ? 'tag-green' : 'tag-blue'}">${rec}</span></td>
+                <td class="num gain">+${money(savings)}</td>
+            </tr>`;
+        }).join('');
+        getEl('storage-total-kpi').innerHTML = `<i class="fas fa-piggy-bank"></i> ${money(storageTotal)}/mo identified`;
+
+        const mockComputeData = [
+            { job_id: "job_nwp_edw_dag_2026_03_20", user: "airflow@company.com", on_demand_cost: 15430.00, editions_cost: 3120.00, profile: "Reservation Candidate", savings: 12310.00 },
+            { job_id: "job_prometheus_query_456", user: "prometheus@company.com", on_demand_cost: 0.05, editions_cost: 0.96, profile: "On-Demand Candidate", savings: -0.91 },
+            { job_id: "job_ad_hoc_analysis_789", user: "analyst@company.com", on_demand_cost: 50.00, editions_cost: 45.00, profile: "Balanced / Uncertain", savings: 5.00 },
+            { job_id: "job_etl_load_daily_001", user: "data-eng@company.com", on_demand_cost: 2450.50, editions_cost: 1230.30, profile: "Reservation Candidate", savings: 1220.20 },
+            { job_id: "job_dashboard_refresh_101", user: "powerbi-svc@company.com", on_demand_cost: 12.40, editions_cost: 15.60, profile: "On-Demand Candidate", savings: -3.20 },
+            { job_id: "job_ml_training_v2_999", user: "ml-model@company.com", on_demand_cost: 5000.00, editions_cost: 4800.00, profile: "Balanced / Uncertain", savings: 200.00 },
+            { job_id: "job_audit_log_cleanup_555", user: "security-svc@company.com", on_demand_cost: 5.20, editions_cost: 0.50, profile: "Reservation Candidate", savings: 4.70 },
+            { job_id: "job_weekly_finance_rpt_888", user: "cfo-team@company.com", on_demand_cost: 850.00, editions_cost: 920.00, profile: "On-Demand Candidate", savings: -70.00 },
+            { job_id: "job_customer_segmentation_02", user: "marketing@company.com", on_demand_cost: 1200.00, editions_cost: 300.00, profile: "Reservation Candidate", savings: 900.00 },
+            { job_id: "job_real_time_streaming_911", user: "pubsub-svc@company.com", on_demand_cost: 150.00, editions_cost: 850.00, profile: "On-Demand Candidate", savings: -700.00 }
+        ];
+
+        getEl('mock-compute-table-body').innerHTML = mockComputeData.map(r => {
+            const cls = r.profile.includes('Reservation') ? 'tag-green' : r.profile.includes('On-Demand') ? 'tag-blue' : 'tag-amber';
+            return `<tr>
+                <td class="mono muted">${r.job_id}</td>
+                <td class="strong">${r.user}</td>
+                <td class="num muted">${money(r.on_demand_cost)}</td>
+                <td class="num muted">${money(r.editions_cost)}</td>
+                <td><span class="tag ${cls}">${r.profile}</span></td>
+                <td class="num ${r.savings > 0 ? 'gain' : 'loss'}">${r.savings > 0 ? '+' : ''}${money(r.savings)}</td>
+            </tr>`;
+        }).join('');
+
+        const mockProfilerData = [
+            { query: "SELECT t1.* FROM `enterprise_project.warehouse.dim_customer` t1 CROSS JOIN `enterprise_project.warehouse.fact_sales` t2", project: "data-warehouse-prod-3", frequency: 8760, avg_slot_hours: 245.1, avg_duration_seconds: 1450.30, avg_bytes: 52428800000000 },
+            { query: "SELECT * FROM `recommendation-engine-4.logs.user_events` WHERE CAST(timestamp AS STRING) = '2026-06-20'", project: "recommendation-engine-4", frequency: 17520, avg_slot_hours: 83.0, avg_duration_seconds: 120.50, avg_bytes: 1073741824000 },
+            { query: "COMMIT TRANSACTION", project: "identity-services-2", frequency: 21456, avg_slot_hours: 0.000138, avg_duration_seconds: 0.01, avg_bytes: 0 },
+            { query: "BEGIN TRANSACTION", project: "identity-services-2", frequency: 24188, avg_slot_hours: 0, avg_duration_seconds: 0, avg_bytes: 0 },
+            { query: "SELECT * FROM `analytics_project.ecommerce.products` LIMIT 100", project: "ecommerce-web-5", frequency: 5259, avg_slot_hours: 45.0, avg_duration_seconds: 23.00, avg_bytes: 50485760000 },
+            { query: "INSERT INTO `marketing_project.campaigns.metrics`", project: "marketing-analytics-5", frequency: 7642, avg_slot_hours: 0, avg_duration_seconds: 1.22, avg_bytes: 0 }
+        ];
+
+        getEl('mock-profiler-table-body').innerHTML = mockProfilerData.map(r => `<tr>
+            <td class="mono query-cell" title="${r.query.replace(/"/g, '&quot;')}">${r.query.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+            <td class="muted">${r.project}</td>
+            <td class="num muted">${r.frequency.toLocaleString()}</td>
+            <td class="num muted">${r.avg_slot_hours.toFixed(4)}</td>
+            <td class="num muted">${r.avg_duration_seconds.toFixed(2)}</td>
+            <td class="num muted">${(r.avg_bytes / 1048576).toFixed(2)} MB</td>
+            <td><span class="tag tag-blue">Candidate</span></td>
+        </tr>`).join('');
+
+        const mockTopSpendersData = [
+            { user: "gcp-prd-svc-composer-dags01@prd-data-platform...", isSa: true, mode: "Mixed (28% Res)", modeCls: "tag-amber", count: 142500, bytes: 153722880000000, slots: 168000.0, cost: 12480.61, waste: 162.23, wastePct: 1, savings: 2400.61 },
+            { user: "svc-looker-dashboard@prd-bi-serving...", isSa: true, mode: "Reservation", modeCls: "tag-green", count: 345000, bytes: 51539607552000, slots: 192000.0, cost: 11633.26, waste: 31.75, wastePct: 0, savings: 0 },
+            { user: "dbt-cloud-runner@prd-analytics-mda...", isSa: true, mode: "On-Demand", modeCls: "tag-rose", count: 58400, bytes: 1561334415360000, slots: 84000.0, cost: 8713.93, waste: 64.24, wastePct: 1, savings: 3673.93 },
+            { user: "tony.stark@mbettan.com", isSa: false, mode: "On-Demand", modeCls: "tag-rose", count: 2450, bytes: 1055531162624000, slots: 21500.0, cost: 6000.00, waste: 43.50, wastePct: 1, savings: 4710.00 },
+            { user: "svc-dataproc-worker@prd-mlops...", isSa: true, mode: "Reservation", modeCls: "tag-green", count: 31200, bytes: 0, slots: 115000.0, cost: 6900.00, waste: 101.43, wastePct: 1, savings: 0 }
+        ];
+        const maxCost = Math.max(...mockTopSpendersData.map(r => r.cost));
+
+        getEl('mock-top-spenders-table-body').innerHTML = mockTopSpendersData.map(r => `<tr>
+            <td class="strong"><i class="fa-solid ${r.isSa ? 'fa-robot' : 'fa-user'}" style="margin-right: 6px; opacity: 0.6; font-size: 0.75rem;"></i>${r.user}</td>
+            <td><span class="tag ${r.modeCls}">${r.mode}</span></td>
+            <td class="num muted">${r.count.toLocaleString()}</td>
+            <td class="num muted">${(r.bytes / 1024 ** 4).toFixed(1)} TiB</td>
+            <td class="num muted">${r.slots.toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            <td class="num gain">${money(r.cost)}</td>
+            <td class="num" style="color: ${r.waste > 0 ? '#fb7185' : 'var(--text-muted)'}; font-weight: 600;">${r.waste > 0 ? '$' + Math.round(r.waste) + ' <span style="font-size:0.75rem; opacity:0.8;">(' + r.wastePct + '%)</span>' : '—'}</td>
+            <td class="num" style="color: ${r.savings > 0 ? '#34d399' : 'var(--text-muted)'}; font-weight: 700;">${r.savings > 0 ? money(r.savings) : '—'}</td>
+            <td><div class="share-bar"><i style="--w:${(r.cost / maxCost * 100).toFixed(1)}%"></i></div></td>
+        </tr>`).join('');
+
+        const mockSimulationData = [
+            { bucket: "[0 → 0]", mins: 1440, slots: 0, utilization: 0, slot_hours: 12000, slot_month: 16.4, autoscale_cost: 12000, base_payg: 0, base_1yr: 0, base_3yr: 0, total_payg: 12000, total_1yr: 12000, total_3yr: 12000 },
+            { bucket: "[0 → 100]", mins: 720, slots: 100, utilization: 50, slot_hours: 6000, slot_month: 8.2, autoscale_cost: 6000, base_payg: 5000, base_1yr: 4000, base_3yr: 3000, total_payg: 11000, total_1yr: 10000, total_3yr: 9000 },
+            { bucket: "[100 → 200]", mins: 360, slots: 200, utilization: 80, slot_hours: 2000, slot_month: 2.7, autoscale_cost: 2000, base_payg: 10000, base_1yr: 8000, base_3yr: 6000, total_payg: 12000, total_1yr: 10000, total_3yr: 8000 }
+        ];
+        const bestTotal = Math.min(...mockSimulationData.map(r => r.total_3yr));
+
+        getEl('mock-simulation-table-body').innerHTML = mockSimulationData.map(r => `<tr>
+            <td class="mono strong">${r.bucket}</td>
+            <td class="num muted sep">${r.mins}</td>
+            <td class="num strong">${r.slots}</td>
+            <td class="num muted sep">${r.utilization}%</td>
+            <td class="num muted">${r.slot_hours.toLocaleString()}</td>
+            <td class="num muted sep">${r.slot_month}</td>
+            <td class="num muted sep">$${r.autoscale_cost.toLocaleString()}</td>
+            <td class="num muted">$${r.base_payg.toLocaleString()}</td>
+            <td class="num muted">$${r.base_1yr.toLocaleString()}</td>
+            <td class="num muted sep">$${r.base_3yr.toLocaleString()}</td>
+            <td class="num muted">$${r.total_payg.toLocaleString()}</td>
+            <td class="num muted">$${r.total_1yr.toLocaleString()}</td>
+            <td class="num total-cell ${r.total_3yr === bestTotal ? 'best' : ''}">$${r.total_3yr.toLocaleString()}${r.total_3yr === bestTotal ? ' <i class="fas fa-star"></i>' : ''}</td>
+        </tr>`).join('');
+
+        /* ── Mobile: stamp every cell with its column header ────────────────
+           Below 768px each table collapses to one card per row and the header
+           row is visually hidden, so the label has to travel with the cell.
+           Reading it off <thead> keeps the markup and the mock renderers above
+           free of duplicated label strings. Runs last, after every tbody is
+           populated. */
+        document.querySelectorAll('.data-table, .aid-table').forEach(table => {
+            const head = table.tHead;
+            if (!head || !head.rows.length) return;
+
+            // Grouped headers (the Edition Matrix) repeat leaf names like
+            // "PAYG" under three different groups — expand the colspans of the
+            // first row so each leaf can be qualified by its group.
+            const groups = [];
+            if (head.rows.length > 1) {
+                Array.from(head.rows[0].cells).forEach(th => {
+                    const text = th.textContent.trim();
+                    for (let i = 0; i < (th.colSpan || 1); i++) groups.push(text);
+                });
+            }
+            const labels = Array.from(head.rows[head.rows.length - 1].cells).map((th, i) => {
+                const leaf = th.textContent.trim();
+                return groups[i] && groups[i] !== leaf ? groups[i] + ' · ' + leaf : leaf;
+            });
+
+            Array.from(table.tBodies).forEach(tbody => {
+                Array.from(tbody.rows).forEach(row => {
+                    Array.from(row.cells).forEach((cell, i) => {
+                        if (labels[i]) cell.setAttribute('data-label', labels[i]);
+                    });
+                });
+            });
+        });
+    })();
+    </script>
+
+<!-- ░░ AI DOCTOR DEMO — BEHAVIOR ░░ -->
+<script>
+(function () {
+  'use strict';
+  var panel = document.getElementById('panel-ai-doctor');
+  if (!panel) return;
+
+  var root = panel.querySelector('.ai-doctor-demo');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('tbody .aid-row'));
+  var emptyMsg = root.querySelector('.aid-empty');
+
+  /* ---------- 5.1 Filter Pills ---------- */
+  var pills = Array.prototype.slice.call(root.querySelectorAll('.aid-pill'));
+
+  function matchesFilter(row, filter) {
+    switch (filter) {
+      case 'all':       return true;
+      case 'high':      return row.dataset.severity === 'HIGH';
+      case 'medium':    return row.dataset.severity === 'MEDIUM';
+      case 'migration': return row.dataset.migration === '1';
+      case 'schemagap': return row.dataset.schemagap === '1';
+      case 'repeat':    return row.dataset.repeat === '1';
+      default:          return true;
+    }
+  }
+
+  pills.forEach(function (pill) {
+    pill.addEventListener('click', function () {
+      pills.forEach(function (p) { p.classList.remove('is-active'); });
+      pill.classList.add('is-active');
+
+      var filter = pill.dataset.filter;
+      var visibleCount = 0;
+      rows.forEach(function (row) {
+        var show = matchesFilter(row, filter);
+        row.hidden = !show;
+        if (show) visibleCount++;
+      });
+      if (emptyMsg) emptyMsg.hidden = visibleCount > 0;
+    });
+  });
+
+  /* ---------- 5.2 Copy SQL Buttons ---------- */
+  root.querySelectorAll('.aid-copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var pre = btn.parentElement.querySelector('pre');
+      if (!pre) return;
+      var sql = pre.textContent;
+
+      function onCopied() {
+        var icon = btn.querySelector('i');
+        btn.classList.add('is-copied');
+        if (icon) { icon.classList.remove('fa-copy'); icon.classList.add('fa-check'); }
+        window.setTimeout(function () {
+          btn.classList.remove('is-copied');
+          if (icon) { icon.classList.remove('fa-check'); icon.classList.add('fa-copy'); }
+        }, 1500);
+      }
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(sql).then(onCopied).catch(function () { /* noop */ });
+      }
+    });
+  });
+
+  /* ---------- 5.3 Show More / Show Less (Gemini Advice) ---------- */
+  root.querySelectorAll('.aid-advice').forEach(function (advice) {
+    var body = advice.querySelector('.aid-advice-body');
+    if (!body || body.textContent.trim().length <= 300) return;
+
+    // Gradient fade over the clipped content
+    var fade = document.createElement('div');
+    fade.className = 'aid-advice-fade';
+    advice.appendChild(fade);
+
+    // Toggle link
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'aid-advice-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.textContent = '\u25BC Show more';
+    advice.appendChild(toggle);
+
+    toggle.addEventListener('click', function () {
+      var open = advice.classList.toggle('is-open');
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.textContent = open ? '\u25B2 Show less' : '\u25BC Show more';
+    });
+  });
+
+  /* ---------- 5.4 YAML Accordion (Migration Config) ---------- */
+  root.querySelectorAll('.aid-yaml-toggle').forEach(function (toggle) {
+    toggle.addEventListener('click', function () {
+      var yaml = toggle.nextElementSibling;
+      if (!yaml || !yaml.classList.contains('aid-yaml')) return;
+      var expanded = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      yaml.hidden = expanded;
+    });
+  });
+})();
+</script>
+<!-- ░░ /AI DOCTOR DEMO — BEHAVIOR ░░ -->
+
+<!-- ░░ LIVE GITHUB ROADMAP LOADER & FILTERING ░░ -->
+<script>
+(function() {
+  'use strict';
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function getTagClass(label) {
+    if (label.indexOf('slots') !== -1) return 'roadmap-tag-slots';
+    if (label.indexOf('ai-doctor') !== -1) return 'roadmap-tag-ai';
+    if (label.indexOf('storage') !== -1) return 'roadmap-tag-storage';
+    if (label.indexOf('cost') !== -1) return 'roadmap-tag-cost';
+    if (label.indexOf('governance') !== -1) return 'roadmap-tag-gov';
+    if (label.indexOf('settings') !== -1) return 'roadmap-tag-settings';
+    if (label.indexOf('ui') !== -1) return 'roadmap-tag-ui';
+    if (label.indexOf('community') !== -1) return 'roadmap-tag-community';
+    return '';
+  }
+
+  function cleanDescription(body) {
+    if (!body) return 'Feature capability.';
+    var cleaned = body
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/^#{1,6}\s+[^\n]*/gm, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[*_~>]/g, '')
+      .trim();
+    var lines = cleaned.split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
+    var firstLine = lines.length > 0 ? lines[0] : 'Feature capability.';
+    return firstLine.length > 140 ? firstLine.substring(0, 137) + '...' : firstLine;
+  }
+
+  function renderCard(issue) {
+    var rawTitle = issue.title.replace(/^\[Feature\]\s*/i, '').replace(/^\[Bug\]\s*/i, '');
+    var labels = (issue.labels || []).map(function(l) { return l.name; });
+    var tagClasses = labels.join(' ');
+    
+    var tagsHtml = labels.map(function(l) {
+      return '<span class="roadmap-tag ' + getTagClass(l) + '">' + escapeHtml(l) + '</span>';
+    }).join(' ');
+
+    var desc = escapeHtml(cleanDescription(issue.body));
+
+    return '<a href="' + escapeHtml(issue.html_url) + '" target="_blank" rel="noopener noreferrer" class="roadmap-card" data-tags="' + escapeHtml(tagClasses) + '">' +
+             '<div class="roadmap-card-header">' +
+               '<span class="roadmap-card-title">' + escapeHtml(rawTitle) + '</span>' +
+               '<span class="roadmap-card-id">#' + issue.number + '</span>' +
+             '</div>' +
+             '<p class="roadmap-card-desc">' + desc + '</p>' +
+             '<div class="roadmap-card-tags">' + tagsHtml + '</div>' +
+           '</a>';
+  }
+
+  async function loadLiveRoadmap() {
+    var syncText = document.getElementById('roadmap-sync-text');
+    try {
+      var res = await fetch('https://api.github.com/repos/mbettan/bq-finops-optimizer/issues?state=all&per_page=100');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var issues = await res.json();
+      if (!Array.isArray(issues) || issues.length === 0) return;
+
+      var gaList = [];
+      var plannedList = [];
+      var backlogList = [];
+
+      var plannedNumbers = [1, 7, 8, 9, 10, 60];
+
+      issues.forEach(function(iss) {
+        if (iss.pull_request) return;
+        if (iss.state === 'closed') {
+          gaList.push(iss);
+        } else if (iss.state === 'open') {
+          if (plannedNumbers.indexOf(iss.number) !== -1 || (iss.milestone && iss.milestone.title === 'v1.5.0')) {
+            plannedList.push(iss);
+          } else {
+            backlogList.push(iss);
+          }
+        }
+      });
+
+      var gaContainer = document.getElementById('list-ga');
+      var plannedContainer = document.getElementById('list-planned');
+      var backlogContainer = document.getElementById('list-backlog');
+
+      if (gaContainer && gaList.length > 0) {
+        gaContainer.innerHTML = gaList.map(renderCard).join('');
+        var countGa = document.getElementById('count-ga');
+        if (countGa) countGa.textContent = gaList.length;
+      }
+      if (plannedContainer && plannedList.length > 0) {
+        plannedContainer.innerHTML = plannedList.map(renderCard).join('');
+        var countPlanned = document.getElementById('count-planned');
+        if (countPlanned) countPlanned.textContent = plannedList.length;
+      }
+      if (backlogContainer && backlogList.length > 0) {
+        backlogContainer.innerHTML = backlogList.map(renderCard).join('');
+        var countBacklog = document.getElementById('count-backlog');
+        if (countBacklog) countBacklog.textContent = backlogList.length;
+      }
+
+      if (syncText) {
+        var total = issues.filter(function(i){ return !i.pull_request; }).length;
+        syncText.textContent = 'Live from GitHub (' + total + ' items)';
+      }
+
+      var activeBtn = document.querySelector('.roadmap-filter-btn.is-active');
+      if (activeBtn) activeBtn.click();
+    } catch (e) {
+      if (syncText) syncText.textContent = 'Live Roadmap';
+    }
+  }
+
+  // Filter interaction
+  var filterButtons = document.querySelectorAll('.roadmap-filter-btn');
+  filterButtons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      filterButtons.forEach(function(b) { b.classList.remove('is-active'); });
+      btn.classList.add('is-active');
+      var filter = btn.dataset.filter;
+
+      document.querySelectorAll('.roadmap-card').forEach(function(card) {
+        var tags = card.dataset.tags || '';
+        if (filter === 'all' || tags.indexOf(filter) !== -1) {
+          card.style.display = 'flex';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    });
+  });
+
+  // Bind roadmap see more / see less toggle
+  var roadmapWrapper = document.getElementById('roadmap-grid-wrapper');
+  var roadmapToggleBtn = document.getElementById('btn-roadmap-toggle');
+  if (roadmapToggleBtn && roadmapWrapper) {
+    roadmapToggleBtn.addEventListener('click', function() {
+      var isExpanded = roadmapWrapper.classList.toggle('is-expanded');
+      roadmapToggleBtn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+      if (isExpanded) {
+        roadmapToggleBtn.innerHTML = '<i class="fas fa-chevron-up" aria-hidden="true"></i><span>See Fewer Roadmap Items</span>';
+      } else {
+        roadmapToggleBtn.innerHTML = '<i class="fas fa-chevron-down" aria-hidden="true"></i><span>See More Roadmap Items</span>';
+        roadmapWrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+  }
+
+  loadLiveRoadmap();
+})();
+</script>
+
+<!-- ░░ LIVE GITHUB RELEASES LOADER & INTERACTION ░░ -->
+<script>
+(function() {
+  'use strict';
+
+  var releasesData = [];
+
+  function formatDate(isoStr) {
+    if (!isoStr) return '';
+    var d = new Date(isoStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatFullDate(isoStr) {
+    if (!isoStr) return '';
+    var d = new Date(isoStr);
+    return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatMarkdownBody(raw) {
+    if (!raw) return '<p>No release notes provided.</p>';
+    var lines = raw.split('\n');
+    var html = [];
+    var inList = false;
+
+    lines.forEach(function(line) {
+      line = line.trim();
+      if (!line || line === '---' || line === '***') {
+        if (inList) { html.push('</ul>'); inList = false; }
+        if (line === '---' || line === '***') html.push('<hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 0.85rem 0;">');
+        return;
+      }
+
+      if (line.indexOf('#### ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h4 style="color: #f8fafc; margin: 0.85rem 0 0.35rem; font-size: 0.92rem;">' + line.substring(5) + '</h4>');
+      } else if (line.indexOf('### ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h3>' + line.substring(4) + '</h3>');
+      } else if (line.indexOf('## ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h2>' + line.substring(3) + '</h2>');
+      } else if (line.indexOf('# ') === 0) {
+        if (inList) { html.push('</ul>'); inList = false; }
+        html.push('<h2 style="font-size: 1.15rem; color: #38bdf8; margin: 1rem 0 0.5rem;">' + line.substring(2) + '</h2>');
+      } else if (line.indexOf('* ') === 0 || line.indexOf('- ') === 0 || line.indexOf('• ') === 0 || /^\d+\.\s/.test(line)) {
+        if (!inList) { html.push('<ul>'); inList = true; }
+        var rawText = line.replace(/^(\*|-|•|\d+\.)\s+/, '');
+        var content = rawText
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/#(\d+)/g, '<a href="https://github.com/mbettan/bq-finops-optimizer/issues/$1" target="_blank" rel="noopener noreferrer" style="color: #38bdf8; text-decoration: underline;">#$1</a>');
+        html.push('<li>' + content + '</li>');
+      } else {
+        if (inList) { html.push('</ul>'); inList = false; }
+        var para = line
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/#(\d+)/g, '<a href="https://github.com/mbettan/bq-finops-optimizer/issues/$1" target="_blank" rel="noopener noreferrer" style="color: #38bdf8; text-decoration: underline;">#$1</a>');
+        html.push('<p style="margin-bottom: 0.5rem;">' + para + '</p>');
+      }
+    });
+
+    if (inList) html.push('</ul>');
+    return html.join('');
+  }
+
+  function checkReleaseOverflow() {
+    var wrapper = document.getElementById('release-content-wrapper');
+    var btnWrap = document.getElementById('release-see-more-wrap');
+    var overlay = document.getElementById('release-fade-overlay');
+    var btn = document.getElementById('release-see-more-btn');
+    if (!wrapper || !btnWrap) return;
+
+    // Reset expanded state on new release
+    wrapper.classList.remove('is-expanded');
+    if (btn) btn.innerHTML = '<i class="fas fa-chevron-down"></i><span>See More</span>';
+
+    setTimeout(function() {
+      var content = document.getElementById('release-body-content');
+      if (content && content.scrollHeight > 390) {
+        wrapper.style.maxHeight = '380px';
+        btnWrap.style.display = 'flex';
+        if (overlay) overlay.style.display = 'block';
+      } else {
+        wrapper.style.maxHeight = 'none';
+        btnWrap.style.display = 'none';
+        if (overlay) overlay.style.display = 'none';
+      }
+    }, 50);
+  }
+
+  function displayRelease(rel, isLatest) {
+    var versionText = document.getElementById('release-version-text');
+    var latestPill = document.getElementById('release-latest-pill');
+    var dateText = document.getElementById('release-date-text');
+    var ghLink = document.getElementById('release-github-link');
+    var contentEl = document.getElementById('release-body-content');
+
+    if (versionText) versionText.textContent = rel.tag_name || rel.name;
+    if (latestPill) latestPill.style.display = isLatest ? 'inline-block' : 'none';
+    if (dateText) dateText.innerHTML = '<i class="far fa-calendar-alt" style="margin-right: 6px;"></i>' + formatFullDate(rel.published_at);
+    if (ghLink) ghLink.href = rel.html_url;
+    if (contentEl) contentEl.innerHTML = formatMarkdownBody(rel.body);
+    checkReleaseOverflow();
+  }
+
+  // Bind see more / see less button listener
+  var toggleBtn = document.getElementById('release-see-more-btn');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', function() {
+      var wrapper = document.getElementById('release-content-wrapper');
+      var overlay = document.getElementById('release-fade-overlay');
+      if (!wrapper) return;
+      var isExpanded = wrapper.classList.contains('is-expanded');
+      if (isExpanded) {
+        wrapper.classList.remove('is-expanded');
+        wrapper.style.maxHeight = '380px';
+        if (overlay) overlay.style.display = 'block';
+        toggleBtn.innerHTML = '<i class="fas fa-chevron-down"></i><span>See More</span>';
+        var card = document.getElementById('release-detail-card');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      } else {
+        wrapper.classList.add('is-expanded');
+        wrapper.style.maxHeight = 'none';
+        if (overlay) overlay.style.display = 'none';
+        toggleBtn.innerHTML = '<i class="fas fa-chevron-up"></i><span>See Less</span>';
+      }
+    });
+  }
+
+  var LOCAL_V144_RELEASE = {
+    tag_name: 'v1.4.4',
+    name: 'v1.4.4',
+    published_at: '2026-09-16T00:00:00Z',
+    html_url: 'https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.4',
+    body: '### 🌟 Highlights & Major Capabilities\n\n' +
+          '* **59-Region Dynamic SKU Pricing Engine:** Replaced US-only defaults with live per-region Cloud Billing SKU rates for On-Demand, Logical/Physical Storage, and Editions across 59 global BigQuery regions.\n' +
+          '* **Corporate Light Mode & Dual Theme Architecture:** Added Google Cloud Console-styled Corporate Light Mode with strict WCAG AA contrast compliance (≥ 4.5:1) and zero-FOUC bootstrap (`theme-boot.js`).\n' +
+          '* **4-Tier Storage Risk Model & Native Windows Support:** Upgraded Storage Optimizer risk grading into a 4-tier scale (Critical, High, Medium, Low) and added one-click Windows launchers (`run.bat` / `run.ps1`).\n' +
+          '* **Enterprise Least-Privilege IAM & Cloud Run Automation:** Formal control-plane IAM specification (`deploy/roles/bq_finops_reader.yaml`) excluding `bigquery.tables.getData`, plus automated Cloud Run & Cloud Shell deployment.'
+  };
+
+  async function loadLiveReleases() {
+    var navContainer = document.getElementById('releases-nav');
+    try {
+      var res = await fetch('https://api.github.com/repos/mbettan/bq-finops-optimizer/releases');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var releases = await res.json();
+      if (!Array.isArray(releases)) releases = [];
+
+      var has144 = releases.some(function(r) { return (r.tag_name || r.name) === 'v1.4.4'; });
+      if (!has144) {
+        releases.unshift(LOCAL_V144_RELEASE);
+      }
+
+      releasesData = releases;
+
+      if (navContainer) {
+        navContainer.innerHTML = releases.map(function(rel, idx) {
+          var tag = rel.tag_name || rel.name;
+          var isAct = idx === 0;
+          return '<button class="release-nav-btn ' + (isAct ? 'is-active' : '') + '" data-idx="' + idx + '" data-version="' + tag + '" role="tab" aria-selected="' + (isAct ? 'true' : 'false') + '">' +
+                   '<span>' + tag + '</span>' +
+                   '<span class="release-nav-date">' + formatDate(rel.published_at) + '</span>' +
+                 '</button>';
+        }).join('');
+
+        // Reattach listeners
+        navContainer.querySelectorAll('.release-nav-btn').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            navContainer.querySelectorAll('.release-nav-btn').forEach(function(b) {
+              b.classList.remove('is-active');
+              b.setAttribute('aria-selected', 'false');
+            });
+            btn.classList.add('is-active');
+            btn.setAttribute('aria-selected', 'true');
+            var idx = parseInt(btn.dataset.idx, 10);
+            if (releasesData[idx]) {
+              displayRelease(releasesData[idx], idx === 0);
+            }
+          });
+        });
+      }
+
+      // Display latest release
+      displayRelease(releases[0], true);
+    } catch (e) {
+      // Graceful fallback to pre-rendered v1.4.4
+      checkReleaseOverflow();
+    }
+  }
+
+  loadLiveReleases();
+  checkReleaseOverflow();
+})();
+</script>
+</body>
+</html>

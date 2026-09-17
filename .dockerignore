@@ -1,0 +1,52 @@
+# P3: Prevent baking dev/doc/config files into the production image.
+# - *.md files include CODEREVIEW.md (154 KB of unpatched findings with exact file:line)
+# - *.json includes cost_attribution_config.json (runtime config that a rebuild silently reverts)
+# - Tests, caches, and venvs are dev-only
+
+# Documentation and config
+*.md
+*.json
+!src/data/*.json
+
+# Version control
+.git
+.gitignore
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.pyo
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Virtual environments
+.venv/
+venv/
+venv-audit/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs (runtime-generated, should not be baked, including rotated .log.1 files)
+*.log*
+
+# Dev files & internal specs/scripts
+tests/
+requirements-dev.txt
+scratch/
+docs/
+specs/
+scripts/
+review.md
+
+# Environment files
+.env
+.env.*
+
+# Docker
+Dockerfile
+.dockerignore

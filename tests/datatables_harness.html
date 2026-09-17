@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DataTables Column-Mismatch Harness</title>
+
+<!-- Match the versions in the app -->
+<link rel="stylesheet"
+  href="https://cdn.datatables.net/1.13.8/css/jquery.dataTables.min.css" />
+<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+
+<!-- Reproduce the sticky-header CSS the diagnostic blamed (to prove it's NOT the cause) -->
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background:#0f172a; color:#e2e8f0; }
+  table.display { border-collapse: separate !important; border-spacing: 0 !important; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid #334155; }
+  thead th { position: sticky; top: 0; background:#1e293b; }
+  .panel { margin-bottom: 3rem; }
+  .controls { margin-bottom: 1rem; display:flex; gap:.5rem; flex-wrap:wrap; }
+  button {
+    background:#1e293b; color:#e2e8f0; border:1px solid #475569;
+    padding:.5rem .9rem; border-radius:6px; cursor:pointer; font-size:.85rem;
+  }
+  button:hover { background:#334155; }
+  button.danger { border-color:#b91c1c; color:#fca5a5; }
+  button.good { border-color:#15803d; color:#86efac; }
+  #log {
+    background:#020617; border:1px solid #1e293b; border-radius:8px;
+    padding:1rem; font-family: ui-monospace, monospace; font-size:.8rem;
+    white-space:pre-wrap; max-height:340px; overflow:auto; line-height:1.5;
+  }
+  .log-ok    { color:#4ade80; }
+  .log-err   { color:#f87171; }
+  .log-warn  { color:#fbbf24; }
+  .log-info  { color:#93c5fd; }
+  .skeleton-bar {
+    display:block; height:12px; width:60%; border-radius:4px;
+    background:linear-gradient(90deg,#1e293b 25%,#334155 50%,#1e293b 75%);
+    background-size:200% 100%; animation:sk 1.2s infinite;
+  }
+  @keyframes sk { to { background-position:-200% 0; } }
+  .table-responsive { overflow-x:auto; }
+</style>
+</head>
+<body>
+
+<h1>DataTables Column-Mismatch Harness</h1>
+<p class="log-info">
+  Proves: (1) <code>safeInitDataTable</code> fails loudly on mismatch instead of recursing,
+  (2) correct rows init cleanly even with <code>border-collapse: separate + scrollX</code>,
+  (3) the <code>colspan</code> empty/skeleton rows are exempted.
+</p>
+
+<!-- ============ ESTIMATE TABLE (10 cols, sort index 9) ============ -->
+<div class="panel">
+  <h2>#fluid-estimate-table (10 columns)</h2>
+  <div class="controls">
+    <button class="good"   onclick="estimateOK()">✔ Render valid (10 td)</button>
+    <button class="danger" onclick="estimateBad()">✘ Render broken (9 td) — expect clean error</button>
+    <button onclick="estimateEmpty()">Empty state (colspan=10)</button>
+    <button onclick="estimateSkeleton()">Skeleton (colspan=10)</button>
+  </div>
+  <div class="table-responsive">
+    <table id="fluid-estimate-table" class="display nowrap" style="width:100%">
+      <thead>
+        <tr>
+          <th>Reservation ID</th><th>Status</th><th>Legacy Slot-Hrs</th>
+          <th>Fluid Slot-Hrs</th><th>Total Used Slot-Hrs</th><th>Recoverable Slot-Hrs</th>
+          <th>% Savings</th><th>$ Window</th><th>$ Monthly</th><th>$ Annual</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ============ SIMULATION TABLE (9 cols, sort index 7) ============ -->
+<div class="panel">
+  <h2>#fluid-simulation-table (9 columns)</h2>
+  <div class="controls">
+    <button class="good"   onclick="simOK()">✔ Render valid (9 td)</button>
+    <button class="danger" onclick="simBad()">✘ Render broken (10 td) — expect clean error</button>
+    <button onclick="simEmpty()">Empty state (colspan=9)</button>
+    <button onclick="simSkeleton()">Skeleton (colspan=9)</button>
+  </div>
+  <div class="table-responsive">
+    <table id="fluid-simulation-table" class="display nowrap" style="width:100%">
+      <thead>
+        <tr>
+          <th>Pattern</th><th>Sample Job ID</th><th>Workload Type</th><th>Reservation</th>
+          <th>Job Count</th><th>Avg Duration (s)</th><th>Avg Peak Slots</th>
+          <th>Exposure Score</th><th>Indicative Savings (Window)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<h2>Console mirror</h2>
+<div id="log"></div>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * Logging: mirror console + capture uncaught errors so a RangeError
+ * (the OLD behavior) is visibly distinguishable from a clean throw.
+ * ------------------------------------------------------------------ */
+const logEl = document.getElementById('log');
+function log(msg, cls='log-info') {
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+window.addEventListener('error', (e) => {
+  log('🔴 UNCAUGHT: ' + e.message, 'log-err');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  log('🔴 UNHANDLED PROMISE: ' + (e.reason?.message || e.reason), 'log-err');
+});
+
+/* ------------------------------------------------------------------ *
+ * The actual guard under test — copied verbatim from app.js.
+ * Keep this in sync with the real implementation.
+ * ------------------------------------------------------------------ */
+function safeInitDataTable(selector, options) {
+  const $table = $(selector);
+  if ($table.length === 0) {
+    console.warn(`[safeInitDataTable] ${selector} not found in DOM; skipping init.`);
+    return null;
+  }
+  const tableEl = $table[0];
+
+  if ($.fn.DataTable.isDataTable(selector)) {
+    $table.DataTable().clear().destroy();
+  }
+
+  const headerRows = tableEl.tHead ? tableEl.tHead.rows : [];
+  if (headerRows.length === 0) {
+    throw new Error(`[safeInitDataTable] ${selector} has no <thead> rows.`);
+  }
+  const lastHeaderRow = headerRows[headerRows.length - 1];
+  const expectedCols = Array.from(lastHeaderRow.cells)
+    .reduce((sum, th) => sum + (th.colSpan || 1), 0);
+
+  const body = tableEl.tBodies[0];
+  if (body) {
+    Array.from(body.rows).forEach((row, idx) => {
+      const cells = Array.from(row.cells);
+      const isMessageRow =
+        cells.length === 1 && (cells[0].colSpan || 1) === expectedCols;
+      if (isMessageRow) return;
+      const actualCols = cells.reduce((sum, td) => sum + (td.colSpan || 1), 0);
+      if (actualCols !== expectedCols) {
+        throw new Error(
+          `[safeInitDataTable] ${selector} column mismatch at body row ${idx}: ` +
+          `header expects ${expectedCols}, row has ${actualCols}. ` +
+          `Fix the row template or use a single colspan="${expectedCols}" cell ` +
+          `for empty/skeleton rows. (Aborting before DataTables recursion.)`
+        );
+      }
+    });
+  }
+
+  return $table.DataTable(Object.assign({ autoWidth: false }, options));
+}
+
+/* The control: raw init WITHOUT the guard — to reproduce the original crash. */
+function rawInitDataTable(selector, options) {
+  if ($.fn.DataTable.isDataTable(selector)) $(selector).DataTable().destroy();
+  return $(selector).DataTable(options);
+}
+
+/* skeleton helper mirroring the refactored renderTableSkeleton */
+function renderTableSkeleton(tableEl, rowCount = 4) {
+  const headerRow = tableEl.tHead.rows[tableEl.tHead.rows.length - 1];
+  const cols = Array.from(headerRow.cells).reduce((s, th) => s + (th.colSpan || 1), 0);
+  const body = tableEl.tBodies[0] || tableEl.createTBody();
+  body.innerHTML = Array.from({ length: rowCount }, () => `
+    <tr class="skeleton-row"><td colspan="${cols}"><span class="skeleton-bar"></span></td></tr>
+  `).join('');
+}
+
+/* ------------------------------------------------------------------ *
+ * Helper to run a scenario and report which path we hit.
+ * ------------------------------------------------------------------ */
+function runScenario(label, fn) {
+  log('— ' + label, 'log-info');
+  try {
+    fn();
+    log('   ✔ init succeeded (no recursion, no throw)', 'log-ok');
+  } catch (err) {
+    if (err instanceof RangeError) {
+      log('   🔴 RangeError (THE BUG): ' + err.message, 'log-err');
+    } else {
+      log('   ✔ caught clean guard error: ' + err.message, 'log-warn');
+    }
+  }
+}
+
+/* ================= ESTIMATE scenarios ================= */
+function estimateRows(tdCount) {
+  const tds = Array.from({ length: tdCount }, (_, i) => `<td>col${i}</td>`).join('');
+  document.querySelector('#fluid-estimate-table tbody').innerHTML =
+    `<tr>${tds}</tr><tr>${tds}</tr>`;
+}
+function estimateOK() {
+  runScenario('estimate: valid 10-td rows (guarded)', () => {
+    estimateRows(10);
+    safeInitDataTable('#fluid-estimate-table', { scrollX: true, order: [[9,'desc']] });
+  });
+}
+function estimateBad() {
+  runScenario('estimate: BROKEN 9-td rows (guarded → should throw clean)', () => {
+    estimateRows(9);
+    safeInitDataTable('#fluid-estimate-table', { scrollX: true, order: [[9,'desc']] });
+  });
+}
+function estimateEmpty() {
+  runScenario('estimate: empty state colspan=10 (guarded)', () => {
+    document.querySelector('#fluid-estimate-table tbody').innerHTML =
+      `<tr><td colspan="10" style="text-align:center;">No reservations.</td></tr>`;
+    safeInitDataTable('#fluid-estimate-table', { scrollX: true, order: [[9,'desc']] });
+  });
+}
+function estimateSkeleton() {
+  runScenario('estimate: skeleton colspan=10 (guarded)', () => {
+    renderTableSkeleton(document.getElementById('fluid-estimate-table'));
+    safeInitDataTable('#fluid-estimate-table', { scrollX: true, order: [[9,'desc']] });
+  });
+}
+
+/* ================= SIMULATION scenarios ================= */
+function simRows(tdCount) {
+  const tds = Array.from({ length: tdCount }, (_, i) => `<td>v${i}</td>`).join('');
+  document.querySelector('#fluid-simulation-table tbody').innerHTML =
+    `<tr>${tds}</tr><tr>${tds}</tr>`;
+}
+function simOK() {
+  runScenario('sim: valid 9-td rows (guarded)', () => {
+    simRows(9);
+    safeInitDataTable('#fluid-simulation-table', { pageLength:10, scrollX:true, order:[[7,'desc']] });
+  });
+}
+function simBad() {
+  runScenario('sim: BROKEN 10-td rows (guarded → should throw clean)', () => {
+    simRows(10);
+    safeInitDataTable('#fluid-simulation-table', { pageLength:10, scrollX:true, order:[[7,'desc']] });
+  });
+}
+function simEmpty() {
+  runScenario('sim: empty state colspan=9 (guarded)', () => {
+    document.querySelector('#fluid-simulation-table tbody').innerHTML =
+      `<tr><td colspan="9" style="text-align:center;">No data.</td></tr>`;
+    safeInitDataTable('#fluid-simulation-table', { pageLength:10, scrollX:true, order:[[7,'desc']] });
+  });
+}
+function simSkeleton() {
+  runScenario('sim: skeleton colspan=9 (guarded)', () => {
+    renderTableSkeleton(document.getElementById('fluid-simulation-table'));
+    safeInitDataTable('#fluid-simulation-table', { pageLength:10, scrollX:true, order:[[7,'desc']] });
+  });
+}
+
+log('Harness ready. Run the ✘ broken scenarios first — they should produce a', 'log-info');
+log('"column mismatch" guard error (yellow), NOT a RangeError (red).', 'log-info');
+</script>
+</body>
+</html>

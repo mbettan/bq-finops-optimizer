@@ -1,0 +1,6 @@
+pytest>=7.0
+pytest-cov>=4.0
+playwright>=1.40.0,<2.0.0
+pytest-playwright>=0.4.0,<1.0.0
+httpx2>=2.0.0
+ruff>=0.6.0,<1.0.0

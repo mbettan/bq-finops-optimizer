@@ -1,0 +1,18 @@
+# Exclude non-runtime directories and files from GitHub Release archives (git archive)
+
+# Documentation & GitHub Pages
+/docs                   export-ignore
+
+# Testing & Development
+/tests                  export-ignore
+/specs                  export-ignore
+/scripts                export-ignore
+PRD.MD                  export-ignore
+PRD.md                  export-ignore
+pytest.ini              export-ignore
+requirements-dev.txt    export-ignore
+
+# CI/CD & Repository Metadata
+/.github                export-ignore
+.gitignore              export-ignore
+.gitattributes          export-ignore
