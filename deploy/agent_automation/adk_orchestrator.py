@@ -118,8 +118,8 @@ if tool_name in ("Edit", "Write", "MultiEdit") and isinstance(tool_input, dict):
         if rel.startswith("/workspace/"):
             rel = rel[len("/workspace/"):]
         rel = rel.removeprefix("./")
-        if any(rel == p or rel.startswith(p) for p in PROTECTED) or rel.startswith(".git/"):
-            sys.stderr.write(f"POLICY HOOK BLOCKED: Writing to protected path '{{rel}}' is prohibited.\\n")
+        if any(rel == p or rel.startswith(p) for p in PROTECTED) or rel.startswith(".git/") or os.path.basename(rel) == "conftest.py":
+            sys.stderr.write(f"POLICY HOOK BLOCKED: Writing to protected or conftest.py path '{{rel}}' is prohibited.\\n")
             sys.exit(2)
         if ALLOWED and rel not in ALLOWED and not rel.startswith("tests/") and not rel.startswith("docs/static/"):
             sys.stderr.write(f"POLICY HOOK BLOCKED: '{{rel}}' is outside ArchitectAgent allowed_file_list {{ALLOWED}}.\\n")
@@ -633,6 +633,127 @@ def _collect_changed_files(cwd: str) -> List[str]:
     return sorted(files)
 
 
+DIFF_COVERAGE_FLOOR_PCT = float(os.environ.get("DIFF_COVERAGE_FLOOR_PCT", "80.0"))
+LAST_DIFF_COVERAGE_PCT: float = 100.0
+
+
+def _compute_diff_coverage(
+    cov_json_path: str | Path,
+    added_lines_map: Dict[str, set],
+    floor_pct: float = 80.0,
+) -> Tuple[bool, float, List[str], str]:
+    """
+    `illya-nau/GAS` `cicd/integrity_checks/integrity_checks/diff_coverage.py`:
+    Computes the percentage of newly added/modified executable lines in `src/*.py` (from `added_lines_map`)
+    that were executed during the unit test suite (`executed_lines` vs `missing_lines` in `coverage.py` JSON).
+    Enforces `floor_pct` (default 80.0%).
+    """
+    cov_file = Path(cov_json_path)
+    if not cov_file.is_file():
+        return True, 100.0, [], ""
+
+    try:
+        report = json.loads(cov_file.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return True, 100.0, [], ""
+
+    files_dict = report.get("files")
+    if not isinstance(files_dict, dict):
+        return True, 100.0, [], ""
+
+    # Normalize keys in files_dict to git-relative paths (e.g. 'src/utils.py')
+    norm_entries: Dict[str, dict] = {}
+    for k, v in files_dict.items():
+        clean_k = os.path.normpath(str(k)).replace("\\", "/").removeprefix("./")
+        if "/workspace/" in clean_k:
+            clean_k = clean_k.split("/workspace/", 1)[1]
+        norm_entries[clean_k] = v
+
+    total_executable_added = 0
+    total_covered_added = 0
+    gaps: List[str] = []
+
+    for rel_path, added_set in sorted(added_lines_map.items()):
+        norm_rel = os.path.normpath(rel_path).replace("\\", "/").removeprefix("./")
+        if not norm_rel.startswith("src/") or not norm_rel.endswith(".py") or not added_set:
+            continue
+
+        entry = norm_entries.get(norm_rel)
+        if not entry:
+            continue
+
+        executed = set(int(x) for x in (entry.get("executed_lines") or []))
+        missing = set(int(x) for x in (entry.get("missing_lines") or []))
+        measured = executed | missing
+
+        added_exec = added_set & measured
+        if not added_exec:
+            continue
+
+        covered_in_file = added_exec & executed
+        missing_in_file = sorted(added_exec & missing)
+        total_executable_added += len(added_exec)
+        total_covered_added += len(covered_in_file)
+        if missing_in_file:
+            gaps.append(f"{norm_rel}: uncovered added lines {missing_in_file}")
+
+    if total_executable_added == 0:
+        return True, 100.0, [], "100.0% (0 new executable branch lines)"
+
+    pct = round((total_covered_added / total_executable_added) * 100.0, 1)
+    passed = pct >= floor_pct
+    if not passed:
+        err_msg = (
+            f"EXECUTABLE FEEDBACK FAILURE [GAS Diff-Coverage Gate]: Diff coverage on newly added `src/` lines is "
+            f"`{pct:.1f}%` ({total_covered_added}/{total_executable_added} lines), which is below the `{floor_pct:.1f}%` floor.\n"
+            f"Add unit tests covering these newly added lines:\n- " + "\n- ".join(gaps)
+        )
+        return False, pct, gaps, err_msg
+
+    return True, pct, gaps, f"{pct:.1f}% ({total_covered_added}/{total_executable_added} added lines >= {floor_pct:.0f}%)"
+
+
+def _verify_modified_module_imports(py_files: List[str], cwd: str, python_bin: str) -> Tuple[bool, str]:
+    """
+    `illya-nau/GAS` `cicd/integrity_checks/integrity_checks/import_check.py`:
+    Validates every modified `src/**/*.py` module name against `^[A-Za-z0-9._]+$` and imports it
+    via `importlib.import_module(name)` (never shell interpolation) to catch circular imports or top-level errors.
+    """
+    name_re = re.compile(r"^[A-Za-z0-9._]+$")
+    mod_names: List[str] = []
+    for rel_py in py_files:
+        norm_py = os.path.normpath(rel_py).replace("\\", "/").removeprefix("./")
+        if norm_py.startswith("src/") and norm_py.endswith(".py"):
+            dotted = norm_py[:-3].replace("/", ".")
+            if dotted.endswith(".__init__"):
+                dotted = dotted[:-9]
+            if dotted and name_re.match(dotted):
+                mod_names.append(dotted)
+
+    if not mod_names:
+        return True, ""
+
+    proc = subprocess.run(
+        [
+            python_bin,
+            "-c",
+            "import importlib, sys; sys.path.insert(0, '.'); [importlib.import_module(m) for m in sys.argv[1:]]",
+            *mod_names,
+        ],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if proc.returncode != 0:
+        out = proc.stdout.decode("utf-8", errors="replace").strip()
+        return (
+            False,
+            f"EXECUTABLE FEEDBACK FAILURE [GAS Import Smoke-Check ({mod_names})]:\n```\n{out[:2500]}\n```",
+        )
+    return True, f"Imported({', '.join(mod_names)})"
+
+
 def _run_executable_feedback_gate(
     sop_allowed_files: List[str],
     sop_targeted_tests: List[str],
@@ -640,13 +761,14 @@ def _run_executable_feedback_gate(
     """
     MetaGPT Sec. 3.3 (Fig. 2 Right, Table 1): Deterministic Pre-Review Executable Feedback Gate.
     Executes inside the LoopAgent BEFORE invoking ReviewerAgent (claude-opus-5-5):
-      1. Protected Path & SOP File-Scope Verification
-      2. Pre-Compilation AST/Syntax Check (`ruff check --select E9,F63,F7,F82`)
-      3. Frontend Bundle & Node Engine Check (if `src/static/` touched)
-      4. Targeted & Changed Unit Test Execution (`pytest` with offline socket blocker)
+      1. Protected Path, `*conftest.py` Anti-Tampering (`GAS base_conftests`), & SOP File-Scope Verification
+      2. Pre-Compilation AST/Syntax Check (`/opt/pinned/ruff.pinned.toml` + diff-hunk F/B check)
+      3. `GAS import_check.py` (`importlib.import_module` smoke-check on modified `src/` modules)
+      4. `GAS mock-gate` + `pytest` (`/opt/pinned/pytest.pinned.ini`) + `GAS diff-coverage` (`>= 80%` floor)
     Returns (passed: bool, feedback_report: str).
     If `passed` is False, ReviewerAgent short-circuits back to CoderAgent in <2s for $0.00 LLM cost.
     """
+    global LAST_DIFF_COVERAGE_PCT
     cwd = str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else "."
     changed_files = _collect_changed_files(cwd)
     if not changed_files:
@@ -655,9 +777,15 @@ def _run_executable_feedback_gate(
             "EXECUTABLE FEEDBACK FAILURE [No Changes]: No modified or untracked files found in /workspace.",
         )
 
-    # 1. Protected paths & SOP scope check
+    # 1. Protected paths, recursive *conftest.py guard (GAS base_conftests), & SOP scope check
     for path in changed_files:
-        if any(path == p or path.startswith(p) for p in PROTECTED_PREFIXES):
+        norm_p = os.path.normpath(path).replace("\\", "/").removeprefix("./")
+        if os.path.basename(norm_p) == "conftest.py":
+            return (
+                False,
+                f"EXECUTABLE FEEDBACK FAILURE [GAS base_conftests Violation]: Adding or modifying '{path}' is prohibited across all directories.",
+            )
+        if any(norm_p == p or norm_p.startswith(p) for p in PROTECTED_PREFIXES):
             return (
                 False,
                 f"EXECUTABLE FEEDBACK FAILURE [Protected Path Violation]: '{path}' is a protected path ({PROTECTED_PREFIXES}). Revert changes to '{path}'.",
@@ -677,8 +805,21 @@ def _run_executable_feedback_gate(
     py_bin = "/opt/venv/bin" if Path("/opt/venv/bin/pytest").exists() else os.path.dirname(sys.executable)
     ruff_bin = str(Path(py_bin) / "ruff")
     pytest_bin = str(Path(py_bin) / "pytest")
+    python_bin = str(Path(py_bin) / "python3") if (Path(py_bin) / "python3").exists() else sys.executable
     pinned_ruff = "/opt/pinned/ruff.pinned.toml" if Path("/opt/pinned/ruff.pinned.toml").exists() else None
     pinned_pytest = "/opt/pinned/pytest.pinned.ini" if Path("/opt/pinned/pytest.pinned.ini").exists() else None
+    pinned_cov = "/opt/pinned/coverage.pinned.rc" if Path("/opt/pinned/coverage.pinned.rc").exists() else None
+
+    added_lines_map: Dict[str, set] = {}
+    try:
+        u0_diff = subprocess.check_output(
+            ["git", "diff", "-U0", "base-anchor"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+        ).decode("utf-8", errors="replace")
+        added_lines_map = _extract_added_lines_by_file(u0_diff)
+    except Exception:
+        pass
 
     # 2. Pre-Compilation Syntax / Undefined Names Check (ruff with /opt/pinned/ruff.pinned.toml)
     py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
@@ -705,12 +846,6 @@ def _run_executable_feedback_gate(
 
         # Line-level diff-hunk F/B check (strictly on newly added/modified line numbers in git diff -U0)
         try:
-            u0_diff = subprocess.check_output(
-                ["git", "diff", "-U0", "base-anchor"],
-                cwd=cwd,
-                stderr=subprocess.DEVNULL,
-            ).decode("utf-8", errors="replace")
-            added_lines_map = _extract_added_lines_by_file(u0_diff)
             fb_proc = subprocess.run(
                 [ruff_bin, "check", "--output-format=json", "--select", "E9,F,B", "--ignore", "B008", *py_files],
                 cwd=cwd,
@@ -725,7 +860,6 @@ def _run_executable_feedback_gate(
                     rel_diag_file = os.path.relpath(str(diag.get("filename", "")), cwd).replace("\\", "/")
                     line_row = int((diag.get("location") or {}).get("row") or 0)
                     file_added_set = added_lines_map.get(rel_diag_file)
-                    # If it is a newly created untracked file or a line added in the diff hunk, enforce F/B
                     if (rel_diag_file not in added_lines_map and rel_diag_file in py_files) or (
                         file_added_set and line_row in file_added_set
                     ):
@@ -742,7 +876,13 @@ def _run_executable_feedback_gate(
         except Exception:
             pass
 
-    # 3. Targeted & Modified Pytest Execution (with /opt/pinned/pytest.pinned.ini)
+    # 2b. GAS `import_check.py` (importlib.import_module smoke-check on modified src/**/*.py)
+    if py_files:
+        imp_ok, imp_msg = _verify_modified_module_imports(py_files, cwd, python_bin)
+        if not imp_ok:
+            return False, imp_msg
+
+    # 3. Targeted & Modified Pytest Execution (with /opt/pinned/pytest.pinned.ini & /opt/pinned/coverage.pinned.rc)
     test_targets: List[str] = []
     for t in sop_targeted_tests + [f for f in changed_files if f.startswith("tests/") and f.endswith(".py")]:
         if t not in test_targets and (Path(cwd) / t).exists():
@@ -756,9 +896,17 @@ def _run_executable_feedback_gate(
     if not mock_gate_ok:
         return False, mock_gate_err
 
+    cov_json_file = Path("/tmp/adk_coverage.json")
+    cov_json_file.unlink(missing_ok=True)
+
+    has_pytest_cov = Path("/opt/venv/bin/pytest").exists()
     pytest_cmd = [pytest_bin if Path(pytest_bin).exists() else "pytest"]
     if pinned_pytest:
         pytest_cmd.extend(["--rootdir=.", "--override-ini=addopts=", "-c", pinned_pytest])
+    if has_pytest_cov:
+        pytest_cmd.extend(["--cov=src", f"--cov-report=json:{cov_json_file}"])
+        if pinned_cov:
+            pytest_cmd.append(f"--cov-config={pinned_cov}")
     pytest_cmd.extend(["-q", "--tb=short", *test_targets])
     pytest_proc = subprocess.run(
         pytest_cmd,
@@ -774,10 +922,19 @@ def _run_executable_feedback_gate(
             f"EXECUTABLE FEEDBACK FAILURE [Pytest Runtime Traceback on {test_targets}]:\n```\n{pytest_out[-4000:]}\n```",
         )
 
+    # 3b. GAS `diff-coverage` Gate (>= 80.0% floor on newly added executable lines in src/*.py)
+    cov_ok, cov_pct, _cov_gaps, cov_summary = _compute_diff_coverage(
+        cov_json_file, added_lines_map, floor_pct=DIFF_COVERAGE_FLOOR_PCT
+    )
+    LAST_DIFF_COVERAGE_PCT = cov_pct
+    if not cov_ok:
+        return False, cov_summary
+
     summary = (
         f"EXECUTABLE FEEDBACK PASSED:Changed={changed_files} | "
         f"Ruff(LINT_SCOPE=diff, /opt/pinned/ruff.pinned.toml)=0 errors | "
-        f"GAS Mock-Gate=PASSED | Pytest({', '.join(test_targets)})={pytest_out.splitlines()[-1] if pytest_out else 'PASSED'}"
+        f"GAS Mock-Gate=PASSED | GAS Diff-Coverage={cov_pct:.1f}% (>={DIFF_COVERAGE_FLOOR_PCT:.0f}% floor) | "
+        f"Pytest({', '.join(test_targets)})={pytest_out.splitlines()[-1] if pytest_out else 'PASSED'}"
     )
     return True, summary
 
@@ -1222,7 +1379,8 @@ End your response with EXACTLY one of:
 
         convergence_summary = (
             f"**Convergence Ledger:** `D_test={curr_d_test}` (history: `{d_test_history}`) | "
-            f"`Diff SHA-256={curr_diff_hash}` | `Session Cost=${new_total_cost:.4f} / ${cost_ceiling:.2f}`"
+            f"`Diff Coverage={LAST_DIFF_COVERAGE_PCT:.1f}%` | `Diff SHA-256={curr_diff_hash}` | "
+            f"`Session Cost=${new_total_cost:.4f} / ${cost_ceiling:.2f}`"
         )
 
         delta = {
@@ -1230,6 +1388,7 @@ End your response with EXACTLY one of:
             "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
             "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
             "total_cost_usd": new_total_cost,
+            "diff_coverage_pct": LAST_DIFF_COVERAGE_PCT,
             "diff_hash_history": diff_hash_history,
             "d_test_history": d_test_history,
             "prev_failed_nodes": [],
@@ -1344,6 +1503,7 @@ async def run_pipeline() -> None:
             "total_turns": 0,
             "total_duration_s": 0.0,
             "total_cost_usd": 0.0,
+            "diff_coverage_pct": 100.0,
             "diff_hash_history": [],
             "d_test_history": [],
             "review_approved": False,
@@ -1375,6 +1535,7 @@ async def run_pipeline() -> None:
         "total_cost_usd": state.get("total_cost_usd", 0.0),
         "cost_ceiling_usd": state.get("app:max_session_cost_usd", MAX_SESSION_COST_USD),
         "loop_iterations": state.get("loop_iteration", 1),
+        "diff_coverage_pct": state.get("diff_coverage_pct", LAST_DIFF_COVERAGE_PCT),
         "diff_hash_history": state.get("diff_hash_history", []),
         "d_test_history": state.get("d_test_history", []),
         "termination_reason": state.get("termination_reason", "VERDICT: PASS" if state.get("review_approved") else "MAX_ITERATIONS"),

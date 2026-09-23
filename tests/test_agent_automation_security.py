@@ -394,6 +394,98 @@ def test_gas_lint_scope_diff_pinned_configs_and_mock_gate(tmp_path):
     # 4. Verify pinned config files exist and are valid
     assert Path("deploy/agent_automation/pinned/ruff.pinned.toml").is_file()
     assert Path("deploy/agent_automation/pinned/pytest.pinned.ini").is_file()
+    assert Path("deploy/agent_automation/pinned/coverage.pinned.rc").is_file()
+
+
+def test_gas_diff_coverage_base_conftests_import_check_and_provenance(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    orch = _load_adk_orchestrator()
+
+    # 1. GAS diff-coverage calculation (_compute_diff_coverage)
+    cov_json = tmp_path / "coverage.json"
+    cov_json.write_text(
+        json.dumps(
+            {
+                "files": {
+                    "src/utils.py": {
+                        "executed_lines": [10, 646, 647],
+                        "missing_lines": [648],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 2 covered out of 3 added executable lines = 66.7% (< 80% floor -> FAIL)
+    ok_low, pct_low, gaps_low, msg_low = orch._compute_diff_coverage(
+        cov_json, {"src/utils.py": {646, 647, 648}}, floor_pct=80.0
+    )
+    assert ok_low is False
+    assert pct_low == 66.7
+    assert "648" in msg_low
+    assert "GAS Diff-Coverage Gate" in msg_low
+
+    # 3 covered out of 3 added executable lines = 100.0% (>= 80% floor -> PASS)
+    cov_json.write_text(
+        json.dumps(
+            {
+                "files": {
+                    "src/utils.py": {
+                        "executed_lines": [10, 646, 647, 648],
+                        "missing_lines": [9],  # Legacy missing line 9 is ignored!
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ok_high, pct_high, gaps_high, msg_high = orch._compute_diff_coverage(
+        cov_json, {"src/utils.py": {646, 647, 648}}, floor_pct=80.0
+    )
+    assert ok_high is True
+    assert pct_high == 100.0
+    assert gaps_high == []
+
+    # 2. Recursive *conftest.py guard (GAS base_conftests) in _run_executable_feedback_gate and PreToolUse hook
+    with patch.object(orch, "_collect_changed_files", return_value=["tests/unit/conftest.py"]):
+        passed_cf, report_cf = orch._run_executable_feedback_gate(
+            sop_allowed_files=["src/utils.py"],
+            sop_targeted_tests=["tests/test_utils.py"],
+        )
+        assert passed_cf is False
+        assert "GAS base_conftests Violation" in report_cf
+
+    hook_script = tmp_path / "adk_pre_tool_hook.py"
+    fake_ws = tmp_path / "workspace"
+    fake_ws.mkdir()
+    with patch.object(orch, "PRE_TOOL_HOOK_SCRIPT", hook_script), patch.object(orch, "WORKSPACE_DIR", fake_ws):
+        orch._install_claude_pre_tool_hook(["src/utils.py"])
+        res_sub_conftest = subprocess.run(
+            [sys.executable, str(hook_script)],
+            input=json.dumps({"tool_name": "Write", "tool_input": {"file_path": "/workspace/tests/sub/conftest.py"}}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert res_sub_conftest.returncode == 2
+        assert "conftest.py" in res_sub_conftest.stderr
+        orch._cleanup_claude_pre_tool_hook()
+
+    # 3. GAS import_check.py (_verify_modified_module_imports)
+    ok_imp, msg_imp = orch._verify_modified_module_imports(["src/utils.py"], ".", sys.executable)
+    assert ok_imp is True
+    assert "src.utils" in msg_imp
+
+    # 4. Verify worker_entrypoint.sh contains GAS state escalation trap & provenance trailers
+    entrypoint_text = Path("deploy/agent_automation/worker_entrypoint.sh").read_text(encoding="utf-8")
+    assert "trap handle_worker_exit EXIT" in entrypoint_text
+    assert "agent:failed-needs-human" in entrypoint_text
+    assert "ADK-Diff-Coverage:" in entrypoint_text
+    assert "agent:generated,adk:verified,gate:passed" in entrypoint_text
+
 
 
 

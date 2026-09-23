@@ -1,0 +1,10 @@
+# Image-baked pinned coverage.py configuration (modeled on illya-nau/GAS/config/gates/coverage.pinned.rc)
+# Mounted at /opt/pinned/coverage.pinned.rc (root:root, 0644) outside /workspace so a branch
+# cannot omit files or weaken diff-coverage measurement.
+[run]
+branch = true
+source = src
+relative_files = true
+
+[report]
+show_missing = true

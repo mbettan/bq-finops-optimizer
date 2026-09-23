@@ -153,6 +153,7 @@ def build_dashboard_markdown(
             log_data = json.loads(exec_log_path.read_text(encoding="utf-8"))
             d_test_hist = log_data.get("d_test_history", [0])
             diff_hashes = log_data.get("diff_hash_history", [])
+            diff_cov_pct = float(log_data.get("diff_coverage_pct", 100.0))
             cost_val = float(log_data.get("total_cost_usd", 0.0))
             ceiling_val = float(log_data.get("cost_ceiling_usd", 5.0))
             term_reason = str(log_data.get("termination_reason", "VERDICT: PASS"))
@@ -163,8 +164,10 @@ def build_dashboard_markdown(
                 "| :--- | :--- | :--- |",
                 f"| **Loop Termination Condition** | `{term_reason}` | `D_test == 0 ∧ ArchitecturalReviewVerdict == APPROVE` |",
                 f"| **Test Failure Distance ($D_{{\\text{{test}}}}$ Trajectory)** | `{d_test_hist}` | Stagnation Hard-Break if $D_{{\\text{{test}}}}^{{(N)}} \\ge D_{{\\text{{test}}}}^{{(N-1)}} > 0$ |",
+                f"| **GAS Diff-Coverage (Added `src/` Lines)** | **`{diff_cov_pct:.1f}%`** | Minimum Floor $\\ge 80.0\\%$ (`/opt/pinned/coverage.pinned.rc`) |",
                 f"| **Patch SHA-256 Fingerprints ($\\Delta\\text{{Diff}}$)** | `{diff_hashes}` | Deadlock Hard-Break if $\\Delta\\text{{Diff}} == 0$ |",
                 f"| **Cumulative Session Cost ($\\sum C_i$)** | **`${cost_val:.4f}`** | Loop-Boundary Ceiling `$C_{{\\max}} = ${ceiling_val:.2f}` |",
+                "| **GAS Pinned Gates & AST Integrity** | `Active (/opt/pinned/*)` | `LINT_SCOPE=diff`, AST `mock-gate`, `base_conftests`, `import_check` |",
                 "| **Action-Level `PreToolUse` Policy Hook** | `Active (Exit-2 Guard)` | Blocks writes outside `allowed_file_list` & protected paths |",
             ])
         except Exception:
