@@ -222,3 +222,106 @@ def test_executable_feedback_gate_short_circuits_on_scope_creep_and_stage_event(
         assert '"stage": "1/3"' in lines[0]
         assert '"agent": "Agent 1: ArchitectAgent"' in lines[0]
 
+
+def test_convergence_math_pydantic_verdict_and_pre_tool_hook(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    orch = _load_adk_orchestrator()
+
+    # 1. Diff SHA-256 fingerprint (ΔDiff == 0 detection)
+    h1 = orch._compute_diff_hash("--- a/src/utils.py\n+++ b/src/utils.py\n+x = 1\n")
+    h2 = orch._compute_diff_hash("--- a/src/utils.py\n+++ b/src/utils.py\n+x = 1\n")
+    h3 = orch._compute_diff_hash("--- a/src/utils.py\n+++ b/src/utils.py\n+x = 2\n")
+    assert h1 == h2
+    assert h1 != h3
+    assert orch._compute_diff_hash("") == "empty_diff_0"
+
+    # 2. Pytest failure distance metric D_test = |T_failed| + |T_errored|
+    sample_pytest_fail = (
+        "EXECUTABLE FEEDBACK FAILURE [Pytest Runtime Traceback]:\n"
+        "FAILED tests/test_utils.py::test_negative_value - ValueError\n"
+        "ERROR tests/test_utils.py::test_bad_fixture\n"
+        "2 failed, 1 error, 15 passed in 0.12s"
+    )
+    d_test, nodes = orch._extract_pytest_distance(sample_pytest_fail)
+    assert d_test == 3
+    assert nodes == [
+        "tests/test_utils.py::test_bad_fixture",
+        "tests/test_utils.py::test_negative_value",
+    ]
+
+    # 3. Structured Pydantic ArchitecturalReviewVerdict + DefectFinding parsing
+    review_with_json = '''
+Here is the audit table.
+```json
+{
+  "decision": "REQUEST_CHANGES",
+  "blocking_findings": [
+    {
+      "file_path": "src/utils.py",
+      "line_start": 42,
+      "line_end": 48,
+      "category": "SECURITY",
+      "critique": "Missing boolean rejection before numeric comparison.",
+      "actionable_remediation": "Add isinstance(val, bool) check before val == 0."
+    }
+  ]
+}
+```
+VERDICT: REVISE
+'''
+    verdict = orch._parse_review_verdict(review_with_json)
+    assert verdict.decision == "REQUEST_CHANGES"
+    assert len(verdict.blocking_findings) == 1
+    assert verdict.blocking_findings[0].file_path == "src/utils.py"
+    assert verdict.blocking_findings[0].category == "SECURITY"
+    coder_table = orch._format_blocking_findings_for_coder(verdict)
+    assert "L42-L48" in coder_table
+    assert "isinstance(val, bool)" in coder_table
+
+    # 4. PreToolUse Policy Hook enforcement
+    hook_script = tmp_path / "adk_pre_tool_hook.py"
+    fake_ws = tmp_path / "workspace"
+    fake_ws.mkdir()
+    with patch.object(orch, "PRE_TOOL_HOOK_SCRIPT", hook_script), patch.object(orch, "WORKSPACE_DIR", fake_ws):
+        orch._install_claude_pre_tool_hook(["src/utils.py"])
+        assert (fake_ws / ".claude" / "settings.local.json").exists()
+
+        # Allowed write -> exit 0
+        res_ok = subprocess.run(
+            [sys.executable, str(hook_script)],
+            input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/workspace/src/utils.py"}}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert res_ok.returncode == 0
+
+        # Protected path write -> exit 2 (blocked)
+        res_prot = subprocess.run(
+            [sys.executable, str(hook_script)],
+            input=json.dumps({"tool_name": "Write", "tool_input": {"file_path": "/workspace/.github/workflows/ci.yml"}}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert res_prot.returncode == 2
+        assert "POLICY HOOK BLOCKED" in res_prot.stderr
+
+        # Out-of-scope source file write -> exit 2 (blocked)
+        res_scope = subprocess.run(
+            [sys.executable, str(hook_script)],
+            input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/workspace/src/main.py"}}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert res_scope.returncode == 2
+        assert "outside ArchitectAgent allowed_file_list" in res_scope.stderr
+
+        orch._cleanup_claude_pre_tool_hook()
+        assert not (fake_ws / ".claude").exists()
+
+

@@ -21,29 +21,140 @@ Pipeline Architecture (`SequentialAgent` -> `LoopAgent`):
 """
 import asyncio
 from collections.abc import AsyncGenerator
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
 from google.adk.agents import BaseAgent, InvocationContext, LoopAgent, SequentialAgent
 from google.adk.apps import App
 from google.adk.events import Event, EventActions
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+from pydantic import BaseModel, Field
 
 ARCHITECT_MODEL = os.environ.get("ARCHITECT_MODEL", "claude-opus-5-5")
 CODER_MODEL = os.environ.get("CODER_MODEL", "claude-sonnet-5")
 REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "claude-opus-5-5")
 MAX_REVIEW_LOOPS = int(os.environ.get("MAX_REVIEW_LOOPS", "3"))
+MAX_SESSION_COST_USD = float(os.environ.get("MAX_SESSION_COST_USD", "5.00"))
 
 WORKSPACE_DIR = Path("/workspace")
 PROMPT_FILE = Path("/tmp/sanitized_issue_prompt.txt")
 TELEMETRY_FILE = Path("/tmp/claude_execution_log.json")
 OPUS_REPORT_FILE = Path("/tmp/opus_review_report.md")
 STAGE_EVENTS_FILE = Path("/tmp/adk_stage_events.jsonl")
+PRE_TOOL_HOOK_SCRIPT = Path("/tmp/adk_pre_tool_hook.py")
+
+
+class DefectFinding(BaseModel):
+    """Structured defect finding emitted by ReviewerAgent (Paper Sec. 3, p. 9)."""
+
+    file_path: str = Field(description="Relative path of file containing the defect.")
+    line_start: int = Field(default=1, description="First line of the offending code block.")
+    line_end: int = Field(default=1, description="Last line of the offending code block.")
+    category: Literal["SECURITY", "CORRECTNESS", "MAINTAINABILITY"] = Field(
+        default="CORRECTNESS", description="Defect class."
+    )
+    critique: str = Field(description="Specific technical description of why the code is unacceptable.")
+    actionable_remediation: str = Field(description="Clear instruction detailing the required code change.")
+
+
+class ArchitecturalReviewVerdict(BaseModel):
+    """Strictly validated Pydantic review verdict schema (Paper Sec. 3, p. 9)."""
+
+    decision: Literal["APPROVE", "REQUEST_CHANGES"] = Field(description="Review determination.")
+    blocking_findings: List[DefectFinding] = Field(
+        default_factory=list, description="List of blocking defects."
+    )
+
+
+def setup_distributed_observability(repo_name: str, issue_id: str) -> None:
+    """Initialize Google ADK native OpenTelemetry hooks (Paper Sec. 5, p. 13)."""
+    os.environ.setdefault("OTEL_SERVICE_NAME", "bq-finops-adk-agent")
+    os.environ.setdefault(
+        "OTEL_RESOURCE_ATTRIBUTES",
+        f"service.name=bq-finops-adk-agent,vcs.repository={repo_name},ci.issue_id={issue_id},deployment.environment=cloud-run-jobs",
+    )
+    os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+    try:
+        from google.adk.telemetry.setup import maybe_set_otel_providers
+
+        if os.environ.get("USE_CLOUD_TRACE", "false").lower() == "true":
+            from google.adk.telemetry.google_cloud import get_gcp_exporters
+
+            maybe_set_otel_providers([get_gcp_exporters(enable_cloud_tracing=True)])
+        elif os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
+            maybe_set_otel_providers()
+    except Exception as exc:
+        print(f"[OTel Notice] Continuing without external OTel exporter: {exc}")
+
+
+def _install_claude_pre_tool_hook(sop_allowed_files: List[str]) -> None:
+    """
+    Install a deterministic Action-Level Policy Hook (`PreToolUse`) for Claude Code CLI (Paper pp. 2, 10-11).
+    Blocks `Edit` / `Write` operations targeting protected repository paths or files outside `sop_allowed_files`
+    BEFORE execution, and cleans up `.claude/` immediately after `CoderAgent` exits so `git status` stays clean.
+    """
+    hook_code = f'''#!/usr/bin/env python3
+import json, os, sys
+PROTECTED = {list(PROTECTED_PREFIXES)!r}
+ALLOWED = {list(sop_allowed_files)!r}
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+tool_name = str(payload.get("tool_name", ""))
+tool_input = payload.get("tool_input") or {{}}
+if tool_name in ("Edit", "Write", "MultiEdit") and isinstance(tool_input, dict):
+    raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+    if raw_path:
+        rel = os.path.normpath(raw_path).replace("\\\\", "/")
+        if rel.startswith("/workspace/"):
+            rel = rel[len("/workspace/"):]
+        rel = rel.removeprefix("./")
+        if any(rel == p or rel.startswith(p) for p in PROTECTED) or rel.startswith(".git/"):
+            sys.stderr.write(f"POLICY HOOK BLOCKED: Writing to protected path '{{rel}}' is prohibited.\\n")
+            sys.exit(2)
+        if ALLOWED and rel not in ALLOWED and not rel.startswith("tests/") and not rel.startswith("docs/static/"):
+            sys.stderr.write(f"POLICY HOOK BLOCKED: '{{rel}}' is outside ArchitectAgent allowed_file_list {{ALLOWED}}.\\n")
+            sys.exit(2)
+sys.exit(0)
+'''
+    try:
+        PRE_TOOL_HOOK_SCRIPT.write_text(hook_code, encoding="utf-8")
+        PRE_TOOL_HOOK_SCRIPT.chmod(0o755)
+        if WORKSPACE_DIR.exists():
+            claude_dir = WORKSPACE_DIR / ".claude"
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            settings = {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit|Write|MultiEdit",
+                            "hooks": [{"type": "command", "command": f"/opt/venv/bin/python3 {PRE_TOOL_HOOK_SCRIPT}"}],
+                        }
+                    ]
+                }
+            }
+            (claude_dir / "settings.local.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"[PolicyHook Warning] Could not install PreToolUse hook: {exc}")
+
+
+def _cleanup_claude_pre_tool_hook() -> None:
+    """Remove ephemeral `.claude/` directory from `/workspace` so `git status` remains completely clean."""
+    try:
+        claude_dir = WORKSPACE_DIR / ".claude"
+        if claude_dir.exists():
+            shutil.rmtree(claude_dir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def _emit_pr_stage_event(
@@ -260,8 +371,6 @@ def _collect_workspace_diff() -> str:
     return "\n".join(diff_parts).strip()
 
 
-import re
-
 PROTECTED_PREFIXES = (
     ".github/",
     "deploy/",
@@ -275,7 +384,15 @@ PROTECTED_PREFIXES = (
 ROLE_SUBSCRIPTIONS: Dict[str, List[str]] = {
     "ArchitectAgent": ["issue_prompt"],
     "CoderAgent_Initial": ["issue_prompt", "architecture_plan", "sop_allowed_files", "sop_targeted_tests"],
-    "CoderAgent_Revision": ["architecture_plan", "sop_allowed_files", "sop_targeted_tests", "executable_feedback", "review_feedback"],
+    "CoderAgent_Revision": [
+        "architecture_plan",
+        "sop_allowed_files",
+        "sop_targeted_tests",
+        "executable_feedback",
+        "review_feedback",
+        "blocking_findings_json",
+        "convergence_trajectory",
+    ],
     "ReviewerAgent": ["architecture_plan", "sop_allowed_files", "executable_feedback_summary"],
 }
 
@@ -287,6 +404,85 @@ def _subscribe_role_context(role_key: str, state: Dict[str, Any]) -> Dict[str, A
     """
     allowed_keys = ROLE_SUBSCRIPTIONS.get(role_key, [])
     return {k: state.get(k) for k in allowed_keys if k in state and state.get(k) not in (None, "", [])}
+
+
+def _compute_diff_hash(diff_text: str) -> str:
+    """Compute a 12-char SHA-256 fingerprint of the workspace unified diff to detect ΔDiff == 0 stagnation."""
+    if not diff_text or not diff_text.strip():
+        return "empty_diff_0"
+    return hashlib.sha256(diff_text.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def _extract_pytest_distance(feedback_report: str) -> Tuple[int, List[str]]:
+    """
+    Compute the mathematical test failure distance metric D_test = |T_failed| + |T_errored| (Paper p. 9)
+    and extract the sorted list of failing pytest node IDs (`FAILED tests/...::test_...`).
+    """
+    if not feedback_report or "EXECUTABLE FEEDBACK PASSED" in feedback_report:
+        return 0, []
+
+    failed_count = 0
+    errored_count = 0
+    m_fail = re.search(r"(\d+)\s+failed", feedback_report)
+    if m_fail:
+        failed_count = int(m_fail.group(1))
+    m_err = re.search(r"(\d+)\s+errors?", feedback_report)
+    if m_err:
+        errored_count = int(m_err.group(1))
+
+    failed_nodes = sorted(set(re.findall(r"(?:FAILED|ERROR)\s+([\w./:-]+)", feedback_report)))
+    d_test = failed_count + errored_count
+    if d_test == 0 and "EXECUTABLE FEEDBACK FAILURE" in feedback_report:
+        d_test = max(len(failed_nodes), 1)
+    return d_test, failed_nodes
+
+
+def _parse_review_verdict(review_text: str) -> ArchitecturalReviewVerdict:
+    """
+    Parse ReviewerAgent's output into a validated Pydantic `ArchitecturalReviewVerdict` (Paper p. 9).
+    Extracts fenced JSON (`REVIEW_VERDICT_JSON`) if present, with a graceful fallback to `VERDICT: PASS/REVISE`.
+    """
+    for match in re.finditer(r"```json\s*(\{.*?\})\s*```", review_text, flags=re.DOTALL):
+        try:
+            raw_obj = json.loads(match.group(1))
+            if isinstance(raw_obj, dict) and ("decision" in raw_obj or "blocking_findings" in raw_obj):
+                return ArchitecturalReviewVerdict.model_validate(raw_obj)
+        except Exception:
+            continue
+
+    approved = "VERDICT: PASS" in review_text and "VERDICT: REVISE" not in review_text
+    if approved:
+        return ArchitecturalReviewVerdict(decision="APPROVE", blocking_findings=[])
+
+    return ArchitecturalReviewVerdict(
+        decision="REQUEST_CHANGES",
+        blocking_findings=[
+            DefectFinding(
+                file_path="workspace",
+                line_start=1,
+                line_end=1,
+                category="CORRECTNESS",
+                critique="Reviewer requested changes (see review report).",
+                actionable_remediation=review_text[-2500:],
+            )
+        ],
+    )
+
+
+def _format_blocking_findings_for_coder(verdict: ArchitecturalReviewVerdict) -> str:
+    """Serialize structured Pydantic `DefectFinding` list for targeted CoderAgent remediation (Paper p. 9)."""
+    if not verdict.blocking_findings:
+        return ""
+    rows = [
+        "### Structured `blocking_findings` (`ArchitecturalReviewVerdict`):",
+        "| File | Lines | Category | Critique | Actionable Remediation |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for f in verdict.blocking_findings:
+        rows.append(
+            f"| `{f.file_path}` | `L{f.line_start}-L{f.line_end}` | **{f.category}** | {f.critique} | {f.actionable_remediation} |"
+        )
+    return "\n".join(rows)
 
 
 def _extract_sop_metadata(plan_text: str) -> Dict[str, List[str]]:
@@ -333,7 +529,7 @@ def _collect_changed_files(cwd: str) -> List[str]:
             out = subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.DEVNULL).decode("utf-8", errors="replace")
             for f in out.split("\0"):
                 norm = os.path.normpath(f).replace("\\", "/").removeprefix("./") if f.strip() else ""
-                if norm and norm not in (".", ".venv"):
+                if norm and norm not in (".", ".venv") and not norm.startswith(".claude"):
                     files.add(norm)
         except Exception:
             pass
@@ -465,7 +661,7 @@ You MUST output your response in the following standardized SOP structure:
 ### 3. LOGIC_ANALYSIS_BY_FILE
 - For each file in `allowed_file_list`, specify the exact insertion point, algorithm, and edge-case handling (`None`, `NaN`, `bool`, `inf`, negative numbers, boundary conditions).
 
-### 4.SECURITY_AND_REPO_INVARIANTS
+### 4. SECURITY_AND_REPO_INVARIANTS
 - Zero `bigquery.tables.getData` usage, no protected paths touched, offline `pytest` compatibility (`@pytest.mark.usefixtures("mock_bq_all")` if testing validators/CLI), and whether `src/static/` bundle sync is needed.
 
 ### 5. ANYTHING_UNCLEAR_RESOLVED
@@ -519,9 +715,8 @@ You MUST output your response in the following standardized SOP structure:
 
 class CoderAgent(BaseAgent):
     """
-    Agent 2: Claude Sonnet 5 Coder with Role-Specific Context Subscription (MetaGPT Sec. 3.2 & Appendix E.2).
-    On Iteration 1, subscribes to the expanded SOP Plan.
-    On Iteration 2+, subscribes only to the SOP Plan + Executable/Reviewer delta feedback to prevent Information Overload.
+    Agent 2: Claude Sonnet 5 Coder with Role-Specific Context Subscription (MetaGPT Sec. 3.2 & Appendix E.2)
+    and Action-Level PreToolUse Policy Hook (Paper pp. 2, 10-11).
     """
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
@@ -532,10 +727,12 @@ class CoderAgent(BaseAgent):
         sub_ctx = _subscribe_role_context(role_key, ctx.session.state)
 
         arch_plan = str(sub_ctx.get("architecture_plan", ""))
-        sop_allowed_files = sub_ctx.get("sop_allowed_files", [])
-        sop_targeted_tests = sub_ctx.get("sop_targeted_tests", [])
+        sop_allowed_files = list(sub_ctx.get("sop_allowed_files") or [])
+        sop_targeted_tests = list(sub_ctx.get("sop_targeted_tests") or [])
         exec_feedback = str(sub_ctx.get("executable_feedback", ""))
+        blocking_findings_table = str(sub_ctx.get("blocking_findings_json", ""))
         review_feedback = str(sub_ctx.get("review_feedback", ""))
+        convergence_trajectory = str(sub_ctx.get("convergence_trajectory", ""))
 
         print(
             f"🛠️ [ADK Agent 2: CoderAgent ({CODER_MODEL})] Iteration {iteration}/{MAX_REVIEW_LOOPS} "
@@ -543,12 +740,14 @@ class CoderAgent(BaseAgent):
         )
 
         feedback_section = ""
-        if exec_feedback or review_feedback:
+        if exec_feedback or blocking_findings_table or review_feedback:
+            structured_critique = blocking_findings_table if blocking_findings_table else review_feedback
             feedback_section = f"""
 <iterative_feedback iteration="{iteration - 1}">
 The previous iteration did NOT pass verification. Fix ONLY the defects reported below while adhering to `allowed_file_list` ({sop_allowed_files}):
+{convergence_trajectory}
 {exec_feedback}
-{review_feedback}
+{structured_critique}
 </iterative_feedback>
 """
 
@@ -565,39 +764,43 @@ Strictly restrict your file edits/creations to `allowed_file_list`: {sop_allowed
 {feedback_section}
 Before finishing, execute `./.venv/bin/pytest -q {test_hint}` and `./.venv/bin/ruff check --select E9,F63,F7,F82 <modified_py_files>`."""
 
-        coder_out, turns, dur_s, cost = await asyncio.to_thread(
-            _run_claude_cli,
-            coder_prompt,
-            CODER_MODEL,
-            [
-                "Read",
-                "Edit",
-                "Write",
-                "Grep",
-                "Glob",
-                "Bash(./.venv/bin/pytest *)",
-                "Bash(./.venv/bin/ruff check *)",
-                "Bash(node tests/test_calculator_engine.js)",
-                "Bash(./scripts/sync_docs_bundle.sh)",
-                "Bash(git status)",
-                "Bash(git diff *)",
-            ],
-            [
-                "Bash(curl *)",
-                "Bash(wget *)",
-                "Bash(git push *)",
-                "Bash(gh *)",
-                "Bash(python3 -c *)",
-                "Bash(pip *)",
-                "Bash(npm *)",
-                "WebFetch",
-                "WebSearch",
-            ],
-            30,
-            True,
-            "2/3",
-            f"CoderAgent (Pass {iteration})",
-        )
+        _install_claude_pre_tool_hook(sop_allowed_files)
+        try:
+            coder_out, turns, dur_s, cost = await asyncio.to_thread(
+                _run_claude_cli,
+                coder_prompt,
+                CODER_MODEL,
+                [
+                    "Read",
+                    "Edit",
+                    "Write",
+                    "Grep",
+                    "Glob",
+                    "Bash(./.venv/bin/pytest *)",
+                    "Bash(./.venv/bin/ruff check *)",
+                    "Bash(node tests/test_calculator_engine.js)",
+                    "Bash(./scripts/sync_docs_bundle.sh)",
+                    "Bash(git status)",
+                    "Bash(git diff *)",
+                ],
+                [
+                    "Bash(curl *)",
+                    "Bash(wget *)",
+                    "Bash(git push *)",
+                    "Bash(gh *)",
+                    "Bash(python3 -c *)",
+                    "Bash(pip *)",
+                    "Bash(npm *)",
+                    "WebFetch",
+                    "WebSearch",
+                ],
+                30,
+                True,
+                "2/3",
+                f"CoderAgent (Pass {iteration})",
+            )
+        finally:
+            _cleanup_claude_pre_tool_hook()
 
         delta = {
             "loop_iteration": iteration,
@@ -631,41 +834,162 @@ Before finishing, execute `./.venv/bin/pytest -q {test_hint}` and `./.venv/bin/r
 class ReviewerAgent(BaseAgent):
     """
     Agent 3: MetaGPT Deterministic Pre-Review Executable Feedback Gate (Sec. 3.3, Fig. 2 Right)
-    followed by Claude Opus 5.5 Adversarial Diff Critique with Role-Specific Subscription (Sec. 3.2).
+    + Mathematical Convergence & Stagnation Evaluation (Paper pp. 9-10)
+    + Claude Opus 5.5 Adversarial Diff Critique with Pydantic `ArchitecturalReviewVerdict` (Paper p. 9).
     """
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         iteration = int(ctx.session.state.get("loop_iteration", 1))
         sop_allowed_files = list(ctx.session.state.get("sop_allowed_files") or [])
         sop_targeted_tests = list(ctx.session.state.get("sop_targeted_tests") or [])
+        cost_ceiling = float(ctx.session.state.get("app:max_session_cost_usd", MAX_SESSION_COST_USD))
+
+        # Capture current workspace diff and SHA-256 fingerprint (Paper p. 10: ΔDiff stagnation check)
+        current_diff = _collect_workspace_diff()
+        curr_diff_hash = _compute_diff_hash(current_diff)
+        diff_hash_history = list(ctx.session.state.get("diff_hash_history") or [])
+        prev_diff_hash = diff_hash_history[-1] if diff_hash_history else None
+        diff_hash_history.append(curr_diff_hash)
 
         # Step 3a: Deterministic Pre-Review Executable Feedback Gate (MetaGPT Sec. 3.3)
-        print(f"⚙️ [ADK Pre-Review Executable Feedback Gate] Running ruff + pytest check (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
+        print(f"⚙️ [ADK Pre-Review Executable Feedback Gate] Running ruff + pytest check (Iteration {iteration}/{MAX_REVIEW_LOOPS}, diff_sha={curr_diff_hash})...")
         exec_passed, exec_report = await asyncio.to_thread(
             _run_executable_feedback_gate,
             sop_allowed_files,
             sop_targeted_tests,
         )
 
+        curr_d_test, curr_failed_nodes = _extract_pytest_distance(exec_report if not exec_passed else "")
+        d_test_history = list(ctx.session.state.get("d_test_history") or [])
+        prev_d_test = d_test_history[-1] if d_test_history else None
+        prev_failed_nodes = list(ctx.session.state.get("prev_failed_nodes") or [])
+        d_test_history.append(curr_d_test)
+
+        # Evaluate Loop-Boundary Mathematical Hard-Breaks (Paper pp. 9-10)
+        if iteration >= 2 and prev_diff_hash and curr_diff_hash == prev_diff_hash and not exec_passed:
+            hard_break_msg = (
+                f"HARD_BREAK [DIFF_STAGNATION]: Iteration {iteration} produced an identical diff fingerprint "
+                f"(`{curr_diff_hash}`, ΔDiff = 0) as Iteration {iteration - 1}. Terminating loop to prevent cognitive deadlock."
+            )
+            print(f"🛑 {hard_break_msg}")
+            _emit_pr_stage_event(
+                stage="2.5/3",
+                agent_name=f"Pre-Review Executable Feedback Gate (Iteration {iteration}/{MAX_REVIEW_LOOPS})",
+                model="deterministic-ruff-pytest",
+                status="FAILED (ΔDiff=0 Stagnation)",
+                turns=0,
+                duration_s=0.2,
+                cost_usd=0.0,
+                iteration=iteration,
+                details=f"{hard_break_msg}\n\n{exec_report}",
+            )
+            delta = {
+                "diff_hash_history": diff_hash_history,
+                "d_test_history": d_test_history,
+                "termination_reason": hard_break_msg,
+                "review_approved": False,
+            }
+            ctx.session.state.update(delta)
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                content=types.Content(role="model", parts=[types.Part.from_text(text=hard_break_msg)]),
+                actions=EventActions(state_delta=delta, escalate=True),
+            )
+            return
+
         if not exec_passed:
+            # Check Test Failure Distance Stagnation (D_test^(N) >= D_test^(N-1) with identical failing test node IDs)
+            if (
+                iteration >= 2
+                and prev_d_test is not None
+                and curr_d_test > 0
+                and curr_d_test >= prev_d_test
+                and curr_failed_nodes
+                and curr_failed_nodes == prev_failed_nodes
+            ):
+                hard_break_msg = (
+                    f"HARD_BREAK [TEST_STAGNATION]: Test failure distance did not improve "
+                    f"(D_test: {prev_d_test} -> {curr_d_test}) and the exact same test assertions failed across consecutive cycles: {curr_failed_nodes}."
+                )
+                print(f"🛑 {hard_break_msg}")
+                _emit_pr_stage_event(
+                    stage="2.5/3",
+                    agent_name=f"Pre-Review Executable Feedback Gate (Iteration {iteration}/{MAX_REVIEW_LOOPS})",
+                    model="deterministic-ruff-pytest",
+                    status=f"FAILED (D_test={curr_d_test} Stagnation)",
+                    turns=0,
+                    duration_s=0.3,
+                    cost_usd=0.0,
+                    iteration=iteration,
+                    details=f"{hard_break_msg}\n\n{exec_report}",
+                )
+                delta = {
+                    "diff_hash_history": diff_hash_history,
+                    "d_test_history": d_test_history,
+                    "termination_reason": hard_break_msg,
+                    "review_approved": False,
+                }
+                ctx.session.state.update(delta)
+                yield Event(
+                    author=self.name,
+                    invocation_id=ctx.invocation_id,
+                    content=types.Content(role="model", parts=[types.Part.from_text(text=hard_break_msg)]),
+                    actions=EventActions(state_delta=delta, escalate=True),
+                )
+                return
+
+            # Check Loop-Boundary Cost Ceiling before launching next Coder retry
+            curr_total_cost = float(ctx.session.state.get("total_cost_usd", 0.0))
+            if curr_total_cost >= cost_ceiling:
+                hard_break_msg = (
+                    f"HARD_BREAK [COST_CEILING_EXCEEDED]: Cumulative session cost (${curr_total_cost:.4f}) "
+                    f"reached ceiling (${cost_ceiling:.2f}) at loop boundary {iteration}."
+                )
+                print(f"🛑 {hard_break_msg}")
+                delta = {
+                    "diff_hash_history": diff_hash_history,
+                    "d_test_history": d_test_history,
+                    "termination_reason": hard_break_msg,
+                    "review_approved": False,
+                }
+                ctx.session.state.update(delta)
+                yield Event(
+                    author=self.name,
+                    invocation_id=ctx.invocation_id,
+                    content=types.Content(role="model", parts=[types.Part.from_text(text=hard_break_msg)]),
+                    actions=EventActions(state_delta=delta, escalate=True),
+                )
+                return
+
+            trajectory_note = (
+                f"📈 Convergence Metrics: D_test trajectory = {d_test_history} (current failing/errored count = {curr_d_test}), "
+                f"diff_sha = {curr_diff_hash}."
+            )
             print(
                 f"⚠️ [ADK Pre-Review Executable Feedback Gate] FAILED on iteration {iteration} "
-                f"(Short-circuiting back to CoderAgent for $0.00 Opus cost):\n{exec_report}"
+                f"(Short-circuiting back to CoderAgent for $0.00 Opus cost | {trajectory_note}):\n{exec_report}"
             )
             _emit_pr_stage_event(
                 stage="2.5/3",
                 agent_name=f"Pre-Review Executable Feedback Gate (Iteration {iteration}/{MAX_REVIEW_LOOPS})",
                 model="deterministic-ruff-pytest",
-                status="REVISE (Short-Circuit $0.00)",
+                status=f"REVISE (D_test={curr_d_test}, $0.00)",
                 turns=0,
                 duration_s=0.5,
                 cost_usd=0.0,
                 iteration=iteration,
-                details=exec_report,
+                details=f"**{trajectory_note}**\n\n{exec_report}",
             )
             delta = {
+                "temp:raw_pytest_output": exec_report,
                 "executable_feedback": exec_report,
                 "review_feedback": exec_report,
+                "blocking_findings_json": "",
+                "convergence_trajectory": trajectory_note,
+                "diff_hash_history": diff_hash_history,
+                "d_test_history": d_test_history,
+                "prev_failed_nodes": curr_failed_nodes,
                 "review_approved": False,
             }
             ctx.session.state.update(delta)
@@ -677,14 +1001,13 @@ class ReviewerAgent(BaseAgent):
             )
             return
 
-        print(f"✅ [ADK Pre-Review Executable Feedback Gate] {exec_report}")
+        print(f"✅ [ADK Pre-Review Executable Feedback Gate] {exec_report} (D_test=0, diff_sha={curr_diff_hash})")
         ctx.session.state["executable_feedback_summary"] = exec_report
 
         # Step 3b: Role-Specific Context Subscription for ReviewerAgent (MetaGPT Sec. 3.2)
         sub_ctx = _subscribe_role_context("ReviewerAgent", ctx.session.state)
         arch_plan = str(sub_ctx.get("architecture_plan", ""))
         exec_summary = str(sub_ctx.get("executable_feedback_summary", ""))
-        current_diff = _collect_workspace_diff()
 
         print(f"🔍 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] Auditing diff (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
 
@@ -708,7 +1031,14 @@ Inspect the git diff against Agent 1's SOP Architecture Plan and our security in
 {current_diff[:90000]}
 </git_diff>
 
-Provide a concise Markdown review table.
+Provide a concise Markdown review table, followed by a structured `REVIEW_VERDICT_JSON` block conforming to `ArchitecturalReviewVerdict`:
+```json
+{{
+  "decision": "APPROVE",
+  "blocking_findings": []
+}}
+```
+(If requesting changes, set `"decision": "REQUEST_CHANGES"` and populate `"blocking_findings"` with `file_path`, `line_start`, `line_end`, `category` ["SECURITY"|"CORRECTNESS"|"MAINTAINABILITY"], `critique`, and `actionable_remediation`.)
 End your response with EXACTLY one of:
 - `VERDICT: PASS` (if the implementation and unit tests are ready for PR)
 - `VERDICT: REVISE` (followed by specific bullet points for Agent 2 to fix in the next loop iteration)."""
@@ -725,13 +1055,28 @@ End your response with EXACTLY one of:
             f"ReviewerAgent (Pass {iteration})",
         )
 
-        approved = "VERDICT: PASS" in review_text and "VERDICT: REVISE" not in review_text
+        verdict = _parse_review_verdict(review_text)
+        approved = (verdict.decision == "APPROVE") and ("VERDICT: REVISE" not in review_text)
+        blocking_table = _format_blocking_findings_for_coder(verdict)
+        new_total_cost = float(ctx.session.state.get("total_cost_usd", 0.0)) + cost
+
+        convergence_summary = (
+            f"**Convergence Ledger:** `D_test={curr_d_test}` (history: `{d_test_history}`) | "
+            f"`Diff SHA-256={curr_diff_hash}` | `Session Cost=${new_total_cost:.4f} / ${cost_ceiling:.2f}`"
+        )
+
         delta = {
+            "temp:raw_git_diff": current_diff[:10000],
             "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
             "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
-            "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+            "total_cost_usd": new_total_cost,
+            "diff_hash_history": diff_hash_history,
+            "d_test_history": d_test_history,
+            "prev_failed_nodes": [],
             "executable_feedback": "",
             "review_approved": approved,
+            "blocking_findings_json": "" if approved else blocking_table,
+            "convergence_trajectory": convergence_summary,
             "review_feedback": "" if approved else review_text,
         }
         ctx.session.state.update(delta)
@@ -745,12 +1090,12 @@ End your response with EXACTLY one of:
             duration_s=dur_s,
             cost_usd=cost,
             iteration=iteration,
-            details=f"**Pre-Review Executable Feedback:** `{exec_summary}`\n\n{review_text}",
+            details=f"**Pre-Review Executable Feedback:** `{exec_summary}`\n{convergence_summary}\n\n{review_text}",
         )
 
         if approved:
             print(f"✅ [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: PASS on iteration {iteration}!")
-            OPUS_REPORT_FILE.write_text(review_text, encoding="utf-8")
+            OPUS_REPORT_FILE.write_text(f"{convergence_summary}\n\n{review_text}", encoding="utf-8")
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
@@ -758,6 +1103,22 @@ End your response with EXACTLY one of:
                 actions=EventActions(state_delta=delta, escalate=True),
             )
         else:
+            # Loop-boundary cost ceiling check before starting next retry
+            if new_total_cost >= cost_ceiling:
+                hard_break_msg = (
+                    f"HARD_BREAK [COST_CEILING_EXCEEDED]: Session cost (${new_total_cost:.4f}) exceeded "
+                    f"ceiling (${cost_ceiling:.2f}) after ReviewerAgent pass {iteration}."
+                )
+                print(f"🛑 {hard_break_msg}")
+                ctx.session.state["termination_reason"] = hard_break_msg
+                yield Event(
+                    author=self.name,
+                    invocation_id=ctx.invocation_id,
+                    content=types.Content(role="model", parts=[types.Part.from_text(text=hard_break_msg)]),
+                    actions=EventActions(state_delta={"termination_reason": hard_break_msg}, escalate=True),
+                )
+                return
+
             print(f"🔄 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: REVISE on iteration {iteration}; looping back to Agent 2...")
             yield Event(
                 author=self.name,
@@ -802,6 +1163,10 @@ async def run_pipeline() -> None:
     if not PROMPT_FILE.exists():
         sys.exit(f"FATAL: Sanitized issue prompt not found at {PROMPT_FILE}")
 
+    repo_name = os.environ.get("GITHUB_REPO", "mbettan/bq-finops-optimizer-private")
+    issue_id = os.environ.get("TARGET_ISSUE_NUMBER", "unknown")
+    setup_distributed_observability(repo_name=repo_name, issue_id=issue_id)
+
     issue_prompt = PROMPT_FILE.read_text(encoding="utf-8")
     app = build_adk_app()
     runner = InMemoryRunner(app=app)
@@ -810,11 +1175,17 @@ async def run_pipeline() -> None:
         app_name=app.name,
         user_id="cloud_run_worker",
         state={
+            "app:repo": repo_name,
+            "app:issue_number": issue_id,
+            "app:max_iterations": MAX_REVIEW_LOOPS,
+            "app:max_session_cost_usd": MAX_SESSION_COST_USD,
             "issue_prompt": issue_prompt,
             "loop_iteration": 0,
             "total_turns": 0,
             "total_duration_s": 0.0,
             "total_cost_usd": 0.0,
+            "diff_hash_history": [],
+            "d_test_history": [],
             "review_approved": False,
         },
     )
@@ -842,15 +1213,19 @@ async def run_pipeline() -> None:
         "num_turns": state.get("total_turns", 0),
         "duration_ms": int(float(state.get("total_duration_s", 0.0)) * 1000),
         "total_cost_usd": state.get("total_cost_usd", 0.0),
+        "cost_ceiling_usd": state.get("app:max_session_cost_usd", MAX_SESSION_COST_USD),
         "loop_iterations": state.get("loop_iteration", 1),
+        "diff_hash_history": state.get("diff_hash_history", []),
+        "d_test_history": state.get("d_test_history", []),
+        "termination_reason": state.get("termination_reason", "VERDICT: PASS" if state.get("review_approved") else "MAX_ITERATIONS"),
         "review_approved": state.get("review_approved", False),
     }
     TELEMETRY_FILE.write_text(json.dumps(telemetry_summary, indent=2), encoding="utf-8")
 
     if not state.get("review_approved", False):
+        term_reason = state.get("termination_reason", f"Exhausted {MAX_REVIEW_LOOPS} iterations")
         sys.exit(
-            f"FATAL: ADK CodeAndReviewLoop exhausted {MAX_REVIEW_LOOPS} iterations without "
-            f"earning VERDICT: PASS from ReviewerAgent ({REVIEWER_MODEL}). Aborting before push."
+            f"FATAL: ADK CodeAndReviewLoop terminated without approval ({term_reason}). Aborting before push."
         )
 
 
