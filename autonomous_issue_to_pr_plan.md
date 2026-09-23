@@ -1,12 +1,13 @@
-# Finalized Implementation Blueprint: Autonomous Issue-to-PR Agent (Option B — Pure Pull Architecture, v2 Hardened)
+# Finalized Implementation Blueprint: Autonomous Issue-to-PR Agent (Option B — Google ADK + Native Claude CLI, v3 Hardened)
 
 **Target Repository:** `mbettan/bq-finops-optimizer` (Public Repository) / `mbettan/bq-finops-optimizer-private` (Staging)  
 **Authorized Maintainer:** `mbettan` (Immutable GitHub Database ID: **`14251830`**)  
-**Models (Vertex AI `global` Endpoint):**
-- **Implementation Worker Model:** `claude-sonnet-5` (`publishers/anthropic/models/claude-sonnet-5`)
-- **Second-Gate Adversarial Security Auditor Model:** `claude-opus-5-5` (`publishers/anthropic/models/claude-opus-5-5`)
+**Google ADK Multi-Agent Roster (`deploy/agent_automation/adk_orchestrator.py` on Vertex AI `global`):**
+- **Agent 1 (`ArchitectAgent` — `claude-opus-5-5`, Read-Only CLI):** Reads `CLAUDE.md`, inspects the repository via `Read`/`Grep`/`Glob`, and writes a structured **Implementation & Security Plan** into `ctx.session.state["architecture_plan"]`.
+- **Agent 2 (`CoderAgent` — `claude-sonnet-5`, Native `claude -p` CLI):** Runs inside a Google ADK `LoopAgent` (`max_iterations=3`), implementing the Architect's plan and resolving any feedback in `ctx.session.state["review_feedback"]`.
+- **Agent 3 (`ReviewerAgent` — `claude-opus-5-5`, Read-Only CLI):** Runs inside the same ADK `LoopAgent` right after `CoderAgent`, auditing `git diff base-anchor`. Emits `EventActions(escalate=True)` on `VERDICT: PASS` (breaking out of the loop and writing `/tmp/opus_review_report.md`), or writes `review_feedback` on `VERDICT: REVISE` to loop back to `CoderAgent`.
 
-**Locked-In Architecture & Security Decisions (v2 — Post-Opus 5.5 Audit Remediation):**
+**Locked-In Architecture & Security Decisions (v3 — Google ADK + Post-Opus 5.5 Audit Remediation):**
 1. **Compute & Orchestration:** Pure Serverless Pull Poller — Cloud Scheduler (`*/5 * * * *`) triggers a lightweight Python Cloud Run Poller Job ($0 idle cost) using dedicated Least-Privilege Service Account `bq-finops-poller-sa` (`roles/run.developer` on Worker Job only). It dispatches an ephemeral Cloud Run Worker Micro-VM (`bq-finops-worker-sa`, `roles/aiplatform.user` only; `1 issue = 1 container execution = 1 Draft PR`).
 2. **Zero Static LLM Keys (Cloud Run IAM + GitHub Actions WIF):**
    - **Worker:** Authenticates to Vertex AI (`CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION=global`) 100% via the attached GCP IAM Service Account over Private Google Access.
@@ -18,13 +19,13 @@
 4. **UID Privilege Separation & Workspace Credential Isolation:**
    - `GITHUB_PAT` is never passed in clone URLs and never written to `/workspace/.git/config`.
    - It is stored in `/root/.git-credentials` (`0600`, owned by `root:root`).
-   - Headless `claude -p` executes under an unprivileged Linux account (`su -s /bin/bash agentuser -c "claude -p ..."`, UID `10001`), which has **zero read access** to `/root/.git-credentials` and **zero access** to the `GITHUB_PAT` environment variable (`env -i` scrubbed environment).
+   - The Google ADK 3-agent pipeline (`/app/adk_orchestrator.py`) executes under an unprivileged Linux account (`su -s /bin/bash agentuser`, UID `10001`), which has **zero read access** to `/root/.git-credentials` and **zero access** to the `GITHUB_PAT` environment variable.
 5. **Authoritative Network Boundary (Default-Deny VPC Egress):**
    - Tool parameter blacklists (`--disallowedTools`) are treated solely as defense-in-depth UX guardrails.
    - Authoritative network isolation is enforced at the infrastructure layer via **Cloud Run Direct VPC Egress + Default-Deny Firewall Policy**, permitting outbound TCP/443 strictly to Private Google Access (`199.36.153.8/30` for `*.googleapis.com`) and GitHub (`api.github.com` / `github.com`), plus `tests/conftest.py` socket-level blocking during pytest.
 6. **NUL-Delimited Pre-Push Security Gate (`verify_agent_diff.py`):**
-   - Runs as `root` **after** `agentuser`'s `claude -p` process terminates and **before** `git push`.
-   - Uses NUL-delimited (`-z`) `git diff --name-only -z origin/main...HEAD`, `git diff --name-only -z HEAD`, `git diff --name-only -z --cached`, and `git ls-files --others --exclude-standard -z` to defeat file-rename (`R old -> new`) and path-quoting bypasses.
+   - Runs as `root` **after** `agentuser`'s ADK orchestrator exits and **before** `git push`.
+   - Uses NUL-delimited (`-z`) `git diff --name-only -z base-anchor`, `git diff --name-only -z HEAD`, `git diff --name-only -z --cached`, and `git ls-files --others --exclude-standard -z` to defeat file-rename (`R old -> new`) and path-quoting bypasses.
 
 ---
 
@@ -39,7 +40,8 @@ sequenceDiagram
     participant Scheduler as Cloud Scheduler (*/5 * * * *)
     participant Poller as Cloud Run Poller (bq-finops-poller-sa)
     participant Worker as Ephemeral Worker VM (bq-finops-worker-sa)
-    participant Vertex as Vertex AI Global (Sonnet 5 / Opus 5.5)
+    participant ADK as Google ADK Orchestrator (UID 10001)
+    participant Vertex as Vertex AI Global (Opus 5.5 + Sonnet 5)
     participant SecGate as GitHub Actions WIF Second Gate
 
     Community->>GH: Opens Feature Request Issue #80 (Untrusted Input)
@@ -53,31 +55,34 @@ sequenceDiagram
     Poller->>GH: 1. PUT /issues/80/lock (Freeze issue body & comments FIRST)
     Poller->>GH: 2. GET /issues/80 (Fetch fresh post-lock issue state)
     Poller->>GH: 3. GET /issues/80/timeline?per_page=100 (Paginate to terminal event)
-    
-    Note over Poller: CRYPTOGRAPHIC ACTOR & POST-LOCK TOCTOU VERIFICATION<br/>1. Verify terminal "agent:implement" event actor.id === 14251830<br/>2. Abort & unlock if fresh_issue.updated_at > label_event.created_at (when author != 14251830)
     Poller->>GH: Swap label: add "agent:in-progress", remove "agent:implement"
     Poller->>Worker: Cloud Run Jobs API: execute bq-finops-agent-worker (TARGET_ISSUE_NUMBER=80)
     
     activate Worker
-    Note over Worker: Ephemeral Micro-VM (--max-retries=0, Default-Deny VPC Egress)<br/>Root owns /root/.git-credentials (0600); Claude runs as UID 10001 (agentuser)
     Worker->>GH: Independent Post-Lock Timeline & Actor Re-Verification
-    Worker->>GH: Shallow clone (clean URL, no PAT in /workspace/.git/config) -> branch agent/issue-80
+    Worker->>GH: Shallow clone (clean URL) -> git checkout -b agent/issue-80 && git branch base-anchor HEAD
+    Worker->>ADK: su agentuser (UID 10001) -> python3 /app/adk_orchestrator.py
     
-    Note over Worker,Vertex: Unprivileged UID 10001 (env -i scrubbed of GITHUB_PAT)
-    Worker->>Vertex: su agentuser -> claude -p "<sanitized_xml_prompt>" (claude-sonnet-5)<br/>--permission-mode acceptEdits --allowedTools "Read,Edit,Write,Grep,Glob,..."
-    Vertex-->>Worker: Implements feature & runs offline pytest (conftest.py socket blocker active)
+    activate ADK
+    Note over ADK,Vertex: GOOGLE ADK SEQUENTIAL + LOOP MULTI-AGENT PIPELINE
+    ADK->>Vertex: Agent 1 (ArchitectAgent - claude-opus-5-5, Read-Only CLI)<br/>Inspects codebase & writes state['architecture_plan']
+    loop LoopAgent: CodeAndReviewLoop (max_iterations=3)
+        ADK->>Vertex: Agent 2 (CoderAgent - claude-sonnet-5, Native claude -p CLI)<br/>Implements plan + fixes state['review_feedback'] & runs pytest/ruff
+        ADK->>Vertex: Agent 3 (ReviewerAgent - claude-opus-5-5, Read-Only CLI)<br/>Audits git diff base-anchor against plan & CLAUDE.md
+        Note over ADK: If VERDICT: PASS -> EventActions(escalate=True) breaks loop!<br/>If VERDICT: REVISE -> loops back to Agent 2 with review_feedback
+    end
+    ADK-->>Worker: Saves /tmp/opus_review_report.md & /tmp/claude_execution_log.json
+    deactivate ADK
     
-    Note over Worker: OUTER DETERMINISTIC GATE (Runs as root after agentuser exits)
-    Worker->>Worker: Execute verify_agent_diff.py:<br/>1. NUL-delimited (-z) git diff + ls-files check against FORBIDDEN_PATHS<br/>2. Run ./scripts/sync_docs_bundle.sh & verify CSP SHA-256 hash<br/>3. Run Ruff (--select E9,F63,F7,F82,S), offline pytest (-m "not integration"), & Node tests
+    Note over Worker: OUTER DETERMINISTIC GATE (Runs as root after ADK exits)
+    Worker->>Worker: Execute verify_agent_diff.py:<br/>1. NUL-delimited (-z) git diff base-anchor check against FORBIDDEN_PATHS<br/>2. Run ./scripts/sync_docs_bundle.sh & verify CSP SHA-256 hash<br/>3. Run Ruff (--select E9,F63,F7,F82,S), offline pytest (-m "not integration"), & Node tests
     Worker->>GH: git push -f origin agent/issue-80 (Fine-Grained PAT: Workflows=No Access)
-    Worker->>GH: gh pr create --draft (Open Draft PR #81 linked to #80)
+    Worker->>GH: gh pr create --draft (Includes Agent 3 Opus 5.5 Sign-Off Report)
     deactivate Worker
-    Note over Worker: Container & Filesystem Incinerated
     
     GH->>SecGate: Triggers .github/workflows/agent-pr-security-gate.yml (Pinned SHAs)
-    SecGate->>Vertex: Keyless OIDC WIF -> Vertex AI claude-opus-5-5 Adversarial Diff Audit
-    SecGate->>GH: Posts Structured PASS/FAIL Security Table & Requests Review from @mbettan
-    Owner->>GH: Human Review Gate (Final Merge Decision)
+    SecGate->>GH: Static Bandit + Optional WIF Check -> Auto-promotes PR to "Ready for Review" (gh pr ready)
+    Owner->>GH: Human Review Gate (Green Merge Button Ready)
 ```
 
 ---

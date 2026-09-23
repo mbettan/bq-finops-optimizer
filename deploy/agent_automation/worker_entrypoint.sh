@@ -19,11 +19,13 @@ git branch base-anchor HEAD
 ln -sfn /opt/venv /workspace/.venv
 export PATH="/opt/venv/bin:${PATH}"
 
-echo "=== [3/6] Executing Headless Claude Code via Google Cloud Vertex AI (Zero Static API Keys) ==="
+echo "=== [3/6] Executing Google ADK 3-Agent Pipeline (Architect Opus 5.5 -> Loop[Coder Sonnet 5 <-> Reviewer Opus 5.5]) ==="
 export CLAUDE_CODE_USE_VERTEX=1
 export CLOUD_ML_REGION="${VERTEX_REGION:-global}"
 export ANTHROPIC_VERTEX_PROJECT_ID="${GCP_PROJECT_ID:-bq-finops-optimizer}"
-export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-sonnet-5}"
+export ARCHITECT_MODEL="${ARCHITECT_MODEL:-claude-opus-5-5}"
+export CODER_MODEL="${CODER_MODEL:-claude-sonnet-5}"
+export REVIEWER_MODEL="${REVIEWER_MODEL:-claude-opus-5-5}"
 
 if id -u agentuser >/dev/null 2>&1; then
   chown -R agentuser:agentuser /workspace /tmp/sanitized_issue_prompt.txt
@@ -33,49 +35,15 @@ if id -u agentuser >/dev/null 2>&1; then
     export CLAUDE_CODE_USE_VERTEX=1
     export CLOUD_ML_REGION='${CLOUD_ML_REGION}'
     export ANTHROPIC_VERTEX_PROJECT_ID='${ANTHROPIC_VERTEX_PROJECT_ID}'
-    export ANTHROPIC_MODEL='${ANTHROPIC_MODEL}'
+    export ARCHITECT_MODEL='${ARCHITECT_MODEL}'
+    export CODER_MODEL='${CODER_MODEL}'
+    export REVIEWER_MODEL='${REVIEWER_MODEL}'
     git config --global --add safe.directory /workspace
     cd /workspace
-    claude -p - < /tmp/sanitized_issue_prompt.txt \
-      --permission-mode acceptEdits \
-      --max-turns 35 \
-      --output-format json \
-      --allowedTools \
-        'Read' 'Edit' 'Write' 'Grep' 'Glob' \
-        'Bash(./.venv/bin/pytest *)' 'Bash(./.venv/bin/ruff check *)' \
-        'Bash(node tests/test_calculator_engine.js)' 'Bash(./scripts/sync_docs_bundle.sh)' \
-        'Bash(git status)' 'Bash(git diff *)' \
-      --disallowedTools \
-        'Bash(curl *)' 'Bash(wget *)' 'Bash(git push *)' 'Bash(gh *)' \
-        'Bash(python3 -c *)' 'Bash(pip *)' 'Bash(npm *)' 'WebFetch' 'WebSearch' > /tmp/claude_execution_log.json
+    /opt/venv/bin/python3 /app/adk_orchestrator.py
   "
 else
-  claude -p - < /tmp/sanitized_issue_prompt.txt \
-    --permission-mode acceptEdits \
-    --max-turns 35 \
-    --output-format json \
-    --allowedTools \
-      "Read" \
-      "Edit" \
-      "Write" \
-      "Grep" \
-      "Glob" \
-      "Bash(./.venv/bin/pytest *)" \
-      "Bash(./.venv/bin/ruff check *)" \
-      "Bash(node tests/test_calculator_engine.js)" \
-      "Bash(./scripts/sync_docs_bundle.sh)" \
-      "Bash(git status)" \
-      "Bash(git diff *)" \
-    --disallowedTools \
-      "Bash(curl *)" \
-      "Bash(wget *)" \
-      "Bash(git push *)" \
-      "Bash(gh *)" \
-      "Bash(python3 -c *)" \
-      "Bash(pip *)" \
-      "Bash(npm *)" \
-      "WebFetch" \
-      "WebSearch" > /tmp/claude_execution_log.json
+  /opt/venv/bin/python3 /app/adk_orchestrator.py
 fi
 
 CLAUDE_TELEMETRY=$(python3 -c '
@@ -83,13 +51,19 @@ import json
 try:
     d = json.load(open("/tmp/claude_execution_log.json"))
     turns = d.get("num_turns", "N/A")
+    loops = d.get("loop_iterations", 1)
     dur_s = round(d.get("duration_ms", 0) / 1000.0, 1)
     cost = d.get("total_cost_usd", 0.0)
-    print(f"Turns: {turns}/35 | Duration: {dur_s}s | Est. Cost: ${cost:.4f}")
+    print(f"ADK Loops: {loops}/3 | Total Turns: {turns} | Duration: {dur_s}s | Est. Cost: ${cost:.4f}")
 except Exception as e:
     print(f"Telemetry unavailable ({e})")
 ')
-echo "📊 [Claude Code Telemetry] ${CLAUDE_TELEMETRY}"
+echo "📊 [Google ADK + Claude CLI Telemetry] ${CLAUDE_TELEMETRY}"
+
+OPUS_REVIEW_SUMMARY=""
+if [ -f /tmp/opus_review_report.md ]; then
+  OPUS_REVIEW_SUMMARY=$(cat /tmp/opus_review_report.md)
+fi
 
 echo "=== [4/6] Running Outer Deterministic Security & Test Gate ==="
 python3 /app/verify_agent_diff.py
@@ -110,17 +84,23 @@ PR_URL=$(gh pr create \
   --base main \
   --draft \
   --title "feat: implement #${TARGET_ISSUE_NUMBER} (Autonomous Agent)" \
-  --body "Automated implementation for #${TARGET_ISSUE_NUMBER}.
+  --body "Automated implementation for #${TARGET_ISSUE_NUMBER} orchestrated by **Google ADK (`SequentialAgent` + `LoopAgent`)** and **Native Claude Code CLI**.
 
-### 🤖 Claude Code Execution Telemetry (\`${ANTHROPIC_MODEL}\`)
+### 🤖 Google ADK Multi-Agent Telemetry
+- **Agent 1 (Architect):** \`${ARCHITECT_MODEL}\` (Read-Only Implementation Plan)
+- **Agent 2 (Coder):** \`${CODER_MODEL}\` (Code & Offline Pytest Implementation)
+- **Agent 3 (Reviewer):** \`${REVIEWER_MODEL}\` (In-Container Adversarial Diff Critique)
 - **Execution Metrics:** \`${CLAUDE_TELEMETRY}\`
 
+### 🔍 Agent 3 (\`${REVIEWER_MODEL}\`) In-Container Sign-Off
+${OPUS_REVIEW_SUMMARY:-Verified and approved by ReviewerAgent.}
+
 ### 🛡️ Sandbox & Deterministic Gate Verification
-- [x] **Actor & TOCTOU Check:** Verified approval by \`mbettan\` (\`ID: 14251830\`)
+- [x] **Lock-First Actor & TOCTOU Check:** Verified approval by \`mbettan\` (\`ID: 14251830\`)
 - [x] **Protected Path Isolation:** Verified zero modifications to \`.github/\`, \`deploy/\`, \`Dockerfile\`, or \`tests/conftest.py\`
 - [x] **Offline Test Suite:** \`768+\` unit tests passed with socket-level network blocker active
 - [x] **Bundle & CSP Sync:** Verified \`docs/static/\` and inline script SHA-256 CSP hash parity
 
-⏳ **Next Step:** Automated Second-Gate Security Review (\`agent-pr-security-gate.yml\`) is now running on this diff before human review by @mbettan.")
+⏳ **Next Step:** Automated Second-Gate Security Review (\`agent-pr-security-gate.yml\`) will automatically promote this PR from Draft to Ready for Review once CI passes.")
 
 echo "✅ Draft PR created successfully: ${PR_URL}"

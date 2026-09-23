@@ -19,17 +19,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Pre-create virtual environment with project dependencies, pytest, ruff, and httpx2
+# Pre-create virtual environment with project dependencies, google-adk, pytest, ruff, and httpx2
 COPY requirements.txt /tmp/
 RUN useradd -m -u 10001 -s /bin/bash agentuser \
     && python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt pytest pytest-cov ruff "httpx2>=2.0.0" "httpx>=0.27.0"
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt google-adk pytest pytest-cov ruff "httpx2>=2.0.0" "httpx>=0.27.0"
 
 COPY deploy/agent_automation/poller.py /app/poller.py
 COPY deploy/agent_automation/verify_issue_actor.py /app/verify_issue_actor.py
+COPY deploy/agent_automation/adk_orchestrator.py /app/adk_orchestrator.py
 COPY deploy/agent_automation/verify_agent_diff.py /app/verify_agent_diff.py
 COPY deploy/agent_automation/worker_entrypoint.sh /app/worker_entrypoint.sh
 
-RUN chmod +x /app/poller.py /app/verify_issue_actor.py /app/verify_agent_diff.py /app/worker_entrypoint.sh
+RUN chmod +x /app/poller.py /app/verify_issue_actor.py /app/adk_orchestrator.py /app/verify_agent_diff.py /app/worker_entrypoint.sh
 
 ENTRYPOINT ["/opt/venv/bin/python3", "/app/poller.py"]
