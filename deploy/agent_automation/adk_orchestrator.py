@@ -69,7 +69,7 @@ def _run_claude_cli(
     cmd: List[str] = [
         "claude",
         "-p",
-        "-",
+        prompt,
         "--max-turns",
         str(max_turns),
         "--output-format",
@@ -86,7 +86,6 @@ def _run_claude_cli(
 
     proc = subprocess.run(
         cmd,
-        input=prompt.encode("utf-8"),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else None,
@@ -169,16 +168,20 @@ Provide:
             False,
         )
 
-        ctx.session.state["architecture_plan"] = plan_text
-        ctx.session.state["total_turns"] = int(ctx.session.state.get("total_turns", 0)) + turns
-        ctx.session.state["total_duration_s"] = round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1)
-        ctx.session.state["total_cost_usd"] = float(ctx.session.state.get("total_cost_usd", 0.0)) + cost
+        delta = {
+            "architecture_plan": plan_text,
+            "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
+            "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
+            "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+        }
+        ctx.session.state.update(delta)
 
         print(f"✅ [ADK Agent 1: ArchitectAgent] Plan generated ({turns} turns, {dur_s}s, ${cost:.4f}).")
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
             content=types.Content(role="model", parts=[types.Part.from_text(text=plan_text)]),
+            actions=EventActions(state_delta=delta),
         )
 
 
@@ -247,15 +250,20 @@ Run `./.venv/bin/pytest <your_test_file>` and `./.venv/bin/ruff check --select E
             True,
         )
 
-        ctx.session.state["total_turns"] = int(ctx.session.state.get("total_turns", 0)) + turns
-        ctx.session.state["total_duration_s"] = round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1)
-        ctx.session.state["total_cost_usd"] = float(ctx.session.state.get("total_cost_usd", 0.0)) + cost
+        delta = {
+            "loop_iteration": iteration,
+            "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
+            "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
+            "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+        }
+        ctx.session.state.update(delta)
 
         print(f"✅ [ADK Agent 2: CoderAgent] Pass {iteration} complete ({turns} turns, {dur_s}s, ${cost:.4f}).")
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
             content=types.Content(role="model", parts=[types.Part.from_text(text=coder_out)]),
+            actions=EventActions(state_delta=delta),
         )
 
 
@@ -272,13 +280,13 @@ class ReviewerAgent(BaseAgent):
 
         if not current_diff:
             feedback = "VERDICT: REVISE — No file modifications or untracked test files were produced in /workspace."
-            ctx.session.state["review_feedback"] = feedback
-            ctx.session.state["review_approved"] = False
+            delta = {"review_feedback": feedback, "review_approved": False}
+            ctx.session.state.update(delta)
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
                 content=types.Content(role="model", parts=[types.Part.from_text(text=feedback)]),
-                actions=EventActions(escalate=False),
+                actions=EventActions(state_delta=delta, escalate=False),
             )
             return
 
@@ -314,12 +322,15 @@ End your response with EXACTLY one of:
             False,
         )
 
-        ctx.session.state["total_turns"] = int(ctx.session.state.get("total_turns", 0)) + turns
-        ctx.session.state["total_duration_s"] = round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1)
-        ctx.session.state["total_cost_usd"] = float(ctx.session.state.get("total_cost_usd", 0.0)) + cost
-
         approved = "VERDICT: PASS" in review_text and "VERDICT: REVISE" not in review_text
-        ctx.session.state["review_approved"] = approved
+        delta = {
+            "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
+            "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
+            "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+            "review_approved": approved,
+            "review_feedback": "" if approved else review_text,
+        }
+        ctx.session.state.update(delta)
 
         if approved:
             print(f"✅ [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: PASS on iteration {iteration}!")
@@ -328,16 +339,15 @@ End your response with EXACTLY one of:
                 author=self.name,
                 invocation_id=ctx.invocation_id,
                 content=types.Content(role="model", parts=[types.Part.from_text(text=review_text)]),
-                actions=EventActions(escalate=True),
+                actions=EventActions(state_delta=delta, escalate=True),
             )
         else:
             print(f"🔄 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: REVISE on iteration {iteration}; looping back to Agent 2...")
-            ctx.session.state["review_feedback"] = review_text
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
                 content=types.Content(role="model", parts=[types.Part.from_text(text=review_text)]),
-                actions=EventActions(escalate=False),
+                actions=EventActions(state_delta=delta, escalate=False),
             )
 
 

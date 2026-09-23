@@ -27,6 +27,7 @@ export ARCHITECT_MODEL="${ARCHITECT_MODEL:-claude-opus-5-5}"
 export CODER_MODEL="${CODER_MODEL:-claude-sonnet-5}"
 export REVIEWER_MODEL="${REVIEWER_MODEL:-claude-opus-5-5}"
 
+rm -f /tmp/claude_execution_log.json /tmp/opus_review_report.md
 if id -u agentuser >/dev/null 2>&1; then
   chown -R agentuser:agentuser /workspace /tmp/sanitized_issue_prompt.txt
   su -s /bin/bash agentuser -c "
@@ -76,15 +77,9 @@ git add -A
 git commit -m "feat: implement issue #${TARGET_ISSUE_NUMBER}"
 git push -f origin "${BRANCH_NAME}"
 
-echo "=== [6/6] Creating Draft PR for Second-Gate Security Review ==="
+echo "=== [6/6] Creating or Updating PR for Second-Gate Security Review ==="
 export GH_TOKEN="${GITHUB_PAT}"
-PR_URL=$(gh pr create \
-  --repo "${GITHUB_REPO}" \
-  --head "${BRANCH_NAME}" \
-  --base main \
-  --draft \
-  --title "feat: implement #${TARGET_ISSUE_NUMBER} (Autonomous Agent)" \
-  --body "Automated implementation for #${TARGET_ISSUE_NUMBER} orchestrated by **Google ADK (`SequentialAgent` + `LoopAgent`)** and **Native Claude Code CLI**.
+PR_BODY="Automated implementation for #${TARGET_ISSUE_NUMBER} orchestrated by **Google ADK (\`SequentialAgent\` + \`LoopAgent\`)** and **Native Claude Code CLI**.
 
 ### 🤖 Google ADK Multi-Agent Telemetry
 - **Agent 1 (Architect):** \`${ARCHITECT_MODEL}\` (Read-Only Implementation Plan)
@@ -101,6 +96,20 @@ ${OPUS_REVIEW_SUMMARY:-Verified and approved by ReviewerAgent.}
 - [x] **Offline Test Suite:** \`768+\` unit tests passed with socket-level network blocker active
 - [x] **Bundle & CSP Sync:** Verified \`docs/static/\` and inline script SHA-256 CSP hash parity
 
-⏳ **Next Step:** Automated Second-Gate Security Review (\`agent-pr-security-gate.yml\`) will automatically promote this PR from Draft to Ready for Review once CI passes.")
+⏳ **Next Step:** Automated Second-Gate Security Review (\`agent-pr-security-gate.yml\`) will automatically promote this PR from Draft to Ready for Review once CI passes."
 
-echo "✅ Draft PR created successfully: ${PR_URL}"
+EXISTING_PR=$(gh pr list --repo "${GITHUB_REPO}" --head "${BRANCH_NAME}" --state open --json url -q '.[0].url' || true)
+if [ -n "${EXISTING_PR}" ]; then
+  gh pr edit "${EXISTING_PR}" --repo "${GITHUB_REPO}" --body "${PR_BODY}"
+  PR_URL="${EXISTING_PR}"
+  echo "✅ Existing PR updated successfully: ${PR_URL}"
+else
+  PR_URL=$(gh pr create \
+    --repo "${GITHUB_REPO}" \
+    --head "${BRANCH_NAME}" \
+    --base main \
+    --draft \
+    --title "feat: implement #${TARGET_ISSUE_NUMBER} (Autonomous Agent)" \
+    --body "${PR_BODY}")
+  echo "✅ Draft PR created successfully: ${PR_URL}"
+fi
