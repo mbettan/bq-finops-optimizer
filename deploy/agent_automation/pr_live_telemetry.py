@@ -120,10 +120,10 @@ def build_dashboard_markdown(
         cost = f"${st['cost_usd']:.4f}" if "cost_usd" in st else "—"
         return f"| **{step_label}** | {role_label} | `{model}` | {status} | {turns} | {dur} | {cost} |"
 
-    check_1 = "x" if "PASS" in str(s1.get("status", "")) else " "
-    check_2 = "x" if ("COMPLETED" in str(s2.get("status", "")) or "PASS" in str(s3.get("status", ""))) else " "
-    check_25 = "x" if "PASS" in str(s25.get("status", "")) else " "
-    check_3 = "x" if "PASS" in str(s3.get("status", "")) else " "
+    check_1 = "x" if any(k in str(s1.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
+    check_2 = "x" if any(k in str(s2.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
+    check_25 = "x" if any(k in str(s25.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
+    check_3 = "x" if any(k in str(s3.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
 
     header_badge = "✅ **Pipeline Status: COMPLETE (Ready for Review)**" if is_final else "🔄 **Pipeline Status: IN PROGRESS (Live Container Stream)**"
 
@@ -198,10 +198,11 @@ def stamp_all_commit_statuses(
     s3 = stages.get("3/3", {})
 
     def _map_state(st_str: str) -> str:
-        if "PASS" in st_str or "COMPLETED" in st_str:
-            return "success"
-        if "REVISE" in st_str or "FAIL" in st_str:
+        up = st_str.upper()
+        if any(k in up for k in ("REVISE", "FAIL", "❌")):
             return "failure"
+        if any(k in up for k in ("PASS", "COMPLETE", "✅")):
+            return "success"
         return "pending"
 
     set_commit_status(
