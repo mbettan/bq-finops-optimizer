@@ -78,6 +78,19 @@ else
       "WebSearch" > /tmp/claude_execution_log.json
 fi
 
+CLAUDE_TELEMETRY=$(python3 -c '
+import json
+try:
+    d = json.load(open("/tmp/claude_execution_log.json"))
+    turns = d.get("num_turns", "N/A")
+    dur_s = round(d.get("duration_ms", 0) / 1000.0, 1)
+    cost = d.get("total_cost_usd", 0.0)
+    print(f"Turns: {turns}/35 | Duration: {dur_s}s | Est. Cost: ${cost:.4f}")
+except Exception as e:
+    print(f"Telemetry unavailable ({e})")
+')
+echo "📊 [Claude Code Telemetry] ${CLAUDE_TELEMETRY}"
+
 echo "=== [4/6] Running Outer Deterministic Security & Test Gate ==="
 python3 /app/verify_agent_diff.py
 
@@ -99,10 +112,13 @@ PR_URL=$(gh pr create \
   --title "feat: implement #${TARGET_ISSUE_NUMBER} (Autonomous Agent)" \
   --body "Automated implementation for #${TARGET_ISSUE_NUMBER}.
 
+### 🤖 Claude Code Execution Telemetry (\`${ANTHROPIC_MODEL}\`)
+- **Execution Metrics:** \`${CLAUDE_TELEMETRY}\`
+
 ### 🛡️ Sandbox & Deterministic Gate Verification
 - [x] **Actor & TOCTOU Check:** Verified approval by \`mbettan\` (\`ID: 14251830\`)
 - [x] **Protected Path Isolation:** Verified zero modifications to \`.github/\`, \`deploy/\`, \`Dockerfile\`, or \`tests/conftest.py\`
-- [x] **Offline Test Suite:** \`761+\` unit tests passed with socket-level network blocker active
+- [x] **Offline Test Suite:** \`768+\` unit tests passed with socket-level network blocker active
 - [x] **Bundle & CSP Sync:** Verified \`docs/static/\` and inline script SHA-256 CSP hash parity
 
 ⏳ **Next Step:** Automated Second-Gate Security Review (\`agent-pr-security-gate.yml\`) is now running on this diff before human review by @mbettan.")
