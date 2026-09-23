@@ -2,6 +2,12 @@
 set -euo pipefail
 
 GITHUB_REPO="${GITHUB_REPO:-mbettan/bq-finops-optimizer-private}"
+export CLAUDE_CODE_USE_VERTEX=1
+export CLOUD_ML_REGION="${VERTEX_REGION:-global}"
+export ANTHROPIC_VERTEX_PROJECT_ID="${GCP_PROJECT_ID:-bq-finops-optimizer}"
+export ARCHITECT_MODEL="${ARCHITECT_MODEL:-claude-opus-5-5}"
+export CODER_MODEL="${CODER_MODEL:-claude-sonnet-5}"
+export REVIEWER_MODEL="${REVIEWER_MODEL:-claude-opus-5-5}"
 
 echo "=== [1/6] Independent Security & Timeline Re-Verification ==="
 python3 /app/verify_issue_actor.py
