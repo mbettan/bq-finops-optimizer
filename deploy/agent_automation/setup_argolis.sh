@@ -6,7 +6,8 @@ set -euo pipefail
 
 PROJECT_ID="${GCP_PROJECT_ID:-bq-finops-optimizer}"
 REGION="${GCP_REGION:-us-central1}"
-VERTEX_REGION="${VERTEX_REGION:-us-east5}"
+VERTEX_REGION="${VERTEX_REGION:-global}"
+ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-sonnet-5}"
 GITHUB_REPO="${GITHUB_REPO:-mbettan/bq-finops-optimizer-private}"
 AR_REPO="agent-automation"
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/bq-finops-agent:latest"
@@ -104,7 +105,7 @@ gcloud run jobs deploy "${WORKER_JOB}" \
   --project="${PROJECT_ID}" \
   --service-account="${WORKER_SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
   --set-secrets="GITHUB_PAT=${SECRET_NAME}:latest" \
-  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},VERTEX_REGION=${VERTEX_REGION},GITHUB_REPO=${GITHUB_REPO}" \
+  --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},VERTEX_REGION=${VERTEX_REGION},ANTHROPIC_MODEL=${ANTHROPIC_MODEL},GITHUB_REPO=${GITHUB_REPO}" \
   --max-retries=0 \
   --task-timeout=3600s \
   --cpu=2 \

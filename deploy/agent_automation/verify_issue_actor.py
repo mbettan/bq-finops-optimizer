@@ -49,7 +49,7 @@ def verify_and_build_prompt() -> None:
         sys.exit("FATAL: Missing GITHUB_PAT environment variable.")
 
     issue = _gh_get(f"https://api.github.com/repos/{repo}/issues/{issue_num}", gh_pat)
-    events = _gh_get(f"https://api.github.com/repos/{repo}/issues/{issue_num}/events", gh_pat)
+    events = _gh_get(f"https://api.github.com/repos/{repo}/issues/{issue_num}/events?per_page=100", gh_pat)
 
     label_events = [
         e for e in events

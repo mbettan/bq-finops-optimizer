@@ -133,7 +133,22 @@ def verify_and_lock_issue(
     worker_job: str,
 ) -> bool:
     issue_num = int(issue["number"])
-    events_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/events"
+
+    # 1. ACQUIRE LOCK FIRST to freeze issue body and comments against mid-flight TOCTOU edits
+    _gh_api_request(
+        "PUT",
+        f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock",
+        gh_pat,
+        {"lock_reason": "resolved"},
+    )
+
+    # 2. Fetch fresh issue state and up to 100 timeline events AFTER lock is held
+    fresh_issue: Dict[str, Any] = _gh_api_request(
+        "GET",
+        f"https://api.github.com/repos/{repo}/issues/{issue_num}",
+        gh_pat,
+    ) or issue
+    events_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/events?per_page=100"
     events: List[Dict[str, Any]] = _gh_api_request("GET", events_url, gh_pat) or []
 
     label_events = [
@@ -141,7 +156,8 @@ def verify_and_lock_issue(
         if e.get("event") == "labeled" and e.get("label", {}).get("name") == TRIGGER_LABEL
     ]
     if not label_events:
-        print(f"[Issue #{issue_num}] Skipping: No '{TRIGGER_LABEL}' label event found.")
+        print(f"[Issue #{issue_num}] Skipping: No '{TRIGGER_LABEL}' label event found. Unlocking.")
+        _gh_api_request("DELETE", f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock", gh_pat)
         return False
 
     latest_event = label_events[-1]
@@ -153,7 +169,7 @@ def verify_and_lock_issue(
     if actor_id != OWNER_IMMUTABLE_ID:
         print(
             f"[SECURITY ALERT] Issue #{issue_num} labeled by unauthorized actor "
-            f"{actor_login} (ID: {actor_id} != {OWNER_IMMUTABLE_ID}). Removing label."
+            f"{actor_login} (ID: {actor_id} != {OWNER_IMMUTABLE_ID}). Removing label and unlocking."
         )
         encoded_label = urllib.parse.quote(TRIGGER_LABEL, safe="")
         _gh_api_request(
@@ -161,26 +177,21 @@ def verify_and_lock_issue(
             f"https://api.github.com/repos/{repo}/issues/{issue_num}/labels/{encoded_label}",
             gh_pat,
         )
+        _gh_api_request("DELETE", f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock", gh_pat)
         return False
 
-    # Gate 2: TOCTOU Mid-Flight Modification Check
-    issue_author_id = issue.get("user", {}).get("id")
-    issue_updated_at = issue.get("updated_at", "")
+    # Gate 2: Post-Lock TOCTOU Mid-Flight Modification Check
+    issue_author_id = fresh_issue.get("user", {}).get("id")
+    issue_updated_at = fresh_issue.get("updated_at", "")
     if issue_author_id != OWNER_IMMUTABLE_ID and issue_updated_at > label_timestamp:
         print(
             f"[SECURITY ALERT] Issue #{issue_num} was modified at {issue_updated_at} "
-            f"after maintainer approval timestamp ({label_timestamp}). Aborting TOCTOU risk."
+            f"after maintainer approval timestamp ({label_timestamp}). Unlocking and aborting TOCTOU risk."
         )
+        _gh_api_request("DELETE", f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock", gh_pat)
         return False
 
-    # Gate 3: Lock Issue Conversation & Swap Label
-    _gh_api_request(
-        "PUT",
-        f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock",
-        gh_pat,
-        {"lock_reason": "resolved"},
-    )
-
+    # Gate 3: Swap Label (lock is already held)
     _gh_api_request(
         "POST",
         f"https://api.github.com/repos/{repo}/issues/{issue_num}/labels",

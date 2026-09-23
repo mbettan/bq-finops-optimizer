@@ -141,6 +141,7 @@ class TestDMLThresholdBounds:
 # Edition Pydantic validator (on SlotActualParams)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_bq_all")
 class TestEditionValidator:
     BASE = {"org_project_id": "valid-proj", "region": "region-us"}
     ENDPOINT = "/api/slots/actual_provisioning"
@@ -165,6 +166,7 @@ class TestEditionValidator:
 # Resolution Pydantic validator (on SlotUtilizationParams)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_bq_all")
 class TestResolutionValidator:
     BASE = {"org_project_id": "valid-proj", "region": "region-us"}
     ENDPOINT = "/api/slots/utilization"
@@ -186,6 +188,7 @@ class TestResolutionValidator:
 # time_travel_hours Pydantic validator (on StorageParams)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_bq_all")
 class TestTimeTravelHoursValidator:
     BASE = {"org_project_id": "valid-proj", "region": "region-us"}
     ENDPOINT = "/api/storage/analyze"
@@ -213,6 +216,7 @@ class TestTimeTravelHoursValidator:
 # Cost Attribution date format validator
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_bq_all")
 class TestCostAttributionDateValidator:
     ENDPOINT = "/api/cost-attribution/calculate"
 
