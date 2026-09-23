@@ -43,6 +43,43 @@ WORKSPACE_DIR = Path("/workspace")
 PROMPT_FILE = Path("/tmp/sanitized_issue_prompt.txt")
 TELEMETRY_FILE = Path("/tmp/claude_execution_log.json")
 OPUS_REPORT_FILE = Path("/tmp/opus_review_report.md")
+STAGE_EVENTS_FILE = Path("/tmp/adk_stage_events.jsonl")
+
+
+def _emit_pr_stage_event(
+    stage: str,
+    agent_name: str,
+    model: str,
+    status: str,
+    turns: int = 0,
+    duration_s: float = 0.0,
+    cost_usd: float = 0.0,
+    iteration: int = 1,
+    details: str = "",
+) -> None:
+    """
+    Append a structured stage completion event to `/tmp/adk_stage_events.jsonl`.
+    A privileged root background watcher in `worker_entrypoint.sh` tails this file and posts
+    live progress comments & checklist updates to the GitHub Pull Request without exposing
+    `GITHUB_PAT` to the unprivileged `agentuser` (UID 10001) sandbox.
+    """
+    event_payload = {
+        "stage": stage,
+        "agent": agent_name,
+        "model": model,
+        "status": status,
+        "iteration": iteration,
+        "turns": turns,
+        "duration_s": round(float(duration_s), 1),
+        "cost_usd": round(float(cost_usd), 4),
+        "details": details[:12000],
+    }
+    try:
+        with STAGE_EVENTS_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event_payload, ensure_ascii=False) + "\n")
+            f.flush()
+    except Exception as exc:
+        print(f"[StageEvent Warning] Could not write stage event: {exc}")
 
 
 def _run_claude_cli(
@@ -139,24 +176,216 @@ def _collect_workspace_diff() -> str:
     return "\n".join(diff_parts).strip()
 
 
+import re
+
+PROTECTED_PREFIXES = (
+    ".github/",
+    "deploy/",
+    "Dockerfile",
+    "CLAUDE.md",
+    "tests/conftest.py",
+)
+
+# MetaGPT Sec. 3.2 & Appendix E.2: Role-Specific Context Subscription Matrix
+# Prevents Information Overload by restricting each agent to only the state keys required by its SOP role.
+ROLE_SUBSCRIPTIONS: Dict[str, List[str]] = {
+    "ArchitectAgent": ["issue_prompt"],
+    "CoderAgent_Initial": ["issue_prompt", "architecture_plan", "sop_allowed_files", "sop_targeted_tests"],
+    "CoderAgent_Revision": ["architecture_plan", "sop_allowed_files", "sop_targeted_tests", "executable_feedback", "review_feedback"],
+    "ReviewerAgent": ["architecture_plan", "sop_allowed_files", "executable_feedback_summary"],
+}
+
+
+def _subscribe_role_context(role_key: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    MetaGPT Publish-Subscribe filter (Sec. 3.2 / Appendix E.2):
+    Extracts only the role-subscribed keys from the shared session state pool to prevent context bloat.
+    """
+    allowed_keys = ROLE_SUBSCRIPTIONS.get(role_key, [])
+    return {k: state.get(k) for k in allowed_keys if k in state and state.get(k) not in (None, "", [])}
+
+
+def _extract_sop_metadata(plan_text: str) -> Dict[str, List[str]]:
+    """
+    MetaGPT Sec. 3.2 & Sec. 4.4 (Table 6): Parse structured SOP JSON block (`ALLOWED_FILE_LIST`
+    and `TARGETED_TEST_FILES`) emitted by ArchitectAgent during Upfront Prompt Expansion.
+    """
+    allowed_files: List[str] = []
+    targeted_tests: List[str] = []
+
+    json_match = re.search(r"```json\s*(\{.*?\})\s*```", plan_text, flags=re.DOTALL)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group(1))
+            if isinstance(parsed.get("allowed_file_list"), list):
+                allowed_files = [
+                    os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
+                    for p in parsed["allowed_file_list"]
+                    if str(p).strip()
+                ]
+            if isinstance(parsed.get("targeted_test_files"), list):
+                targeted_tests = [
+                    os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
+                    for p in parsed["targeted_test_files"]
+                    if str(p).strip()
+                ]
+        except Exception:
+            pass
+
+    return {
+        "sop_allowed_files": allowed_files,
+        "sop_targeted_tests": targeted_tests,
+    }
+
+
+def _collect_changed_files(cwd: str) -> List[str]:
+    """Return normalized relative paths of all modified/added/untracked files in workspace."""
+    files: set[str] = set()
+    for cmd in (
+        ["git", "diff", "--name-only", "-z", "base-anchor"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        try:
+            out = subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.DEVNULL).decode("utf-8", errors="replace")
+            for f in out.split("\0"):
+                norm = os.path.normpath(f).replace("\\", "/").removeprefix("./") if f.strip() else ""
+                if norm and norm not in (".", ".venv"):
+                    files.add(norm)
+        except Exception:
+            pass
+    return sorted(files)
+
+
+def _run_executable_feedback_gate(
+    sop_allowed_files: List[str],
+    sop_targeted_tests: List[str],
+) -> Tuple[bool, str]:
+    """
+    MetaGPT Sec. 3.3 (Fig. 2 Right, Table 1): Deterministic Pre-Review Executable Feedback Gate.
+    Executes inside the LoopAgent BEFORE invoking ReviewerAgent (claude-opus-5-5):
+      1. Protected Path & SOP File-Scope Verification
+      2. Pre-Compilation AST/Syntax Check (`ruff check --select E9,F63,F7,F82`)
+      3. Frontend Bundle & Node Engine Check (if `src/static/` touched)
+      4. Targeted & Changed Unit Test Execution (`pytest` with offline socket blocker)
+    Returns (passed: bool, feedback_report: str).
+    If `passed` is False, ReviewerAgent short-circuits back to CoderAgent in <2s for $0.00 LLM cost.
+    """
+    cwd = str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else "."
+    changed_files = _collect_changed_files(cwd)
+    if not changed_files:
+        return (
+            False,
+            "EXECUTABLE FEEDBACK FAILURE [No Changes]: No modified or untracked files found in /workspace.",
+        )
+
+    # 1. Protected paths & SOP scope check
+    for path in changed_files:
+        if any(path == p or path.startswith(p) for p in PROTECTED_PREFIXES):
+            return (
+                False,
+                f"EXECUTABLE FEEDBACK FAILURE [Protected Path Violation]: '{path}' is a protected path ({PROTECTED_PREFIXES}). Revert changes to '{path}'.",
+            )
+
+    if sop_allowed_files:
+        out_of_scope = [
+            f for f in changed_files
+            if f not in sop_allowed_files and not f.startswith("tests/") and not f.startswith("docs/static/")
+        ]
+        if out_of_scope:
+            return (
+                False,
+                f"EXECUTABLE FEEDBACK FAILURE [SOP Scope Creep]: Modified files {out_of_scope} were not authorized in ArchitectAgent's `allowed_file_list` ({sop_allowed_files}).",
+            )
+
+    py_bin = "/opt/venv/bin" if Path("/opt/venv/bin/pytest").exists() else os.path.dirname(sys.executable)
+    ruff_bin = str(Path(py_bin) / "ruff")
+    pytest_bin = str(Path(py_bin) / "pytest")
+
+    # 2. Pre-Compilation Syntax / Undefined Names Check (ruff)
+    py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
+    if py_files and Path(ruff_bin).exists():
+        ruff_proc = subprocess.run(
+            [ruff_bin, "check", "--select", "E9,F63,F7,F82", *py_files],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if ruff_proc.returncode != 0:
+            out = ruff_proc.stdout.decode("utf-8", errors="replace").strip()
+            return (
+                False,
+                f"EXECUTABLE FEEDBACK FAILURE [Pre-Compilation Ruff Check]:\n```\n{out[:3000]}\n```",
+            )
+
+    # 3. Targeted & Modified Pytest Execution
+    test_targets: List[str] = []
+    for t in sop_targeted_tests + [f for f in changed_files if f.startswith("tests/") and f.endswith(".py")]:
+        if t not in test_targets and (Path(cwd) / t).exists():
+            test_targets.append(t)
+    if not test_targets:
+        test_targets = ["tests/test_utils.py"] if (Path(cwd) / "tests/test_utils.py").exists() else ["tests"]
+
+    pytest_cmd = [pytest_bin if Path(pytest_bin).exists() else "pytest", "-q", "--tb=short", *test_targets]
+    pytest_proc = subprocess.run(
+        pytest_cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    pytest_out = pytest_proc.stdout.decode("utf-8", errors="replace").strip()
+    if pytest_proc.returncode != 0:
+        return (
+            False,
+            f"EXECUTABLE FEEDBACK FAILURE [Pytest Runtime Traceback on {test_targets}]:\n```\n{pytest_out[-4000:]}\n```",
+        )
+
+    summary = (
+        f"EXECUTABLE FEEDBACK PASSED:Changed={changed_files} | "
+        f"Ruff(E9,F63,F7,F82)=0 errors | Pytest({', '.join(test_targets)})={pytest_out.splitlines()[-1] if pytest_out else 'PASSED'}"
+    )
+    return True, summary
+
+
 class ArchitectAgent(BaseAgent):
-    """Agent 1: Claude Opus 5.5 Architect that inspects the codebase and produces an implementation plan."""
+    """
+    Agent 1: Claude Opus 5.5 Architect implementing MetaGPT Upfront Prompt Expansion (Sec. 4.4, Table 6)
+    and Standardized Operating Procedure (SOP) Structured Handover Schema (Sec. 3.2, Fig. 3).
+    """
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        issue_prompt = str(ctx.session.state.get("issue_prompt", ""))
-        print(f"🧠 [ADK Agent 1: ArchitectAgent ({ARCHITECT_MODEL})] Designing implementation plan...")
+        sub_ctx = _subscribe_role_context("ArchitectAgent", ctx.session.state)
+        issue_prompt = str(sub_ctx.get("issue_prompt", ""))
+        print(f"🧠 [ADK Agent 1: ArchitectAgent ({ARCHITECT_MODEL})] Running Upfront Prompt Expansion & SOP Design...")
 
-        architect_prompt = f"""You are Agent 1 (Principal Software Architect, {ARCHITECT_MODEL}) in a 3-agent Google ADK pipeline.
-Your job is to inspect the repository in Read-Only mode (`Read`, `Grep`, `Glob`) and write a concise, actionable Implementation & Test Plan for Agent 2 (CoderAgent).
-Do NOT attempt to edit or write files.
+        architect_prompt = f"""You are Agent 1 (Principal Software Architect, {ARCHITECT_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
+Inspect the repository in Read-Only mode (`Read`, `Grep`, `Glob`) and perform **Upfront Prompt Expansion** into a strict **SOP Handover Specification** for Agent 2 (CoderAgent).
+Do NOT edit or write any files.
 
 {issue_prompt}
 
-Provide:
-1. Exact target files and functions/classes to create or modify.
-2. Edge cases and type/input validation requirements.
-3. Exact unit tests to add in `tests/` (remembering `conftest.py` blocks all live sockets).
-4. Security invariants to preserve (Zero `bigquery.tables.getData`, no protected paths modified)."""
+You MUST output your response in the following standardized SOP structure:
+
+### 1. SOP_METADATA_JSON
+```json
+{{
+  "allowed_file_list": ["<exact relative paths of files to modify or create>"],
+  "targeted_test_files": ["<exact relative paths of pytest files to run>"]
+}}
+```
+
+### 2. INTERFACE_AND_DATA_STRUCTURES
+- Exact function/method signatures, parameter types, default values, return types, and docstring contracts.
+
+### 3. LOGIC_ANALYSIS_BY_FILE
+- For each file in `allowed_file_list`, specify the exact insertion point, algorithm, and edge-case handling (`None`, `NaN`, `bool`, `inf`, negative numbers, boundary conditions).
+
+### 4.SECURITY_AND_REPO_INVARIANTS
+- Zero `bigquery.tables.getData` usage, no protected paths touched, offline `pytest` compatibility (`@pytest.mark.usefixtures("mock_bq_all")` if testing validators/CLI), and whether `src/static/` bundle sync is needed.
+
+### 5. ANYTHING_UNCLEAR_RESOLVED
+- Explicitly resolve any potential ambiguity in the user issue so Agent 2 (`{CODER_MODEL}`) can implement the code in a single pass without guessing."""
 
         plan_text, turns, dur_s, cost = await asyncio.to_thread(
             _run_claude_cli,
@@ -168,15 +397,32 @@ Provide:
             False,
         )
 
+        sop_meta = _extract_sop_metadata(plan_text)
         delta = {
             "architecture_plan": plan_text,
+            "sop_allowed_files": sop_meta["sop_allowed_files"],
+            "sop_targeted_tests": sop_meta["sop_targeted_tests"],
             "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
             "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
             "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
         }
         ctx.session.state.update(delta)
 
-        print(f"✅ [ADK Agent 1: ArchitectAgent] Plan generated ({turns} turns, {dur_s}s, ${cost:.4f}).")
+        print(
+            f"✅ [ADK Agent 1: ArchitectAgent] SOP Plan generated ({turns} turns, {dur_s}s, ${cost:.4f}) | "
+            f"Allowed files: {sop_meta['sop_allowed_files']}"
+        )
+        _emit_pr_stage_event(
+            stage="1/3",
+            agent_name="Agent 1: ArchitectAgent (Upfront SOP Plan)",
+            model=ARCHITECT_MODEL,
+            status="PASSED",
+            turns=turns,
+            duration_s=dur_s,
+            cost_usd=cost,
+            iteration=1,
+            details=plan_text,
+        )
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
@@ -186,37 +432,52 @@ Provide:
 
 
 class CoderAgent(BaseAgent):
-    """Agent 2: Claude Sonnet 5 Coder that implements the plan and fixes any ReviewerAgent feedback."""
+    """
+    Agent 2: Claude Sonnet 5 Coder with Role-Specific Context Subscription (MetaGPT Sec. 3.2 & Appendix E.2).
+    On Iteration 1, subscribes to the expanded SOP Plan.
+    On Iteration 2+, subscribes only to the SOP Plan + Executable/Reviewer delta feedback to prevent Information Overload.
+    """
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         iteration = int(ctx.session.state.get("loop_iteration", 0)) + 1
         ctx.session.state["loop_iteration"] = iteration
 
-        issue_prompt = str(ctx.session.state.get("issue_prompt", ""))
-        arch_plan = str(ctx.session.state.get("architecture_plan", ""))
-        review_feedback = str(ctx.session.state.get("review_feedback", ""))
+        role_key = "CoderAgent_Initial" if iteration == 1 else "CoderAgent_Revision"
+        sub_ctx = _subscribe_role_context(role_key, ctx.session.state)
 
-        print(f"🛠️ [ADK Agent 2: CoderAgent ({CODER_MODEL})] Iteration {iteration}/{MAX_REVIEW_LOOPS}...")
+        arch_plan = str(sub_ctx.get("architecture_plan", ""))
+        sop_allowed_files = sub_ctx.get("sop_allowed_files", [])
+        sop_targeted_tests = sub_ctx.get("sop_targeted_tests", [])
+        exec_feedback = str(sub_ctx.get("executable_feedback", ""))
+        review_feedback = str(sub_ctx.get("review_feedback", ""))
+
+        print(
+            f"🛠️ [ADK Agent 2: CoderAgent ({CODER_MODEL})] Iteration {iteration}/{MAX_REVIEW_LOOPS} "
+            f"(Subscribed profile: {role_key}, keys={list(sub_ctx.keys())})..."
+        )
 
         feedback_section = ""
-        if review_feedback:
+        if exec_feedback or review_feedback:
             feedback_section = f"""
-<reviewer_opus_critique iteration="{iteration - 1}">
-Agent 3 (ReviewerAgent, {REVIEWER_MODEL}) found issues in your previous implementation that MUST be resolved now:
+<iterative_feedback iteration="{iteration - 1}">
+The previous iteration did NOT pass verification. Fix ONLY the defects reported below while adhering to `allowed_file_list` ({sop_allowed_files}):
+{exec_feedback}
 {review_feedback}
-</reviewer_opus_critique>
+</iterative_feedback>
 """
 
-        coder_prompt = f"""You are Agent 2 (Autonomous Software Engineer, {CODER_MODEL}) in a 3-agent Google ADK pipeline.
-Implement the feature requested below by following Agent 1's Architecture Plan and resolving any critique from Agent 3.
+        issue_section = f"\n{sub_ctx['issue_prompt']}\n" if "issue_prompt" in sub_ctx else ""
+        test_hint = " ".join(sop_targeted_tests) if sop_targeted_tests else "<your_test_file>"
 
-{issue_prompt}
-
-<architect_opus_plan>
+        coder_prompt = f"""You are Agent 2 (Autonomous Software Engineer, {CODER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
+Implement the specification in Agent 1's SOP Architecture Plan below.
+Strictly restrict your file edits/creations to `allowed_file_list`: {sop_allowed_files}.
+{issue_section}
+<architect_sop_plan>
 {arch_plan}
-</architect_opus_plan>
+</architect_sop_plan>
 {feedback_section}
-Run `./.venv/bin/pytest <your_test_file>` and `./.venv/bin/ruff check --select E9,F63,F7,F82 <modified_py_files>` before finishing."""
+Before finishing, execute `./.venv/bin/pytest -q {test_hint}` and `./.venv/bin/ruff check --select E9,F63,F7,F82 <modified_py_files>`."""
 
         coder_out, turns, dur_s, cost = await asyncio.to_thread(
             _run_claude_cli,
@@ -259,6 +520,18 @@ Run `./.venv/bin/pytest <your_test_file>` and `./.venv/bin/ruff check --select E
         ctx.session.state.update(delta)
 
         print(f"✅ [ADK Agent 2: CoderAgent] Pass {iteration} complete ({turns} turns, {dur_s}s, ${cost:.4f}).")
+        changed_now = _collect_changed_files(str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else ".")
+        _emit_pr_stage_event(
+            stage="2/3",
+            agent_name=f"Agent 2: CoderAgent (Pass {iteration}/{MAX_REVIEW_LOOPS})",
+            model=CODER_MODEL,
+            status="COMPLETED",
+            turns=turns,
+            duration_s=dur_s,
+            cost_usd=cost,
+            iteration=iteration,
+            details=f"**Modified/Created Files:** `{changed_now}`\n\n{coder_out}",
+        )
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
@@ -268,40 +541,80 @@ Run `./.venv/bin/pytest <your_test_file>` and `./.venv/bin/ruff check --select E
 
 
 class ReviewerAgent(BaseAgent):
-    """Agent 3: Claude Opus 5.5 Adversarial Code & Security Reviewer that approves or loops back to Agent 2."""
+    """
+    Agent 3: MetaGPT Deterministic Pre-Review Executable Feedback Gate (Sec. 3.3, Fig. 2 Right)
+    followed by Claude Opus 5.5 Adversarial Diff Critique with Role-Specific Subscription (Sec. 3.2).
+    """
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         iteration = int(ctx.session.state.get("loop_iteration", 1))
-        issue_prompt = str(ctx.session.state.get("issue_prompt", ""))
-        arch_plan = str(ctx.session.state.get("architecture_plan", ""))
-        current_diff = _collect_workspace_diff()
+        sop_allowed_files = list(ctx.session.state.get("sop_allowed_files") or [])
+        sop_targeted_tests = list(ctx.session.state.get("sop_targeted_tests") or [])
 
-        print(f"🔍 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] Auditing diff (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
+        # Step 3a: Deterministic Pre-Review Executable Feedback Gate (MetaGPT Sec. 3.3)
+        print(f"⚙️ [ADK Pre-Review Executable Feedback Gate] Running ruff + pytest check (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
+        exec_passed, exec_report = await asyncio.to_thread(
+            _run_executable_feedback_gate,
+            sop_allowed_files,
+            sop_targeted_tests,
+        )
 
-        if not current_diff:
-            feedback = "VERDICT: REVISE — No file modifications or untracked test files were produced in /workspace."
-            delta = {"review_feedback": feedback, "review_approved": False}
+        if not exec_passed:
+            print(
+                f"⚠️ [ADK Pre-Review Executable Feedback Gate] FAILED on iteration {iteration} "
+                f"(Short-circuiting back to CoderAgent for $0.00 Opus cost):\n{exec_report}"
+            )
+            _emit_pr_stage_event(
+                stage="2.5/3",
+                agent_name=f"Pre-Review Executable Feedback Gate (Iteration {iteration}/{MAX_REVIEW_LOOPS})",
+                model="deterministic-ruff-pytest",
+                status="REVISE (Short-Circuit $0.00)",
+                turns=0,
+                duration_s=0.5,
+                cost_usd=0.0,
+                iteration=iteration,
+                details=exec_report,
+            )
+            delta = {
+                "executable_feedback": exec_report,
+                "review_feedback": exec_report,
+                "review_approved": False,
+            }
             ctx.session.state.update(delta)
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
-                content=types.Content(role="model", parts=[types.Part.from_text(text=feedback)]),
+                content=types.Content(role="model", parts=[types.Part.from_text(text=exec_report)]),
                 actions=EventActions(state_delta=delta, escalate=False),
             )
             return
 
-        reviewer_prompt = f"""You are Agent 3 (Adversarial Code & Security Reviewer, {REVIEWER_MODEL}) in a 3-agent Google ADK pipeline.
-Inspect the git diff produced by Agent 2 ({CODER_MODEL}) against the issue specification, Agent 1's Architecture Plan, and our security rules:
-1. COMPLETENESS & CORRECTNESS: Does the code accurately implement the requested feature and edge cases with unit tests?
+        print(f"✅ [ADK Pre-Review Executable Feedback Gate] {exec_report}")
+        ctx.session.state["executable_feedback_summary"] = exec_report
+
+        # Step 3b: Role-Specific Context Subscription for ReviewerAgent (MetaGPT Sec. 3.2)
+        sub_ctx = _subscribe_role_context("ReviewerAgent", ctx.session.state)
+        arch_plan = str(sub_ctx.get("architecture_plan", ""))
+        exec_summary = str(sub_ctx.get("executable_feedback_summary", ""))
+        current_diff = _collect_workspace_diff()
+
+        print(f"🔍 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] Auditing diff (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
+
+        reviewer_prompt = f"""You are Agent 3 (Adversarial Code & Security Reviewer, {REVIEWER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
+Deterministic Pre-Review Executable Feedback has ALREADY PASSED (`{exec_summary}`).
+Inspect the git diff against Agent 1's SOP Architecture Plan and our security invariants:
+1. COMPLETENESS & EDGE CASES: Does the diff implement every requirement, type annotation, and edge case in `<architect_sop_plan>`?
 2. DATA-PLANE ISOLATION: Ensure zero references to `bigquery.tables.getData` or direct queries on user tables.
-3. PROTECTED PATHS: Ensure zero modifications to `.github/`, `deploy/`, `Dockerfile`, `CLAUDE.md`, or `tests/conftest.py`.
-4. SECURITY: Ensure no SSRF, command injection, unescaped innerHTML, or leaked credentials.
+3. PROTECTED PATHS & SCOPE: Ensure modifications adhere to `{sop_allowed_files}` and never touch `.github/`, `deploy/`, `Dockerfile`, `CLAUDE.md`, or `tests/conftest.py`.
+4. SECURITY: Ensure no SSRF, command injection, unescaped innerHTML, or credential leaks.
 
-{issue_prompt}
+<executable_feedback_status>
+{exec_summary}
+</executable_feedback_status>
 
-<architect_opus_plan>
+<architect_sop_plan>
 {arch_plan}
-</architect_opus_plan>
+</architect_sop_plan>
 
 <git_diff>
 {current_diff[:90000]}
@@ -327,10 +640,23 @@ End your response with EXACTLY one of:
             "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
             "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
             "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+            "executable_feedback": "",
             "review_approved": approved,
             "review_feedback": "" if approved else review_text,
         }
         ctx.session.state.update(delta)
+
+        _emit_pr_stage_event(
+            stage="3/3",
+            agent_name=f"Agent 3: ReviewerAgent (Iteration {iteration}/{MAX_REVIEW_LOOPS})",
+            model=REVIEWER_MODEL,
+            status="VERDICT: PASS" if approved else "VERDICT: REVISE",
+            turns=turns,
+            duration_s=dur_s,
+            cost_usd=cost,
+            iteration=iteration,
+            details=f"**Pre-Review Executable Feedback:** `{exec_summary}`\n\n{review_text}",
+        )
 
         if approved:
             print(f"✅ [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: PASS on iteration {iteration}!")

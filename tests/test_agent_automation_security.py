@@ -125,3 +125,100 @@ def test_verify_agent_diff_blocks_protected_paths():
         with pytest.raises(SystemExit) as exc:
             diff_gate.main()
         assert "FATAL SECURITY GATE VIOLATION" in str(exc.value)
+
+
+def _load_adk_orchestrator():
+    import sys
+    import types
+
+    for mod_name in (
+        "google",
+        "google.adk",
+        "google.adk.agents",
+        "google.adk.apps",
+        "google.adk.events",
+        "google.adk.runners",
+        "google.genai",
+    ):
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = types.ModuleType(mod_name)
+
+    sys.modules["google.adk.agents"].BaseAgent = object
+    sys.modules["google.adk.agents"].InvocationContext = object
+    sys.modules["google.adk.agents"].LoopAgent = object
+    sys.modules["google.adk.agents"].SequentialAgent = object
+    sys.modules["google.adk.apps"].App = object
+    sys.modules["google.adk.events"].Event = object
+    sys.modules["google.adk.events"].EventActions = object
+    sys.modules["google.adk.runners"].InMemoryRunner = object
+    sys.modules["google.genai"].types = types.SimpleNamespace()
+
+    return _load_module("adk_orchestrator", "deploy/agent_automation/adk_orchestrator.py")
+
+
+def test_metagpt_sop_metadata_extraction_and_role_subscriptions():
+    orch = _load_adk_orchestrator()
+    sample_plan = '''
+### 1. SOP_METADATA_JSON
+```json
+{
+  "allowed_file_list": ["./src/utils.py", "tests\\\\test_utils.py"],
+  "targeted_test_files": ["tests/test_utils.py"]
+}
+```
+'''
+    meta = orch._extract_sop_metadata(sample_plan)
+    assert meta["sop_allowed_files"] == ["src/utils.py", "tests/test_utils.py"]
+    assert meta["sop_targeted_tests"] == ["tests/test_utils.py"]
+
+    full_state = {
+        "issue_prompt": "Raw issue text",
+        "architecture_plan": "Structured SOP Plan",
+        "sop_allowed_files": ["src/utils.py"],
+        "sop_targeted_tests": ["tests/test_utils.py"],
+        "executable_feedback": "Pytest failed line 42",
+        "review_feedback": "Fix docstring",
+        "executable_feedback_summary": "PASSED",
+        "unrelated_noise": "Should be filtered out",
+    }
+
+    # Revision pass for CoderAgent must exclude raw issue_prompt to avoid Information Overload
+    rev_ctx = orch._subscribe_role_context("CoderAgent_Revision", full_state)
+    assert "issue_prompt" not in rev_ctx
+    assert "unrelated_noise" not in rev_ctx
+    assert rev_ctx["executable_feedback"] == "Pytest failed line 42"
+
+    # ReviewerAgent subscribes only to architecture_plan, sop_allowed_files, and executable_feedback_summary
+    reviewer_ctx = orch._subscribe_role_context("ReviewerAgent", full_state)
+    assert set(reviewer_ctx.keys()) == {"architecture_plan", "sop_allowed_files", "executable_feedback_summary"}
+
+
+def test_executable_feedback_gate_short_circuits_on_scope_creep_and_stage_event(tmp_path):
+    orch = _load_adk_orchestrator()
+    with patch.object(orch, "_collect_changed_files", return_value=["src/utils.py", "src/unauthorized.py"]):
+        passed, report = orch._run_executable_feedback_gate(
+            sop_allowed_files=["src/utils.py"],
+            sop_targeted_tests=["tests/test_utils.py"],
+        )
+        assert passed is False
+        assert "SOP Scope Creep" in report
+        assert "src/unauthorized.py" in report
+
+    stage_file = tmp_path / "adk_stage_events.jsonl"
+    with patch.object(orch, "STAGE_EVENTS_FILE", stage_file):
+        orch._emit_pr_stage_event(
+            stage="1/3",
+            agent_name="Agent 1: ArchitectAgent",
+            model="claude-opus-5-5",
+            status="PASSED",
+            turns=5,
+            duration_s=27.6,
+            cost_usd=0.2471,
+            iteration=1,
+            details="SOP Plan Body",
+        )
+        lines = stage_file.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        assert '"stage": "1/3"' in lines[0]
+        assert '"agent": "Agent 1: ArchitectAgent"' in lines[0]
+
