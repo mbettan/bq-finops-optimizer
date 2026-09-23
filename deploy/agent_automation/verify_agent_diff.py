@@ -34,11 +34,15 @@ def main() -> None:
     print("Running ./scripts/sync_docs_bundle.sh...")
     subprocess.run(["./scripts/sync_docs_bundle.sh"], check=True)
 
-    print("Running Ruff linter...")
-    subprocess.run(["./.venv/bin/ruff", "check", "."], check=True)
+    import shutil
+    ruff_bin = shutil.which("./.venv/bin/ruff") or shutil.which("/opt/venv/bin/ruff") or shutil.which("ruff") or "ruff"
+    pytest_bin = shutil.which("./.venv/bin/pytest") or shutil.which("/opt/venv/bin/pytest") or shutil.which("pytest") or "pytest"
 
-    print("Running offline pytest suite...")
-    subprocess.run(["./.venv/bin/pytest"], check=True)
+    print(f"Running Ruff linter ({ruff_bin})...")
+    subprocess.run([ruff_bin, "check", "."], check=True)
+
+    print(f"Running offline pytest suite ({pytest_bin})...")
+    subprocess.run([pytest_bin], check=True)
 
     print("Running Node calculator & pricing parity tests...")
     subprocess.run(["/usr/bin/env", "node", "scripts/sync_pricing.js", "--check"], check=True)

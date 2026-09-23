@@ -11,6 +11,8 @@ BRANCH_NAME="agent/issue-${TARGET_ISSUE_NUMBER}"
 git clone --depth=1 "https://x-access-token:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git" /workspace
 cd /workspace
 git checkout -b "${BRANCH_NAME}"
+ln -sfn /opt/venv /workspace/.venv
+export PATH="/opt/venv/bin:${PATH}"
 
 echo "=== [3/6] Executing Headless Claude Code via Google Cloud Vertex AI (Zero Static API Keys) ==="
 export CLAUDE_CODE_USE_VERTEX=1
