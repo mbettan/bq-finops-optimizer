@@ -28,9 +28,10 @@ RUN useradd -m -u 10001 -s /bin/bash agentuser \
 COPY deploy/agent_automation/poller.py /app/poller.py
 COPY deploy/agent_automation/verify_issue_actor.py /app/verify_issue_actor.py
 COPY deploy/agent_automation/adk_orchestrator.py /app/adk_orchestrator.py
+COPY deploy/agent_automation/pr_live_telemetry.py /app/pr_live_telemetry.py
 COPY deploy/agent_automation/verify_agent_diff.py /app/verify_agent_diff.py
 COPY deploy/agent_automation/worker_entrypoint.sh /app/worker_entrypoint.sh
 
-RUN chmod +x /app/poller.py /app/verify_issue_actor.py /app/adk_orchestrator.py /app/verify_agent_diff.py /app/worker_entrypoint.sh
+RUN chmod +x /app/poller.py /app/verify_issue_actor.py /app/adk_orchestrator.py /app/pr_live_telemetry.py /app/verify_agent_diff.py /app/worker_entrypoint.sh
 
 ENTRYPOINT ["/opt/venv/bin/python3", "/app/poller.py"]
