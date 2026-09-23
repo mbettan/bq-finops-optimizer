@@ -13,6 +13,7 @@ git config --global credential.helper "store --file=/root/.git-credentials"
 echo "https://x-access-token:${GITHUB_PAT}@github.com" > /root/.git-credentials
 chmod 600 /root/.git-credentials
 git clone --depth=1 "https://github.com/${GITHUB_REPO}.git" /workspace
+git config --global --add safe.directory /workspace
 cd /workspace
 git checkout -b "${BRANCH_NAME}"
 git branch base-anchor HEAD
@@ -39,12 +40,14 @@ if id -u agentuser >/dev/null 2>&1; then
     export ARCHITECT_MODEL='${ARCHITECT_MODEL}'
     export CODER_MODEL='${CODER_MODEL}'
     export REVIEWER_MODEL='${REVIEWER_MODEL}'
+    export PYTHONUNBUFFERED=1
     git config --global --add safe.directory /workspace
     cd /workspace
-    /opt/venv/bin/python3 /app/adk_orchestrator.py
+    /opt/venv/bin/python3 -u /app/adk_orchestrator.py
   "
+  chown -R root:root /workspace
 else
-  /opt/venv/bin/python3 /app/adk_orchestrator.py
+  /opt/venv/bin/python3 -u /app/adk_orchestrator.py
 fi
 
 CLAUDE_TELEMETRY=$(python3 -c '
@@ -79,7 +82,9 @@ git push -f origin "${BRANCH_NAME}"
 
 echo "=== [6/6] Creating or Updating PR for Second-Gate Security Review ==="
 export GH_TOKEN="${GITHUB_PAT}"
-PR_BODY="Automated implementation for #${TARGET_ISSUE_NUMBER} orchestrated by **Google ADK (\`SequentialAgent\` + \`LoopAgent\`)** and **Native Claude Code CLI**.
+PR_BODY="Closes #${TARGET_ISSUE_NUMBER}
+
+Automated implementation for #${TARGET_ISSUE_NUMBER} orchestrated by **Google ADK (\`SequentialAgent\` + \`LoopAgent\`)** and **Native Claude Code CLI**.
 
 ### 🤖 Google ADK Multi-Agent Telemetry
 - **Agent 1 (Architect):** \`${ARCHITECT_MODEL}\` (Read-Only Implementation Plan)
@@ -113,3 +118,10 @@ else
     --body "${PR_BODY}")
   echo "✅ Draft PR created successfully: ${PR_URL}"
 fi
+
+gh label create "agent:pr-opened" --repo "${GITHUB_REPO}" --color "0E8A16" --description "Autonomous Agent PR opened" --force >/dev/null 2>&1 || true
+gh issue edit "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --remove-label "agent:in-progress" --add-label "agent:pr-opened" >/dev/null 2>&1 || true
+gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body "🤖 **Google ADK 3-Agent Pipeline Completed**
+
+- **Pull Request:** ${PR_URL}
+- **Telemetry:** \`${CLAUDE_TELEMETRY}\`" >/dev/null 2>&1 || true
