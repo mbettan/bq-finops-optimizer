@@ -1,0 +1,10 @@
+# Image-baked pinned Ruff configuration (modeled on illya-nau/GAS/config/gates/ruff.pinned.toml)
+# Mounted at /opt/pinned/ruff.pinned.toml (root:root, 0644) outside /workspace so a branch
+# cannot weaken or override lint rules.
+target-version = "py311"
+line-length = 120
+
+[lint]
+# Fatal syntax errors, undefined names, duplicate arguments, break/continue outside loop.
+# Stricter F/B rules on newly added/modified lines are enforced via diff-hunk filtering.
+select = ["E9", "F63", "F7", "F82"]

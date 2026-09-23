@@ -62,6 +62,8 @@ fi
 export INITIAL_PR_SHA
 
 ln -sfn /opt/venv /workspace/.venv
+mkdir -p /workspace/.git/info
+printf "\n.venv\n.claude/\n.tmp*\n" >> /workspace/.git/info/exclude
 export PATH="/opt/venv/bin:${PATH}"
 
 echo "=== [3/6] Executing Google ADK 3-Agent Pipeline (Architect Opus 5.5 -> Loop[Coder Sonnet 5 <-> Reviewer Opus 5.5]) ==="

@@ -485,6 +485,103 @@ def _format_blocking_findings_for_coder(verdict: ArchitecturalReviewVerdict) -> 
     return "\n".join(rows)
 
 
+def _strip_verdict_json_for_display(review_text: str) -> str:
+    """
+    Remove raw machine-oriented `REVIEW_VERDICT_JSON` fenced JSON blocks from the human-facing
+    GitHub PR comment after `_parse_review_verdict()` has validated them with Pydantic.
+    """
+    cleaned = re.sub(
+        r"(?:#+\s*REVIEW_VERDICT_JSON[^\n]*\n+)?```json\s*\{\s*\"decision\"\s*:.*?\}\s*```\n?",
+        "",
+        review_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _extract_added_lines_by_file(diff_text: str) -> Dict[str, set]:
+    """
+    Parse unified diff (`git diff -U0`) to return a mapping of `{relative_path: set_of_added_line_numbers}`.
+    Used for line-level `LINT_SCOPE=diff` filtering so pre-existing legacy lines never trigger false positives.
+    """
+    added_lines: Dict[str, set] = {}
+    current_file: str | None = None
+    curr_line_no = 0
+    for raw_line in diff_text.splitlines():
+        if raw_line.startswith("+++ b/"):
+            current_file = raw_line[6:].strip()
+            added_lines.setdefault(current_file, set())
+        elif raw_line.startswith("@@ ") and current_file:
+            m = re.search(r"\+(\d+)(?:,(\d+))?", raw_line)
+            if m:
+                curr_line_no = int(m.group(1))
+        elif current_file and curr_line_no > 0:
+            if raw_line.startswith("+") and not raw_line.startswith("+++"):
+                added_lines[current_file].add(curr_line_no)
+                curr_line_no += 1
+            elif not raw_line.startswith("-") and not raw_line.startswith("\\"):
+                curr_line_no += 1
+    return added_lines
+
+
+def _verify_no_self_mocking_in_diff(diff_text: str, test_files: List[str], cwd: str) -> Tuple[bool, str]:
+    """
+    `illya-nau/GAS` `test-integrity` AST `mock-gate`:
+    Extracts newly added/modified top-level function definitions (`def <fn>(...)`) in `src/*.py` from `diff_text`,
+    and verifies via Python AST that modified unit tests in `tests/*.py` do NOT `patch(...)` or
+    `monkeypatch.setattr(...)` the very symbol under test instead of exercising its real implementation.
+    """
+    import ast
+
+    added_src_funcs: set[str] = set()
+    current_file: str | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = line[6:].strip()
+        elif current_file and current_file.startswith("src/") and current_file.endswith(".py"):
+            if line.startswith("+") and not line.startswith("+++"):
+                m = re.match(r"^\+\s*(?:async\s+)?def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", line)
+                if m:
+                    fn_name = m.group(1)
+                    if not fn_name.startswith("_"):
+                        added_src_funcs.add(fn_name)
+
+    if not added_src_funcs:
+        return True, ""
+
+    for rel_test in test_files:
+        full_test = Path(cwd) / rel_test
+        if not full_test.is_file() or not rel_test.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(full_test.read_text(encoding="utf-8", errors="replace"), filename=rel_test)
+        except Exception:
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func_repr = ""
+            if isinstance(node.func, ast.Name):
+                func_repr = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_repr = f"{getattr(node.func.value, 'id', '')}.{node.func.attr}"
+
+            if func_repr in ("patch", "mock.patch", "unittest.mock.patch", "patch.object", "monkeypatch.setattr"):
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        target_str = arg.value
+                        for src_fn in added_src_funcs:
+                            if target_str == src_fn or target_str.endswith(f".{src_fn}"):
+                                return (
+                                    False,
+                                    f"EXECUTABLE FEEDBACK FAILURE [GAS Mock-Gate Violation]: Unit test `{rel_test}:{getattr(node, 'lineno', 1)}` "
+                                    f"mocks the newly implemented function under test (`{target_str}`) via `{func_repr}`. "
+                                    f"Tests must invoke the real `{src_fn}()` implementation and only mock external collaborators.",
+                                )
+    return True, ""
+
+
 def _extract_sop_metadata(plan_text: str) -> Dict[str, List[str]]:
     """
     MetaGPT Sec. 3.2 & Sec. 4.4 (Table 6): Parse structured SOP JSON block (`ALLOWED_FILE_LIST`
@@ -580,12 +677,20 @@ def _run_executable_feedback_gate(
     py_bin = "/opt/venv/bin" if Path("/opt/venv/bin/pytest").exists() else os.path.dirname(sys.executable)
     ruff_bin = str(Path(py_bin) / "ruff")
     pytest_bin = str(Path(py_bin) / "pytest")
+    pinned_ruff = "/opt/pinned/ruff.pinned.toml" if Path("/opt/pinned/ruff.pinned.toml").exists() else None
+    pinned_pytest = "/opt/pinned/pytest.pinned.ini" if Path("/opt/pinned/pytest.pinned.ini").exists() else None
 
-    # 2. Pre-Compilation Syntax / Undefined Names Check (ruff)
+    # 2. Pre-Compilation Syntax / Undefined Names Check (ruff with /opt/pinned/ruff.pinned.toml)
     py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
     if py_files and Path(ruff_bin).exists():
+        ruff_cmd = [ruff_bin, "check"]
+        if pinned_ruff:
+            ruff_cmd.extend(["--config", pinned_ruff])
+        else:
+            ruff_cmd.extend(["--select", "E9,F63,F7,F82"])
+        ruff_cmd.extend(py_files)
         ruff_proc = subprocess.run(
-            [ruff_bin, "check", "--select", "E9,F63,F7,F82", *py_files],
+            ruff_cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -595,10 +700,49 @@ def _run_executable_feedback_gate(
             out = ruff_proc.stdout.decode("utf-8", errors="replace").strip()
             return (
                 False,
-                f"EXECUTABLE FEEDBACK FAILURE [Pre-Compilation Ruff Check]:\n```\n{out[:3000]}\n```",
+                f"EXECUTABLE FEEDBACK FAILURE [Pre-Compilation Ruff Check (LINT_SCOPE=diff)]:\n```\n{out[:3000]}\n```",
             )
 
-    # 3. Targeted & Modified Pytest Execution
+        # Line-level diff-hunk F/B check (strictly on newly added/modified line numbers in git diff -U0)
+        try:
+            u0_diff = subprocess.check_output(
+                ["git", "diff", "-U0", "base-anchor"],
+                cwd=cwd,
+                stderr=subprocess.DEVNULL,
+            ).decode("utf-8", errors="replace")
+            added_lines_map = _extract_added_lines_by_file(u0_diff)
+            fb_proc = subprocess.run(
+                [ruff_bin, "check", "--output-format=json", "--select", "E9,F,B", "--ignore", "B008", *py_files],
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if fb_proc.returncode != 0 and fb_proc.stdout:
+                diagnostics = json.loads(fb_proc.stdout.decode("utf-8", errors="replace"))
+                diff_violations: List[str] = []
+                for diag in diagnostics:
+                    rel_diag_file = os.path.relpath(str(diag.get("filename", "")), cwd).replace("\\", "/")
+                    line_row = int((diag.get("location") or {}).get("row") or 0)
+                    file_added_set = added_lines_map.get(rel_diag_file)
+                    # If it is a newly created untracked file or a line added in the diff hunk, enforce F/B
+                    if (rel_diag_file not in added_lines_map and rel_diag_file in py_files) or (
+                        file_added_set and line_row in file_added_set
+                    ):
+                        code = diag.get("code", "RUFF")
+                        msg = diag.get("message", "")
+                        diff_violations.append(f"{rel_diag_file}:{line_row}: [{code}] {msg}")
+                if diff_violations:
+                    return (
+                        False,
+                        "EXECUTABLE FEEDBACK FAILURE [Diff-Hunk Ruff Check (LINT_SCOPE=diff on newly added lines)]:\n```\n"
+                        + "\n".join(diff_violations[:25])
+                        + "\n```",
+                    )
+        except Exception:
+            pass
+
+    # 3. Targeted & Modified Pytest Execution (with /opt/pinned/pytest.pinned.ini)
     test_targets: List[str] = []
     for t in sop_targeted_tests + [f for f in changed_files if f.startswith("tests/") and f.endswith(".py")]:
         if t not in test_targets and (Path(cwd) / t).exists():
@@ -606,7 +750,16 @@ def _run_executable_feedback_gate(
     if not test_targets:
         test_targets = ["tests/test_utils.py"] if (Path(cwd) / "tests/test_utils.py").exists() else ["tests"]
 
-    pytest_cmd = [pytest_bin if Path(pytest_bin).exists() else "pytest", "-q", "--tb=short", *test_targets]
+    # 3a. GAS AST `mock-gate` (Verify tests do not mock the newly implemented function under test)
+    diff_for_mock_gate = _collect_workspace_diff()
+    mock_gate_ok, mock_gate_err = _verify_no_self_mocking_in_diff(diff_for_mock_gate, test_targets, cwd)
+    if not mock_gate_ok:
+        return False, mock_gate_err
+
+    pytest_cmd = [pytest_bin if Path(pytest_bin).exists() else "pytest"]
+    if pinned_pytest:
+        pytest_cmd.extend(["--rootdir=.", "--override-ini=addopts=", "-c", pinned_pytest])
+    pytest_cmd.extend(["-q", "--tb=short", *test_targets])
     pytest_proc = subprocess.run(
         pytest_cmd,
         cwd=cwd,
@@ -623,7 +776,8 @@ def _run_executable_feedback_gate(
 
     summary = (
         f"EXECUTABLE FEEDBACK PASSED:Changed={changed_files} | "
-        f"Ruff(E9,F63,F7,F82)=0 errors | Pytest({', '.join(test_targets)})={pytest_out.splitlines()[-1] if pytest_out else 'PASSED'}"
+        f"Ruff(LINT_SCOPE=diff, /opt/pinned/ruff.pinned.toml)=0 errors | "
+        f"GAS Mock-Gate=PASSED | Pytest({', '.join(test_targets)})={pytest_out.splitlines()[-1] if pytest_out else 'PASSED'}"
     )
     return True, summary
 
@@ -662,7 +816,7 @@ You MUST output your response in the following standardized SOP structure:
 - For each file in `allowed_file_list`, specify the exact insertion point, algorithm, and edge-case handling (`None`, `NaN`, `bool`, `inf`, negative numbers, boundary conditions).
 
 ### 4. SECURITY_AND_REPO_INVARIANTS
-- Zero `bigquery.tables.getData` usage, no protected paths touched, offline `pytest` compatibility (`@pytest.mark.usefixtures("mock_bq_all")` if testing validators/CLI), and whether `src/static/` bundle sync is needed.
+- Zero `bigquery.tables.getData` usage, no protected paths touched, offline `pytest` compatibility (`@pytest.mark.usefixtures("mock_bq_all")` if testing validators/CLI), `LINT_SCOPE="diff"` (only lint modified files via `/opt/pinned/ruff.pinned.toml`), and whether `src/static/` bundle sync is needed.
 
 ### 5. ANYTHING_UNCLEAR_RESOLVED
 - Explicitly resolve any potential ambiguity in the user issue so Agent 2 (`{CODER_MODEL}`) can implement the code in a single pass without guessing."""
@@ -753,6 +907,7 @@ The previous iteration did NOT pass verification. Fix ONLY the defects reported 
 
         issue_section = f"\n{sub_ctx['issue_prompt']}\n" if "issue_prompt" in sub_ctx else ""
         test_hint = " ".join(sop_targeted_tests) if sop_targeted_tests else "<your_test_file>"
+        py_allowed_hint = " ".join(f for f in sop_allowed_files if f.endswith(".py")) or "<modified_py_files>"
 
         coder_prompt = f"""You are Agent 2 (Autonomous Software Engineer, {CODER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
 Implement the specification in Agent 1's SOP Architecture Plan below.
@@ -762,7 +917,10 @@ Strictly restrict your file edits/creations to `allowed_file_list`: {sop_allowed
 {arch_plan}
 </architect_sop_plan>
 {feedback_section}
-Before finishing, execute `./.venv/bin/pytest -q {test_hint}` and `./.venv/bin/ruff check --select E9,F63,F7,F82 <modified_py_files>`."""
+CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
+1. Run targeted unit tests: `./.venv/bin/pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -q {test_hint}`
+2. Run diff-scoped Ruff ONLY on your modified Python files: `./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml {py_allowed_hint}`
+3. NEVER run unfiltered `./.venv/bin/ruff check .` across the entire repository, and NEVER waste turns running `git stash`, `git show HEAD:...`, or inspecting pre-existing warnings in untouched lines/files. Finish immediately once your targeted `pytest` and diff-scoped `ruff` commands pass."""
 
         _install_claude_pre_tool_hook(sop_allowed_files)
         try:
@@ -1013,6 +1171,7 @@ class ReviewerAgent(BaseAgent):
 
         reviewer_prompt = f"""You are Agent 3 (Adversarial Code & Security Reviewer, {REVIEWER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
 Deterministic Pre-Review Executable Feedback has ALREADY PASSED (`{exec_summary}`).
+Note: Outer Step 4 (`verify_agent_diff.py`) deterministically executes the full `CLAUDE.md` §2 offline gate suite (`pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -m "not integration" --strict-markers`, `ruff check --config /opt/pinned/ruff.pinned.toml`, `sync_docs_bundle.sh`, and `node tests/test_calculator_engine.js`) prior to `git push`.
 Inspect the git diff against Agent 1's SOP Architecture Plan and our security invariants:
 1. COMPLETENESS & EDGE CASES: Does the diff implement every requirement, type annotation, and edge case in `<architect_sop_plan>`?
 2. DATA-PLANE ISOLATION: Ensure zero references to `bigquery.tables.getData` or direct queries on user tables.
@@ -1058,6 +1217,7 @@ End your response with EXACTLY one of:
         verdict = _parse_review_verdict(review_text)
         approved = (verdict.decision == "APPROVE") and ("VERDICT: REVISE" not in review_text)
         blocking_table = _format_blocking_findings_for_coder(verdict)
+        display_review_text = _strip_verdict_json_for_display(review_text)
         new_total_cost = float(ctx.session.state.get("total_cost_usd", 0.0)) + cost
 
         convergence_summary = (
@@ -1077,7 +1237,7 @@ End your response with EXACTLY one of:
             "review_approved": approved,
             "blocking_findings_json": "" if approved else blocking_table,
             "convergence_trajectory": convergence_summary,
-            "review_feedback": "" if approved else review_text,
+            "review_feedback": "" if approved else display_review_text,
         }
         ctx.session.state.update(delta)
 
@@ -1090,16 +1250,16 @@ End your response with EXACTLY one of:
             duration_s=dur_s,
             cost_usd=cost,
             iteration=iteration,
-            details=f"**Pre-Review Executable Feedback:** `{exec_summary}`\n{convergence_summary}\n\n{review_text}",
+            details=f"**Pre-Review Executable Feedback:** `{exec_summary}`\n{convergence_summary}\n\n{display_review_text}",
         )
 
         if approved:
             print(f"✅ [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] VERDICT: PASS on iteration {iteration}!")
-            OPUS_REPORT_FILE.write_text(f"{convergence_summary}\n\n{review_text}", encoding="utf-8")
+            OPUS_REPORT_FILE.write_text(f"{convergence_summary}\n\n{display_review_text}", encoding="utf-8")
             yield Event(
                 author=self.name,
                 invocation_id=ctx.invocation_id,
-                content=types.Content(role="model", parts=[types.Part.from_text(text=review_text)]),
+                content=types.Content(role="model", parts=[types.Part.from_text(text=display_review_text)]),
                 actions=EventActions(state_delta=delta, escalate=True),
             )
         else:

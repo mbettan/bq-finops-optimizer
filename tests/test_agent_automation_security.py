@@ -325,3 +325,75 @@ VERDICT: REVISE
         assert not (fake_ws / ".claude").exists()
 
 
+def test_gas_lint_scope_diff_pinned_configs_and_mock_gate(tmp_path):
+    orch = _load_adk_orchestrator()
+
+    # 1. Line-level diff-hunk extraction (_extract_added_lines_by_file)
+    sample_u0_diff = (
+        "diff --git a/src/utils.py b/src/utils.py\n"
+        "--- a/src/utils.py\n"
+        "+++ b/src/utils.py\n"
+        "@@ -645,0 +646,3 @@\n"
+        "+def clamp_percentage(val):\n"
+        "+    return max(0.0, min(100.0, float(val)))\n"
+        "+\n"
+    )
+    added_map = orch._extract_added_lines_by_file(sample_u0_diff)
+    assert added_map["src/utils.py"] == {646, 647, 648}
+    assert 9 not in added_map["src/utils.py"]  # Legacy line 9 is ignored!
+
+    # 2. GAS AST `mock-gate` (_verify_no_self_mocking_in_diff)
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    bad_test_file = tests_dir / "test_utils.py"
+    bad_test_file.write_text(
+        "from unittest.mock import patch\n"
+        "def test_fake_clamp():\n"
+        "    with patch('src.utils.clamp_percentage', return_value=50.0):\n"
+        "        assert True\n",
+        encoding="utf-8",
+    )
+    ok_bad, err_bad = orch._verify_no_self_mocking_in_diff(
+        sample_u0_diff, ["tests/test_utils.py"], str(tmp_path)
+    )
+    assert ok_bad is False
+    assert "GAS Mock-Gate Violation" in err_bad
+    assert "clamp_percentage" in err_bad
+
+    # Valid test that mocks an external collaborator (e.g. google.cloud.bigquery.Client) must PASS
+    good_test_file = tests_dir / "test_utils_good.py"
+    good_test_file.write_text(
+        "from unittest.mock import patch\n"
+        "def test_real_clamp():\n"
+        "    with patch('google.cloud.bigquery.Client'):\n"
+        "        assert True\n",
+        encoding="utf-8",
+    )
+    ok_good, err_good = orch._verify_no_self_mocking_in_diff(
+        sample_u0_diff, ["tests/test_utils_good.py"], str(tmp_path)
+    )
+    assert ok_good is True
+    assert err_good == ""
+
+    # 3. Strip machine REVIEW_VERDICT_JSON from human-facing PR comment after Pydantic parse
+    raw_review = (
+        "### Review Summary\nAll edge cases covered.\n\n"
+        "### REVIEW_VERDICT_JSON\n"
+        "```json\n"
+        '{\n  "decision": "APPROVE",\n  "blocking_findings": []\n}\n'
+        "```\n\n"
+        "VERDICT: PASS"
+    )
+    parsed = orch._parse_review_verdict(raw_review)
+    assert parsed.decision == "APPROVE"
+    cleaned_display = orch._strip_verdict_json_for_display(raw_review)
+    assert '"decision": "APPROVE"' not in cleaned_display
+    assert "VERDICT: PASS" in cleaned_display
+    assert "All edge cases covered." in cleaned_display
+
+    # 4. Verify pinned config files exist and are valid
+    assert Path("deploy/agent_automation/pinned/ruff.pinned.toml").is_file()
+    assert Path("deploy/agent_automation/pinned/pytest.pinned.ini").is_file()
+
+
+

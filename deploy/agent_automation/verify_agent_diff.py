@@ -58,17 +58,28 @@ def main() -> None:
     import shutil
     ruff_bin = shutil.which("./.venv/bin/ruff") or shutil.which("/opt/venv/bin/ruff") or shutil.which("ruff") or "ruff"
     pytest_bin = shutil.which("./.venv/bin/pytest") or shutil.which("/opt/venv/bin/pytest") or shutil.which("pytest") or "pytest"
+    pinned_ruff = "/opt/pinned/ruff.pinned.toml" if os.path.exists("/opt/pinned/ruff.pinned.toml") else None
+    pinned_pytest = "/opt/pinned/pytest.pinned.ini" if os.path.exists("/opt/pinned/pytest.pinned.ini") else None
 
-    py_changed = [f for f in changed_files if f.endswith(".py")]
+    py_changed = [f for f in changed_files if f.endswith(".py") and os.path.exists(f)]
     if py_changed:
-        print(f"Running Ruff linter on modified files: {py_changed} ({ruff_bin})...")
-        subprocess.run([ruff_bin, "check", "--select", "E9,F63,F7,F82"] + py_changed, check=True)
+        ruff_args = [ruff_bin, "check"]
+        if pinned_ruff:
+            ruff_args.extend(["--config", pinned_ruff])
+        else:
+            ruff_args.extend(["--select", "E9,F63,F7,F82"])
+        ruff_args.extend(py_changed)
+        print(f"Running Ruff linter on modified files (LINT_SCOPE=diff): {py_changed} ({ruff_args})...")
+        subprocess.run(ruff_args, check=True)
 
-    print(f"Running offline pytest suite ({pytest_bin})...")
-    subprocess.run([pytest_bin, "-m", "not integration", "--strict-markers"], check=True)
+    pytest_args = [pytest_bin]
+    if pinned_pytest:
+        pytest_args.extend(["--rootdir=.", "--override-ini=addopts=", "-c", pinned_pytest])
+    pytest_args.extend(["-m", "not integration", "--strict-markers"])
+    print(f"Running offline pytest suite ({pytest_args})...")
+    subprocess.run(pytest_args, check=True)
 
     print("Running Node calculator & pricing parity tests...")
-    import os
     if os.path.exists("docs/PRICING_CALCULATOR_SPEC.md"):
         subprocess.run(["/usr/bin/env", "node", "scripts/sync_pricing.js", "--check"], check=True)
     subprocess.run(["/usr/bin/env", "node", "tests/test_calculator_engine.js"], check=True)
