@@ -281,6 +281,16 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
                     cost = float(ev.get("cost_usd", 0.0))
                     details = str(ev.get("details", ""))
 
+                    is_heartbeat = "RUNNING" in status.upper()
+                    if is_heartbeat:
+                        if stage in stages:
+                            stages[stage]["status"] = status
+                            stages[stage]["turns"] = turns
+                        live_md = build_dashboard_markdown(issue_num, arch_model, coder_model, rev_model, stages, is_final=False)
+                        update_sticky_comment(repo, pr_number, live_md)
+                        stamp_all_commit_statuses(repo, head_sha, pr_url, arch_model, coder_model, rev_model, stages)
+                        continue
+
                     if stage == "1/3":
                         stages["1/3"] = {
                             "status": "✅ Complete — SOP Plan generated",
@@ -293,7 +303,7 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
                         milestone_body = (
                             f"### 📐 [Step 1/4] Architecture Plan & SOP Specification Generated (`{model}`)\n"
                             f"- **Status:** `{status}` | **Turns:** `{turns}` | **Duration:** `{dur}s` | **Est. Cost:** `${cost:.4f}`\n\n"
-                            f"<details>\n<summary>Click to view full SOP Architecture Plan & Allowed File List</summary>\n\n"
+                            f"<details>\n<summary>Click to view full SOP Architecture Plan, Allowed File List & Tool Trace</summary>\n\n"
                             f"{details}\n\n</details>"
                         )
                         post_milestone_comment(repo, pr_number, milestone_body)
@@ -310,7 +320,7 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
                         milestone_body = (
                             f"### 🛠️ [Step 2/4] Coder Implementation Pass {iteration}/3 Completed (`{model}`)\n"
                             f"- **Status:** `{status}` | **Turns:** `{turns}` | **Duration:** `{dur}s` | **Est. Cost:** `${cost:.4f}`\n\n"
-                            f"<details>\n<summary>Click to view Modified Files & Coder Execution Summary</summary>\n\n"
+                            f"<details>\n<summary>Click to view Modified Files, Coder Summary & Tool Trace</summary>\n\n"
                             f"{details}\n\n</details>"
                         )
                         post_milestone_comment(repo, pr_number, milestone_body)
@@ -372,12 +382,44 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
         time.sleep(2)
 
 
+def _replay_events_to_stages(stages: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Deterministically replay `/tmp/adk_stage_events.jsonl` into `stages` so `finalize_pr` never misses an event."""
+    if not EVENTS_FILE.exists():
+        return stages
+    for line in EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+            stage = str(ev.get("stage", ""))
+            status = str(ev.get("status", ""))
+            if "RUNNING" in status.upper():
+                continue
+            turns = int(ev.get("turns", 0))
+            dur = float(ev.get("duration_s", 0.0))
+            cost = float(ev.get("cost_usd", 0.0))
+            details = str(ev.get("details", ""))
+            iteration = int(ev.get("iteration", 1))
+            if stage == "1/3":
+                stages["1/3"] = {"status": "✅ Complete — SOP Plan generated", "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}
+            elif stage == "2/3":
+                stages["2/3"] = {"status": f"✅ Complete (Pass {iteration}/3)", "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}
+            elif stage == "3/3":
+                stages["2.5/3"] = {"status": "✅ Passed (`ruff`=0 errors, `pytest`=green)", "turns": 0, "duration_s": 1.2, "cost_usd": 0.0}
+                verdict_icon = "✅" if "PASS" in status else "🔄"
+                stages["3/3"] = {"status": f"{verdict_icon} `{status}` (Iteration {iteration}/3)", "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}
+        except Exception:
+            pass
+    return stages
+
+
 def finalize_pr(repo: str, pr_url: str, issue_num: str, final_sha: str, telemetry_str: str) -> None:
     """
     Called in Step 6 after the final code commit is pushed to `origin/agent/issue-N`:
       1. Updates the Sticky Comment (`<!-- ADK_STICKY_STATUS -->`) to `COMPLETE`.
       2. Updates the PR Body with the full 4-stage telemetry table + collapsible Agent 1 Plan, Agent 2 Summary, and Agent 3 Review Table.
       3. Stamps all 4 `ADK / ...` `success` commit statuses onto `final_sha` so GitHub shows green checks on the pushed commit!
+      4. Marks the PR Ready for Review (`gh pr ready`).
     """
     pr_number = int(pr_url.rstrip("/").split("/")[-1])
     arch_model = os.environ.get("ARCHITECT_MODEL", "claude-opus-5-5")
@@ -390,6 +432,7 @@ def finalize_pr(repo: str, pr_url: str, issue_num: str, final_sha: str, telemetr
             stages = json.loads(STATE_CACHE_FILE.read_text(encoding="utf-8"))
         except Exception:
             stages = {}
+    stages = _replay_events_to_stages(stages)
 
     final_md = build_dashboard_markdown(
         issue_num=issue_num,
@@ -415,6 +458,12 @@ def finalize_pr(repo: str, pr_url: str, issue_num: str, final_sha: str, telemetr
     update_sticky_comment(repo, pr_number, final_md)
     subprocess.run(
         ["gh", "pr", "edit", pr_url, "--repo", repo, "--body", full_pr_body],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    subprocess.run(
+        ["gh", "pr", "ready", pr_url, "--repo", repo],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,

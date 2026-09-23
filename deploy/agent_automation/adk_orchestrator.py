@@ -82,6 +82,23 @@ def _emit_pr_stage_event(
         print(f"[StageEvent Warning] Could not write stage event: {exc}")
 
 
+def _summarize_tool_input(tool_name: str, tool_input: Any) -> str:
+    """Create a concise, single-line summary of a Claude Code tool invocation for live logs and PR traces."""
+    if not isinstance(tool_input, dict):
+        return f"{tool_name}()"
+    if "file_path" in tool_input:
+        return f"{tool_name}({tool_input['file_path']})"
+    if "path" in tool_input and "pattern" in tool_input:
+        return f"{tool_name}(pattern={tool_input['pattern']!r}, path={tool_input['path']!r})"
+    if "pattern" in tool_input:
+        return f"{tool_name}(pattern={tool_input['pattern']!r})"
+    if "command" in tool_input:
+        cmd_str = str(tool_input["command"]).strip().replace("\n", " ")
+        return f"{tool_name}({cmd_str[:80]})"
+    keys = list(tool_input.keys())[:2]
+    return f"{tool_name}({', '.join(f'{k}={tool_input[k]!r}' for k in keys)})"
+
+
 def _run_claude_cli(
     prompt: str,
     model: str,
@@ -89,10 +106,14 @@ def _run_claude_cli(
     disallowed_tools: List[str],
     max_turns: int = 25,
     accept_edits: bool = False,
+    stage_id: str = "",
+    agent_label: str = "",
 ) -> Tuple[str, int, float, float]:
     """
-    Invoke the native `claude -p` CLI binary synchronously with `shell=False` and stdin piping.
-    Returns (result_text, num_turns, duration_sec, cost_usd).
+    Invoke the native `claude -p` CLI binary with `--output-format stream-json --verbose` (`shell=False`).
+    Streams turn-by-turn tool invocations to Cloud Logging in real time, emits live PR progress heartbeats,
+    and appends a chronological Tool Execution Trace + Token Cache summary to `result_text`.
+    Returns (enriched_result_text, num_turns, duration_sec, cost_usd).
     """
     env = {
         "PATH": "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin",
@@ -110,7 +131,8 @@ def _run_claude_cli(
         "--max-turns",
         str(max_turns),
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
     ]
     if accept_edits:
         cmd.extend(["--permission-mode", "acceptEdits"])
@@ -121,28 +143,90 @@ def _run_claude_cli(
         cmd.append("--disallowedTools")
         cmd.extend(disallowed_tools)
 
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else None,
         env=env,
-        check=False,
+        text=True,
+        bufsize=1,
     )
 
-    raw_out = proc.stdout.decode("utf-8", errors="replace").strip()
-    try:
-        payload: Dict[str, Any] = json.loads(raw_out)
-        result_text = str(payload.get("result") or "")
-        turns = int(payload.get("num_turns") or 1)
-        dur_s = round(float(payload.get("duration_ms") or 0.0) / 1000.0, 1)
-        cost = float(payload.get("total_cost_usd") or 0.0)
-        return result_text, turns, dur_s, cost
-    except Exception:
-        if proc.returncode != 0:
-            err_out = proc.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"claude CLI ({model}) exited {proc.returncode}: {err_out[:500]}")
-        return raw_out, 1, 0.0, 0.0
+    tool_trace: List[str] = []
+    result_payload: Dict[str, Any] = {}
+    assistant_texts: List[str] = []
+    turn_idx = 0
+
+    assert proc.stdout is not None
+    for raw_line in proc.stdout:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+
+        ev_type = ev.get("type")
+        if ev_type == "assistant":
+            msg = ev.get("message", {})
+            content_list = msg.get("content", []) if isinstance(msg, dict) else []
+            for item in content_list:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "tool_use":
+                    turn_idx += 1
+                    t_name = str(item.get("name", "Tool"))
+                    t_summary = _summarize_tool_input(t_name, item.get("input"))
+                    tool_trace.append(f"`{turn_idx}. {t_summary}`")
+                    print(f"   ↳ [{agent_label or model} | Tool #{turn_idx}] 🔧 {t_summary}", flush=True)
+                    if stage_id and (turn_idx == 1 or turn_idx % 3 == 0):
+                        _emit_pr_stage_event(
+                            stage=stage_id,
+                            agent_name=agent_label or model,
+                            model=model,
+                            status=f"🔄 Running (Tool #{turn_idx}: {t_name})",
+                            turns=turn_idx,
+                            duration_s=0.0,
+                            cost_usd=0.0,
+                            iteration=1,
+                            details="",
+                        )
+                elif item.get("type") == "text" and item.get("text"):
+                    assistant_texts.append(str(item["text"]))
+        elif ev_type == "result":
+            result_payload = ev
+
+    proc.wait()
+    if result_payload:
+        result_text = str(result_payload.get("result") or ("\n".join(assistant_texts[-2:]) if assistant_texts else ""))
+        turns = int(result_payload.get("num_turns") or max(turn_idx, 1))
+        dur_s = round(float(result_payload.get("duration_ms") or 0.0) / 1000.0, 1)
+        cost = float(result_payload.get("total_cost_usd") or 0.0)
+        usage = result_payload.get("usage", {}) if isinstance(result_payload.get("usage"), dict) else {}
+        in_tok = int(usage.get("input_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+
+        trace_block = ""
+        if tool_trace or in_tok or cache_read or out_tok:
+            trace_lines = [
+                "\n\n---",
+                f"#### 🔬 Agent Execution Telemetry (`{model}`)",
+                f"- **Turns:** `{turns}` | **Wall Time:** `{dur_s}s` | **Est. Cost:** `${cost:.4f}`",
+                f"- **Token Usage:** `Input: {in_tok:,}` | `Prompt Cache Read: {cache_read:,}` | `Output: {out_tok:,}`",
+            ]
+            if tool_trace:
+                trace_lines.append(f"- **Chronological Tool Trace ({len(tool_trace)} calls):** " + " $\\rightarrow$ ".join(tool_trace[:25]))
+            trace_block = "\n".join(trace_lines)
+
+        return result_text + trace_block, turns, dur_s, cost
+
+    if proc.returncode != 0:
+        err_out = proc.stderr.read().strip() if proc.stderr else ""
+        raise RuntimeError(f"claude CLI ({model}) exited {proc.returncode}: {err_out[:500]}")
+    return "\n".join(assistant_texts), max(turn_idx, 1), 0.0, 0.0
 
 
 def _collect_workspace_diff() -> str:
@@ -395,6 +479,8 @@ You MUST output your response in the following standardized SOP structure:
             ["Edit", "Write", "Bash", "WebFetch", "WebSearch"],
             12,
             False,
+            "1/3",
+            "ArchitectAgent",
         )
 
         sop_meta = _extract_sop_metadata(plan_text)
@@ -509,6 +595,8 @@ Before finishing, execute `./.venv/bin/pytest -q {test_hint}` and `./.venv/bin/r
             ],
             30,
             True,
+            "2/3",
+            f"CoderAgent (Pass {iteration})",
         )
 
         delta = {
@@ -633,6 +721,8 @@ End your response with EXACTLY one of:
             ["Edit", "Write", "Bash", "WebFetch", "WebSearch"],
             6,
             False,
+            "3/3",
+            f"ReviewerAgent (Pass {iteration})",
         )
 
         approved = "VERDICT: PASS" in review_text and "VERDICT: REVISE" not in review_text
