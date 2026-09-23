@@ -88,3 +88,12 @@ jobs:
           if "VERDICT: FAIL" in report:
               raise SystemExit("FATAL: Claude Opus 5.5 Second-Gate Security Audit returned VERDICT: FAIL")
           EOF
+
+      - name: Promote Draft PR to Ready for Review upon Security Pass
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh pr ready "$PR_NUMBER" --repo "$GH_REPO" || true
