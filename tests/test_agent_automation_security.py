@@ -120,7 +120,7 @@ def test_verify_agent_diff_blocks_protected_paths():
     with patch.object(
         diff_gate.subprocess,
         "check_output",
-        return_value=b" M .github/workflows/ci.yml\n M src/main.py\n",
+        return_value=b".github/workflows/ci.yml\0src/main.py\0",
     ):
         with pytest.raises(SystemExit) as exc:
             diff_gate.main()

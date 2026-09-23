@@ -143,11 +143,12 @@ def verify_and_lock_issue(
     )
 
     # 2. Fetch fresh issue state and up to 100 timeline events AFTER lock is held
-    fresh_issue: Dict[str, Any] = _gh_api_request(
+    fetched_issue = _gh_api_request(
         "GET",
         f"https://api.github.com/repos/{repo}/issues/{issue_num}",
         gh_pat,
-    ) or issue
+    )
+    fresh_issue: Dict[str, Any] = fetched_issue if isinstance(fetched_issue, dict) else issue
     events_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/events?per_page=100"
     events: List[Dict[str, Any]] = _gh_api_request("GET", events_url, gh_pat) or []
 

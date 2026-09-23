@@ -46,7 +46,7 @@ def main() -> None:
         sys.exit("ABORT: Agent produced zero file changes.")
 
     for path in changed_files:
-        norm_path = os.path.normpath(path).lstrip("./")
+        norm_path = os.path.normpath(path).replace("\\", "/").removeprefix("./")
         for prefix in FORBIDDEN_PATHS:
             clean_prefix = prefix.rstrip("/")
             if norm_path == clean_prefix or norm_path.startswith(clean_prefix + "/"):
