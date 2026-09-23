@@ -3,29 +3,26 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
-# Install git, curl, nodejs/npm (for Claude Code CLI & calculator tests), gh CLI, and gcloud SDK
+# Install git, curl, ca-certificates, gh CLI, and Node.js 22 (required by @anthropic-ai/claude-code)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
     gnupg \
-    nodejs \
-    npm \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
-    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list \
-    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
-    && apt-get update && apt-get install -y --no-install-recommends gh google-cloud-cli \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs gh \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Pre-create virtual environment with project dependencies so offline worker runs need zero pip network access
-COPY requirements.txt requirements-dev.txt /tmp/
+# Pre-create virtual environment with project dependencies, pytest, and ruff
+COPY requirements.txt /tmp/
 RUN python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt -r /tmp/requirements-dev.txt requests
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt pytest ruff
 
 COPY deploy/agent_automation/poller.py /app/poller.py
 COPY deploy/agent_automation/verify_issue_actor.py /app/verify_issue_actor.py

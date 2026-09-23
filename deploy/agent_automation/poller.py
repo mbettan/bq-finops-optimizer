@@ -77,6 +77,55 @@ def _gh_api_request(
         return json.loads(raw) if raw.strip() else None
 
 
+def dispatch_worker_job(project_id: str, region: str, worker_job: str, issue_num: int, repo: str) -> None:
+    token_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+    token_req = urllib.request.Request(token_url, headers={"Metadata-Flavor": "Google"})
+    access_token = None
+    try:
+        with urllib.request.urlopen(token_req, timeout=5) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+            access_token = token_data.get("access_token")
+    except Exception as e:
+        print(f"[Notice] Metadata server unreachable ({e}); falling back to gcloud CLI.")
+
+    if access_token:
+        run_url = f"https://run.googleapis.com/v2/projects/{project_id}/locations/{region}/jobs/{worker_job}:run"
+        payload = {
+            "overrides": {
+                "containerOverrides": [
+                    {
+                        "env": [
+                            {"name": "TARGET_ISSUE_NUMBER", "value": str(issue_num)},
+                            {"name": "GITHUB_REPO", "value": repo},
+                        ]
+                    }
+                ]
+            }
+        }
+        req = urllib.request.Request(
+            run_url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print(f"[Issue #{issue_num}] Dispatched Cloud Run job via REST API: HTTP {resp.status}")
+    else:
+        subprocess.run(
+            [
+                "gcloud", "run", "jobs", "execute", worker_job,
+                f"--project={project_id}",
+                f"--region={region}",
+                f"--update-env-vars=TARGET_ISSUE_NUMBER={issue_num},GITHUB_REPO={repo}",
+                "--async",
+            ],
+            check=True,
+        )
+
+
 def verify_and_lock_issue(
     issue: Dict[str, Any],
     repo: str,
@@ -177,16 +226,7 @@ def main() -> None:
         issue_num = int(issue["number"])
         if verify_and_lock_issue(issue, cfg["repo"], cfg["gh_pat"], cfg["worker_job"]):
             print(f"[Issue #{issue_num}] Verified & locked. Dispatching Cloud Run Worker Job...")
-            subprocess.run(
-                [
-                    "/usr/bin/env", "gcloud", "run", "jobs", "execute", cfg["worker_job"],
-                    f"--project={cfg['project_id']}",
-                    f"--region={cfg['region']}",
-                    f"--update-env-vars=TARGET_ISSUE_NUMBER={issue_num},GITHUB_REPO={cfg['repo']}",
-                    "--async",
-                ],
-                check=True,
-            )
+            dispatch_worker_job(cfg["project_id"], cfg["region"], cfg["worker_job"], issue_num, cfg["repo"])
 
 
 if __name__ == "__main__":
