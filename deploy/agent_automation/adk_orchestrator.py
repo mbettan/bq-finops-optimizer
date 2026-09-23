@@ -917,13 +917,17 @@ def _run_executable_feedback_gate(
         if pinned_cov:
             pytest_cmd.append(f"--cov-config={pinned_cov}")
     pytest_cmd.extend(["-q", "--tb=short", *test_targets])
+    pytest_env = {**os.environ, "COVERAGE_FILE": "/tmp/.adk_coverage"}
     pytest_proc = subprocess.run(
         pytest_cmd,
         cwd=cwd,
+        env=pytest_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
     )
+    for cov_artifact in Path(cwd).glob(".coverage*"):
+        cov_artifact.unlink(missing_ok=True)
     pytest_out = pytest_proc.stdout.decode("utf-8", errors="replace").strip()
     if pytest_proc.returncode != 0:
         return (

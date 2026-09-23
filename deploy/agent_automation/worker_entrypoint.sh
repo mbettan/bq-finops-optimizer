@@ -63,7 +63,7 @@ export INITIAL_PR_SHA
 
 ln -sfn /opt/venv /workspace/.venv
 mkdir -p /workspace/.git/info
-printf "\n.venv\n.claude/\n.tmp*\n" >> /workspace/.git/info/exclude
+printf "\n.venv\n.claude/\n.tmp*\n.coverage*\n" >> /workspace/.git/info/exclude
 export PATH="/opt/venv/bin:${PATH}"
 
 echo "=== [3/6] Executing Google ADK 3-Agent Pipeline (Architect Opus 5.5 -> Loop[Coder Sonnet 5 <-> Reviewer Opus 5.5]) ==="
@@ -163,7 +163,7 @@ echo "=== [4/6] Running Outer Deterministic Security & Test Gate ==="
 python3 /app/verify_agent_diff.py
 
 echo "=== [5/6] Pushing Isolated Branch with GAS Provenance Commit Trailers ==="
-rm -f /workspace/.venv
+rm -f /workspace/.venv /workspace/.coverage*
 git config user.name "bq-finops-agent"
 git config user.email "bq-finops-agent@users.noreply.github.com"
 git add -A
