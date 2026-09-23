@@ -486,6 +486,38 @@ def test_gas_diff_coverage_base_conftests_import_check_and_provenance(tmp_path):
     assert "ADK-Diff-Coverage:" in entrypoint_text
     assert "agent:generated,adk:verified,gate:passed" in entrypoint_text
 
+    # 5. Verify #6 GAS 4-Lens Spec-Blind Review (lenses.pinned.yaml + REGRESSION/OPERABILITY schema)
+    assert Path("deploy/agent_automation/pinned/lenses.pinned.yaml").is_file()
+    lens_review_json = '''
+```json
+{
+  "decision": "REQUEST_CHANGES",
+  "lens_verdicts": {
+    "CORRECTNESS": "PASS",
+    "SECURITY": "PASS",
+    "REGRESSION": "REJECT",
+    "OPERABILITY": "PASS"
+  },
+  "blocking_findings": [
+    {
+      "file_path": "src/utils.py",
+      "line_start": 100,
+      "line_end": 105,
+      "category": "REGRESSION",
+      "critique": "Changed default parameter value for existing caller.",
+      "actionable_remediation": "Restore default parameter value."
+    }
+  ]
+}
+```
+VERDICT: REVISE
+'''
+    v6 = orch._parse_review_verdict(lens_review_json)
+    assert v6.decision == "REQUEST_CHANGES"
+    assert v6.lens_verdicts["REGRESSION"] == "REJECT"
+    assert v6.blocking_findings[0].category == "REGRESSION"
+
+
 
 
 

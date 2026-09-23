@@ -53,22 +53,31 @@ PRE_TOOL_HOOK_SCRIPT = Path("/tmp/adk_pre_tool_hook.py")
 
 
 class DefectFinding(BaseModel):
-    """Structured defect finding emitted by ReviewerAgent (Paper Sec. 3, p. 9)."""
+    """Structured defect finding emitted by ReviewerAgent (Paper Sec. 3, p. 9 + GAS lenses.yaml)."""
 
     file_path: str = Field(description="Relative path of file containing the defect.")
     line_start: int = Field(default=1, description="First line of the offending code block.")
     line_end: int = Field(default=1, description="Last line of the offending code block.")
-    category: Literal["SECURITY", "CORRECTNESS", "MAINTAINABILITY"] = Field(
-        default="CORRECTNESS", description="Defect class."
+    category: Literal["CORRECTNESS", "SECURITY", "REGRESSION", "OPERABILITY", "MAINTAINABILITY"] = Field(
+        default="CORRECTNESS", description="GAS Review Lens category."
     )
     critique: str = Field(description="Specific technical description of why the code is unacceptable.")
     actionable_remediation: str = Field(description="Clear instruction detailing the required code change.")
 
 
 class ArchitecturalReviewVerdict(BaseModel):
-    """Strictly validated Pydantic review verdict schema (Paper Sec. 3, p. 9)."""
+    """Strictly validated Pydantic review verdict schema (Paper Sec. 3, p. 9 + GAS 4-Lens Spec-Blind Review)."""
 
     decision: Literal["APPROVE", "REQUEST_CHANGES"] = Field(description="Review determination.")
+    lens_verdicts: Dict[str, Literal["PASS", "REJECT"]] = Field(
+        default_factory=lambda: {
+            "CORRECTNESS": "PASS",
+            "SECURITY": "PASS",
+            "REGRESSION": "PASS",
+            "OPERABILITY": "PASS",
+        },
+        description="Per-lens verdict across the 4 GAS Spec-Blind Review lenses.",
+    )
     blocking_findings: List[DefectFinding] = Field(
         default_factory=list, description="List of blocking defects."
     )
@@ -1326,14 +1335,16 @@ class ReviewerAgent(BaseAgent):
 
         print(f"🔍 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] Auditing diff (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
 
-        reviewer_prompt = f"""You are Agent 3 (Adversarial Code & Security Reviewer, {REVIEWER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
+        reviewer_prompt = f"""You are Agent 3 (Independent Spec-Blind Code & Security Reviewer, {REVIEWER_MODEL}) in a MetaGPT + GAS 3-agent Google ADK pipeline.
+Per `GAS` Spec-Blind Policy (`/opt/pinned/lenses.pinned.yaml`), you receive ONLY the acceptance specification (`<architect_sop_plan>`), deterministic gate receipts (`<executable_feedback_status>`), and the unified `<git_diff>` — never the author's (`CoderAgent`) own reasoning, prompt, or history.
 Deterministic Pre-Review Executable Feedback has ALREADY PASSED (`{exec_summary}`).
 Note: Outer Step 4 (`verify_agent_diff.py`) deterministically executes the full `CLAUDE.md` §2 offline gate suite (`pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -m "not integration" --strict-markers`, `ruff check --config /opt/pinned/ruff.pinned.toml`, `sync_docs_bundle.sh`, and `node tests/test_calculator_engine.js`) prior to `git push`.
-Inspect the git diff against Agent 1's SOP Architecture Plan and our security invariants:
-1. COMPLETENESS & EDGE CASES: Does the diff implement every requirement, type annotation, and edge case in `<architect_sop_plan>`?
-2. DATA-PLANE ISOLATION: Ensure zero references to `bigquery.tables.getData` or direct queries on user tables.
-3. PROTECTED PATHS & SCOPE: Ensure modifications adhere to `{sop_allowed_files}` and never touch `.github/`, `deploy/`, `Dockerfile`, `CLAUDE.md`, or `tests/conftest.py`.
-4. SECURITY: Ensure no SSRF, command injection, unescaped innerHTML, or credential leaks.
+
+Evaluate the diff across all 4 `GAS` Spec-Blind Review Lenses (`/opt/pinned/lenses.pinned.yaml`):
+1. **LENS 1 — `CORRECTNESS`:** Does the diff implement every requirement, mathematical formula, type annotation, and boundary/edge case (`None`, `NaN`, `bool`, `inf`, negative numbers) in `<architect_sop_plan>`?
+2. **LENS 2 — `SECURITY`:** Ensure zero references to `bigquery.tables.getData`, strict adherence to `{sop_allowed_files}` (zero protected paths or `*conftest.py` files touched), and no SSRF, command injection, unescaped innerHTML, or credential leaks.
+3. **LENS 3 — `REGRESSION`:** Verify the diff changes ZERO behavior for existing callers who asked for none (no unintended changes to existing function signatures, return types, or untouched code).
+4. **LENS 4 — `OPERABILITY`:** Verify clean docstring contracts, deterministic exception messages, offline testability (`@pytest.mark.usefixtures("mock_bq_all")` if needed), and static bundle parity.
 
 <executable_feedback_status>
 {exec_summary}
@@ -1347,16 +1358,22 @@ Inspect the git diff against Agent 1's SOP Architecture Plan and our security in
 {current_diff[:90000]}
 </git_diff>
 
-Provide a concise Markdown review table, followed by a structured `REVIEW_VERDICT_JSON` block conforming to `ArchitecturalReviewVerdict`:
+Provide a concise 4-row Markdown Lens Review Table (`| GAS Lens | Scope | Verdict | Findings |`), followed by a structured `REVIEW_VERDICT_JSON` block conforming to `ArchitecturalReviewVerdict`:
 ```json
 {{
   "decision": "APPROVE",
+  "lens_verdicts": {{
+    "CORRECTNESS": "PASS",
+    "SECURITY": "PASS",
+    "REGRESSION": "PASS",
+    "OPERABILITY": "PASS"
+  }},
   "blocking_findings": []
 }}
 ```
-(If requesting changes, set `"decision": "REQUEST_CHANGES"` and populate `"blocking_findings"` with `file_path`, `line_start`, `line_end`, `category` ["SECURITY"|"CORRECTNESS"|"MAINTAINABILITY"], `critique`, and `actionable_remediation`.)
+(If requesting changes, set `"decision": "REQUEST_CHANGES"`, mark the failing lens(es) `"REJECT"` in `"lens_verdicts"`, and populate `"blocking_findings"` with `file_path`, `line_start`, `line_end`, `category` ["CORRECTNESS"|"SECURITY"|"REGRESSION"|"OPERABILITY"], `critique`, and `actionable_remediation`.)
 End your response with EXACTLY one of:
-- `VERDICT: PASS` (if the implementation and unit tests are ready for PR)
+- `VERDICT: PASS` (if all 4 lenses pass and the implementation is ready for PR)
 - `VERDICT: REVISE` (followed by specific bullet points for Agent 2 to fix in the next loop iteration)."""
 
         review_text, turns, dur_s, cost = await asyncio.to_thread(

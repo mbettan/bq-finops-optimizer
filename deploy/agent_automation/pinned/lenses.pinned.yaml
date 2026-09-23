@@ -1,0 +1,30 @@
+# Image-baked Spec-Blind Reviewer Lenses (modeled on illya-nau/GAS/config/lenses.yaml & config/lens-instruction/*)
+# Mounted at /opt/pinned/lenses.pinned.yaml (root:root, 0644) outside /workspace.
+spec_blind_policy:
+  description: >-
+    You are an independent Spec-Blind code reviewer. You receive ONLY the acceptance criteria
+    (Architect SOP Plan), deterministic gate receipts, and the unified diff of a proposed change --
+    never the author's (CoderAgent's) own reasoning, prompt, or history.
+
+kinds:
+  chore: [CORRECTNESS]
+  bug: [CORRECTNESS, REGRESSION]
+  feature: [CORRECTNESS, SECURITY, REGRESSION, OPERABILITY]
+
+lenses:
+  CORRECTNESS:
+    instruction: >-
+      Verify that the diff implements every acceptance requirement, mathematical formula,
+      type annotation, and boundary/edge case (None, NaN, bool, inf, negative values).
+  SECURITY:
+    instruction: >-
+      Scoped to SECURITY: injection, authentication/authorization, secrets handling, unsafe
+      deserialization, protected path isolation, and zero bigquery.tables.getData usage.
+  REGRESSION:
+    instruction: >-
+      Scoped to REGRESSION: behaviour the diff changes for a caller who asked for none
+      (unintended modifications to existing signatures, return types, or untouched callers).
+  OPERABILITY:
+    instruction: >-
+      Scoped to OPERABILITY: deterministic exception messages, docstring contracts, offline
+      testability (@pytest.mark.usefixtures("mock_bq_all")), and static bundle parity.
