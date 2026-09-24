@@ -58,10 +58,11 @@ REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "claude-opus-5-5")
 GOLDFISH_MODEL = os.environ.get("GOLDFISH_MODEL", CODER_MODEL)
 GOLDFISH_ENABLED = os.environ.get("GOLDFISH_ENABLED", "true").strip().lower() != "false"
 MAX_REVIEW_LOOPS = int(os.environ.get("MAX_REVIEW_LOOPS", "3"))
-MAX_SESSION_COST_USD = float(os.environ.get("MAX_SESSION_COST_USD", "5.00"))
+MAX_SESSION_COST_USD = float(os.environ.get("MAX_SESSION_COST_USD", "8.00"))
 
 WORKSPACE_DIR = Path("/workspace")
 PROMPT_FILE = Path("/tmp/sanitized_issue_prompt.txt")
+SOP_PLAN_FILE = Path("/tmp/sop_plan.md")
 TELEMETRY_FILE = Path("/tmp/claude_execution_log.json")
 OPUS_REPORT_FILE = Path("/tmp/opus_review_report.md")
 STAGE_EVENTS_FILE = Path("/tmp/adk_stage_events.jsonl")
@@ -1555,6 +1556,11 @@ Do NOT call any tools. Output the standardized SOP structure:
         }
         ctx.session.state.update(delta)
 
+        try:
+            SOP_PLAN_FILE.write_text(plan_text, encoding="utf-8")
+        except Exception as exc:
+            print(f"[SOPPlan Warning] Could not persist SOP plan to {SOP_PLAN_FILE}: {exc}")
+
         print(
             f"✅ [ADK Agent 1: ArchitectAgent] SOP Plan generated ({turns} turns, {dur_s}s, ${cost:.4f}) | "
             f"Allowed files: {sop_meta['sop_allowed_files']}"
@@ -1624,6 +1630,11 @@ The previous iteration did NOT pass verification. Fix ONLY the defects reported 
 Implement the specification in Agent 1's SOP Architecture Plan below.
 Strictly restrict your file edits/creations to `allowed_file_list`: {sop_allowed_files}.
 
+CRITICAL EXECUTION & TURN BUDGET (MAX 50 TURNS):
+- Agent 1's `<architect_sop_plan>` below ALREADY surveyed the codebase and provides exact file paths, line numbers, function signatures, and implementation blueprints.
+- Spend AT MOST 6-8 tool calls reading/grepping files before you begin writing code (`Write` / `Edit`). NEVER spend an entire pass reading files without creating/editing files!
+- Implement ALL required files in `allowed_file_list` ({sop_allowed_files}) — including backend modules, API endpoints, static UI files (and running `./scripts/sync_docs_bundle.sh` if `static/` was modified), AND the complete unit test suite (`{test_hint}`) covering >=80% of all newly added `src/` lines — within this pass.
+
 [AUTHORITATIVE VERIFICATION OVERRIDE]:
 In this automated pipeline, verification is governed strictly by diff-scoped checks (`LINT_SCOPE="diff"`).
 Do NOT run full-repo `./.venv/bin/ruff check .` across untouched files (any conflicting instruction in CLAUDE.md is superseded for this autonomous run).
@@ -1638,6 +1649,30 @@ CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
 2. Run diff-scoped Ruff ONLY on your modified Python files: `./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml {py_allowed_hint}`
 3. NEVER run unfiltered `./.venv/bin/ruff check .` across the entire repository, and NEVER waste turns running `git stash`, `git show HEAD:...`, or inspecting pre-existing warnings in untouched lines/files. Finish immediately once your targeted `pytest` and diff-scoped `ruff` commands pass."""
 
+        coder_allowed_tools = [
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+            "Bash(./.venv/bin/pytest *)",
+            "Bash(./.venv/bin/ruff check *)",
+            "Bash(node tests/test_calculator_engine.js)",
+            "Bash(./scripts/sync_docs_bundle.sh)",
+            "Bash(git status)",
+            "Bash(git diff *)",
+        ]
+        coder_disallowed_tools = [
+            "Bash(curl *)",
+            "Bash(wget *)",
+            "Bash(git push *)",
+            "Bash(gh *)",
+            "Bash(python3 -c *)",
+            "Bash(pip *)",
+            "Bash(npm *)",
+            "WebFetch",
+            "WebSearch",
+        ]
 
         _install_claude_pre_tool_hook(sop_allowed_files)
         try:
@@ -1645,37 +1680,49 @@ CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
                 _run_claude_cli,
                 coder_prompt,
                 CODER_MODEL,
-                [
-                    "Read",
-                    "Edit",
-                    "Write",
-                    "Grep",
-                    "Glob",
-                    "Bash(./.venv/bin/pytest *)",
-                    "Bash(./.venv/bin/ruff check *)",
-                    "Bash(node tests/test_calculator_engine.js)",
-                    "Bash(./scripts/sync_docs_bundle.sh)",
-                    "Bash(git status)",
-                    "Bash(git diff *)",
-                ],
-                [
-                    "Bash(curl *)",
-                    "Bash(wget *)",
-                    "Bash(git push *)",
-                    "Bash(gh *)",
-                    "Bash(python3 -c *)",
-                    "Bash(pip *)",
-                    "Bash(npm *)",
-                    "WebFetch",
-                    "WebSearch",
-                ],
-                30,
+                coder_allowed_tools,
+                coder_disallowed_tools,
+                50,
                 True,
                 "2/3",
                 f"CoderAgent (Pass {iteration})",
             )
         finally:
             _cleanup_claude_pre_tool_hook()
+
+        changed_now = _collect_changed_files(str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else ".")
+        if not changed_now:
+            print(
+                f"⚠️ [ADK Agent 2: CoderAgent] Pass {iteration} produced 0 modified files after {turns} turns. "
+                f"Running immediate write-only recovery pass..."
+            )
+            recovery_prompt = f"""CRITICAL RECOVERY DIRECTIVE:
+You just exhausted {turns} turns reading files without creating or editing ANY files in `/workspace` (`git status` is completely clean)!
+STOP reading/grepping files immediately. Use `Write` and `Edit` RIGHT NOW to implement ALL required files in `allowed_file_list`: {sop_allowed_files}, including the unit test suite (`{test_hint}`), run `./scripts/sync_docs_bundle.sh` if `static/` was modified, and verify with `./.venv/bin/pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -q {test_hint}` and `./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml {py_allowed_hint}`.
+
+<architect_sop_plan>
+{arch_plan}
+</architect_sop_plan>"""
+            _install_claude_pre_tool_hook(sop_allowed_files)
+            try:
+                rec_out, r_turns, r_dur, r_cost = await asyncio.to_thread(
+                    _run_claude_cli,
+                    recovery_prompt,
+                    CODER_MODEL,
+                    coder_allowed_tools,
+                    coder_disallowed_tools,
+                    40,
+                    True,
+                    "2/3",
+                    f"CoderAgent (Pass {iteration} Recovery)",
+                )
+                coder_out = coder_out + "\n\n---\n### Write-First Recovery Pass\n" + rec_out
+                turns += r_turns
+                dur_s = round(dur_s + r_dur, 1)
+                cost += r_cost
+            finally:
+                _cleanup_claude_pre_tool_hook()
+            changed_now = _collect_changed_files(str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else ".")
 
         delta = {
             "loop_iteration": iteration,
@@ -1686,7 +1733,6 @@ CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
         ctx.session.state.update(delta)
 
         print(f"✅ [ADK Agent 2: CoderAgent] Pass {iteration} complete ({turns} turns, {dur_s}s, ${cost:.4f}).")
-        changed_now = _collect_changed_files(str(WORKSPACE_DIR) if WORKSPACE_DIR.exists() else ".")
         _emit_pr_stage_event(
             stage="2/3",
             agent_name=f"Agent 2: CoderAgent (Pass {iteration}/{MAX_REVIEW_LOOPS})",
