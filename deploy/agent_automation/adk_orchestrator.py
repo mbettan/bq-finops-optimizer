@@ -979,28 +979,39 @@ def _run_harness_ruff_autofix(
     """
     `illya-nau/GAS` `src/worker/worker/autofix.py`:
     Deterministic pre-commit lint auto-fix (worker harness, not the agent).
-    Applies `ruff check --fix` + `ruff format` strictly to the `.py` files the agent changed,
-    under the same `/opt/pinned/ruff.pinned.toml` config enforced by the gate, sparing the loop
-    a round-trip on mechanical classes (`I001`, `F401`, `UP`).
+    IMPORTANT (`LINT_SCOPE="diff"` invariant):
+    - NEVER run whole-file `ruff format` or whole-file `ruff check --fix` on existing tracked files
+      present in `base-anchor` (e.g. a 5,600-line `src/main.py`), because formatting an existing file
+      rewrites hundreds of untouched lines across unrelated functions and corrupts `git diff -U0`
+      for the `diff-coverage` gate.
+    - Only run `--fix --select F401,I001` on newly created files (absent from `base-anchor`), sparing
+      the loop a round-trip on unused imports (`F401`) in brand-new modules and test files.
     """
     if not py_files or not Path(ruff_bin).exists():
         return {}
     cfg_args = ["--config", pinned_ruff] if pinned_ruff else []
     try:
-        subprocess.run(
-            [ruff_bin, "check", "--fix", "--output-format=concise", *cfg_args, *py_files],
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        subprocess.run(
-            [ruff_bin, "format", *cfg_args, *py_files],
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        new_py_files: List[str] = []
+        for f in py_files:
+            rc = subprocess.run(
+                ["git", "cat-file", "-e", f"base-anchor:{f}"],
+                cwd=cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ).returncode
+            if rc != 0:
+                new_py_files.append(f)
+
+        if new_py_files:
+            subprocess.run(
+                [ruff_bin, "check", "--fix", "--select", "F401,I001", "--output-format=concise", *new_py_files],
+                cwd=cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+
         check_proc = subprocess.run(
             [ruff_bin, "check", "--output-format=concise", *cfg_args, *py_files],
             cwd=cwd,
@@ -1149,6 +1160,14 @@ def _run_executable_feedback_gate(
     pinned_pytest = "/opt/pinned/pytest.pinned.ini" if Path("/opt/pinned/pytest.pinned.ini").exists() else None
     pinned_cov = "/opt/pinned/coverage.pinned.rc" if Path("/opt/pinned/coverage.pinned.rc").exists() else None
 
+    # 2. GAS Deterministic Pre-Commit Lint Auto-Fix (`src/worker/worker/autofix.py`)
+    #    + Pre-Compilation Syntax / Undefined Names Check (`ruff` with `/opt/pinned/ruff.pinned.toml`)
+    py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
+    if py_files and Path(ruff_bin).exists():
+        autofix_counts = _run_harness_ruff_autofix(py_files, cwd, ruff_bin, pinned_ruff)
+        if autofix_counts:
+            print(f"🧹 [GAS autofix.py] Remaining concise rule counts after harness auto-fix: {dict(autofix_counts)}")
+
     added_lines_map: Dict[str, set] = {}
     try:
         u0_diff = subprocess.check_output(
@@ -1160,14 +1179,7 @@ def _run_executable_feedback_gate(
     except Exception:
         pass
 
-    # 2. GAS Deterministic Pre-Commit Lint Auto-Fix (`src/worker/worker/autofix.py`)
-    #    + Pre-Compilation Syntax / Undefined Names Check (`ruff` with `/opt/pinned/ruff.pinned.toml`)
-    py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
     if py_files and Path(ruff_bin).exists():
-        autofix_counts = _run_harness_ruff_autofix(py_files, cwd, ruff_bin, pinned_ruff)
-        if autofix_counts:
-            print(f"🧹 [GAS autofix.py] Remaining concise rule counts after harness auto-fix: {dict(autofix_counts)}")
-
         ruff_cmd = [ruff_bin, "check", "--output-format=concise"]
         if pinned_ruff:
             ruff_cmd.extend(["--config", pinned_ruff])
@@ -1663,6 +1675,8 @@ CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
             "Bash(git diff *)",
         ]
         coder_disallowed_tools = [
+            "Agent",
+            "Task",
             "Bash(curl *)",
             "Bash(wget *)",
             "Bash(git push *)",
