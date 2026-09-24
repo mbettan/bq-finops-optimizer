@@ -601,3 +601,110 @@ def test_gas_tier_1_autofix_stage_checks_failure_class_and_bot_guard(monkeypatch
 
 
 
+def test_gas_tier_2_work_kind_derivation_and_adaptive_lens_selection(monkeypatch):
+    """
+    GAS Tier 2 #0 — Work-Kind Adaptive Lens Selection (`illya-nau/GAS` `config/lenses.yaml` `kinds:`).
+
+    Two invariants are load-bearing here:
+      1. An unrecognized work_kind must fail SAFE (all 4 lenses), never fail permissive (1 lens).
+      2. Labels outrank the title prefix, because a maintainer relabeling an issue is a
+         deliberate act while a title prefix is whatever the reporter happened to type.
+    """
+    actor = _load_module("verify_issue_actor", "deploy/agent_automation/verify_issue_actor.py")
+
+    assert actor.derive_work_kind({"labels": [{"name": "bug"}], "title": "x"}) == "bug"
+    assert actor.derive_work_kind({"labels": [{"name": "kind:chore"}], "title": "x"}) == "chore"
+    assert actor.derive_work_kind({"labels": [], "title": "chore: bump pins"}) == "chore"
+    assert actor.derive_work_kind({"labels": [], "title": "fix: off-by-one"}) == "bug"
+    # Unclassifiable -> strictest review posture.
+    assert actor.derive_work_kind({"labels": [], "title": "please make it better"}) == "feature"
+    # A label must beat a contradicting title prefix.
+    assert actor.derive_work_kind({"labels": [{"name": "bug"}], "title": "chore: tidy"}) == "bug"
+
+    orch = _load_adk_orchestrator()
+
+    # Exercise the real stdlib YAML reader against the repo copy of the image-baked config,
+    # since /opt/pinned/ only exists inside the container.
+    monkeypatch.setattr(
+        orch, "LENSES_PINNED_FILE", ROOT_DIR / "deploy/agent_automation/pinned/lenses.pinned.yaml"
+    )
+    assert orch._select_lenses_for_work_kind("chore") == ["CORRECTNESS"]
+    assert orch._select_lenses_for_work_kind("bug") == ["CORRECTNESS", "REGRESSION"]
+    assert set(orch._select_lenses_for_work_kind("feature")) == {
+        "CORRECTNESS",
+        "SECURITY",
+        "REGRESSION",
+        "OPERABILITY",
+    }
+    assert len(orch._select_lenses_for_work_kind("not-a-real-kind")) == 4
+
+    # A missing/unreadable pinned file must fall back to the in-code defaults, not crash the run.
+    monkeypatch.setattr(orch, "LENSES_PINNED_FILE", Path("/nonexistent/lenses.pinned.yaml"))
+    assert orch._select_lenses_for_work_kind("chore") == ["CORRECTNESS"]
+    assert len(orch._select_lenses_for_work_kind("feature")) == 4
+
+
+def test_gas_tier_2_goldfish_intake_verdict_parsing_fails_open():
+    """
+    GAS Tier 2 #5 — Goldfish Spec-Completeness Pre-Screen
+    (`illya-nau/GAS` `src/goldfish/goldfish/verdict.py`).
+
+    Goldfish uses `pass`/`refuse`, NOT the reviewer's `pass`/`reject`, and it MUST fail open:
+    a garbled Goldfish turn is an infrastructure problem, and silently blocking a
+    well-specified issue on it would be worse than skipping the gate entirely.
+    """
+    orch = _load_adk_orchestrator()
+
+    refuse = orch._parse_intake_verdict(
+        'preamble\n```json\n{"decision": "refuse", "restatement": "I cannot tell which module changes.",'
+        ' "findings": [{"severity": "blocker", "message": "No target file or module is named."}]}\n```'
+    )
+    assert refuse.decision == "refuse"
+    assert refuse.findings[0].severity == "blocker"
+    assert "which module" in refuse.restatement
+
+    passed = orch._parse_intake_verdict(
+        '```json\n{"decision": "pass", "restatement": "Add a --dry-run flag to cli.py."}\n```'
+    )
+    assert passed.decision == "pass"
+    assert passed.findings == []
+
+    # Plain-text fallback when the model forgets the fence.
+    assert orch._parse_intake_verdict("INTAKE_VERDICT: REFUSE — too vague").decision == "refuse"
+
+    # Garbage, an invalid decision token, and an empty turn must all fail OPEN.
+    assert orch._parse_intake_verdict("the model rambled and produced nothing").decision == "pass"
+    assert orch._parse_intake_verdict('```json\n{"decision": "maybe"}\n```').decision == "pass"
+    assert orch._parse_intake_verdict("").decision == "pass"
+
+
+def test_gas_tier_2_goldfish_surfaces_in_pr_dashboard_and_commit_statuses():
+    """A Goldfish refusal must be visible on the PR, not just in Cloud Logging."""
+    telemetry = _load_module("pr_live_telemetry", "deploy/agent_automation/pr_live_telemetry.py")
+
+    md = telemetry.build_dashboard_markdown(
+        "42",
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        {"0/3": {"status": "🛑 REFUSED — issue underspecified", "model": "claude-sonnet-5", "turns": 1}},
+    )
+    assert "GoldfishAgent" in md
+    assert "REFUSED" in md
+
+    stamped = []
+    with patch.object(telemetry, "set_commit_status", lambda *a, **k: stamped.append(a[2:4])):
+        telemetry.stamp_all_commit_statuses(
+            "o/r", "deadbeef", "https://pr", "a", "b", "c", {"0/3": {"status": "REFUSED (spec_gap)"}}
+        )
+    contexts = dict(stamped)
+    assert contexts["GAS Intake / 0. Goldfish Spec-Completeness"] == "failure"
+
+    # A bypassed run must read green, not sit pending forever.
+    stamped.clear()
+    with patch.object(telemetry, "set_commit_status", lambda *a, **k: stamped.append(a[2:4])):
+        telemetry.stamp_all_commit_statuses(
+            "o/r", "deadbeef", "https://pr", "a", "b", "c",
+            {"0/3": {"status": "SKIPPED (bypassed via `agent:force` label)"}},
+        )
+    assert dict(stamped)["GAS Intake / 0. Goldfish Spec-Completeness"] == "success"

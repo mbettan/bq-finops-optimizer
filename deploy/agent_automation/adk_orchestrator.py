@@ -41,6 +41,8 @@ from pydantic import BaseModel, Field
 ARCHITECT_MODEL = os.environ.get("ARCHITECT_MODEL", "claude-opus-5-5")
 CODER_MODEL = os.environ.get("CODER_MODEL", "claude-sonnet-5")
 REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "claude-opus-5-5")
+GOLDFISH_MODEL = os.environ.get("GOLDFISH_MODEL", CODER_MODEL)
+GOLDFISH_ENABLED = os.environ.get("GOLDFISH_ENABLED", "true").strip().lower() != "false"
 MAX_REVIEW_LOOPS = int(os.environ.get("MAX_REVIEW_LOOPS", "3"))
 MAX_SESSION_COST_USD = float(os.environ.get("MAX_SESSION_COST_USD", "5.00"))
 
@@ -50,6 +52,34 @@ TELEMETRY_FILE = Path("/tmp/claude_execution_log.json")
 OPUS_REPORT_FILE = Path("/tmp/opus_review_report.md")
 STAGE_EVENTS_FILE = Path("/tmp/adk_stage_events.jsonl")
 PRE_TOOL_HOOK_SCRIPT = Path("/tmp/adk_pre_tool_hook.py")
+ISSUE_META_FILE = Path("/tmp/adk_issue_meta.json")
+LENSES_PINNED_FILE = Path("/opt/pinned/lenses.pinned.yaml")
+
+# `illya-nau/GAS` `config/lenses.yaml` fallback when `/opt/pinned/lenses.pinned.yaml` is absent.
+DEFAULT_LENS_KINDS: Dict[str, List[str]] = {
+    "chore": ["CORRECTNESS"],
+    "bug": ["CORRECTNESS", "REGRESSION"],
+    "feature": ["CORRECTNESS", "SECURITY", "REGRESSION", "OPERABILITY"],
+}
+LENS_SCOPES: Dict[str, str] = {
+    "CORRECTNESS": (
+        "Does the diff implement every requirement, mathematical formula, type annotation, and "
+        "boundary/edge case (`None`, `NaN`, `bool`, `inf`, negative numbers) in `<architect_sop_plan>`?"
+    ),
+    "SECURITY": (
+        "Ensure zero references to `bigquery.tables.getData`, strict adherence to the SOP allowed-file "
+        "scope (zero protected paths or `*conftest.py` files touched), and no SSRF, command injection, "
+        "unescaped innerHTML, or credential leaks."
+    ),
+    "REGRESSION": (
+        "Verify the diff changes ZERO behavior for existing callers who asked for none (no unintended "
+        "changes to existing function signatures, return types, or untouched code)."
+    ),
+    "OPERABILITY": (
+        "Verify clean docstring contracts, deterministic exception messages, offline testability "
+        '(`@pytest.mark.usefixtures("mock_bq_all")` if needed), and static bundle parity.'
+    ),
+}
 
 
 class DefectFinding(BaseModel):
@@ -76,11 +106,33 @@ class ArchitecturalReviewVerdict(BaseModel):
             "REGRESSION": "PASS",
             "OPERABILITY": "PASS",
         },
-        description="Per-lens verdict across the 4 GAS Spec-Blind Review lenses.",
+        description="Per-lens verdict across the GAS Spec-Blind Review lenses selected for this work_kind.",
     )
     blocking_findings: List[DefectFinding] = Field(
         default_factory=list, description="List of blocking defects."
     )
+
+
+class IntakeFinding(BaseModel):
+    """
+    `illya-nau/GAS` `src/goldfish/goldfish/verdict.py` `IntakeFinding`:
+    A separate concern the spec does not address. Findings NEVER change the Goldfish decision.
+    """
+
+    severity: Literal["blocker", "major", "minor", "nit"] = Field(default="minor")
+    message: str = Field(description="What the spec fails to address.")
+
+
+class IntakeVerdict(BaseModel):
+    """
+    `illya-nau/GAS` `src/goldfish/goldfish/verdict.py` `IntakeVerdict`:
+    Typed spec-completeness adjudication. `decision` uses `pass`/`refuse` (never the reviewer's
+    `pass`/`reject`). A turn that produces no verdict is treated as `NoIntakeVerdictProducedError`.
+    """
+
+    decision: Literal["pass", "refuse"] = Field(description="Spec completeness determination.")
+    restatement: str = Field(default="", description="The fresh reader's restatement of the spec.")
+    findings: List[IntakeFinding] = Field(default_factory=list)
 
 
 def setup_distributed_observability(repo_name: str, issue_id: str) -> None:
@@ -444,6 +496,76 @@ def _extract_pytest_distance(feedback_report: str) -> Tuple[int, List[str]]:
     if d_test == 0 and "EXECUTABLE FEEDBACK FAILURE" in feedback_report:
         d_test = max(len(failed_nodes), 1)
     return d_test, failed_nodes
+
+
+def _load_issue_meta() -> Dict[str, Any]:
+    """Read `/tmp/adk_issue_meta.json` (written by `verify_issue_actor.py`) with safe defaults."""
+    try:
+        meta = json.loads(ISSUE_META_FILE.read_text(encoding="utf-8"))
+        if isinstance(meta, dict):
+            return meta
+    except Exception:
+        pass
+    return {}
+
+
+def _select_lenses_for_work_kind(work_kind: str) -> List[str]:
+    """
+    `illya-nau/GAS` `config/lenses.yaml` `kinds:` — work-kind adaptive lens selection.
+    `chore: [CORRECTNESS]`, `bug: [CORRECTNESS, REGRESSION]`, `feature: [all 4]`.
+    Parsed from the image-baked `/opt/pinned/lenses.pinned.yaml` with a stdlib-only reader
+    (no PyYAML dependency); an unknown work_kind resolves to the strictest set (all 4 lenses).
+    """
+    kinds: Dict[str, List[str]] = dict(DEFAULT_LENS_KINDS)
+    try:
+        text = LENSES_PINNED_FILE.read_text(encoding="utf-8")
+        block = re.search(r"^kinds:\s*$(.*?)(?=^\S|\Z)", text, flags=re.MULTILINE | re.DOTALL)
+        if block:
+            parsed: Dict[str, List[str]] = {}
+            for line in block.group(1).splitlines():
+                entry = re.match(r"\s+([A-Za-z0-9_-]+):\s*\[([^\]]*)\]\s*$", line)
+                if entry:
+                    names = [n.strip().upper() for n in entry.group(2).split(",") if n.strip()]
+                    if names:
+                        parsed[entry.group(1).strip().lower()] = names
+            if parsed:
+                kinds = parsed
+    except Exception:
+        pass
+
+    selected = kinds.get(str(work_kind or "").strip().lower())
+    if not selected:
+        selected = DEFAULT_LENS_KINDS["feature"]
+    # Only ever return lenses this image carries a pinned scope for, order-stable.
+    valid = [lens for lens in selected if lens in LENS_SCOPES]
+    return valid or DEFAULT_LENS_KINDS["feature"]
+
+
+def _parse_intake_verdict(intake_text: str) -> IntakeVerdict:
+    """
+    `illya-nau/GAS` `src/goldfish/goldfish/goldfish.py`: parse the Goldfish turn into a typed
+    `IntakeVerdict`. The tool call is FORCED — a turn that ends without emitting a verdict is a
+    `NoIntakeVerdictProducedError` equivalent, and free text alone NEVER counts as a verdict.
+    Fail-open to `pass` so a malformed Goldfish turn can never block a well-specified issue.
+    """
+    for match in re.finditer(r"```json\s*(\{.*?\})\s*```", intake_text, flags=re.DOTALL):
+        try:
+            raw_obj = json.loads(match.group(1))
+            if isinstance(raw_obj, dict) and "decision" in raw_obj:
+                raw_obj["decision"] = str(raw_obj.get("decision", "pass")).strip().lower()
+                if raw_obj["decision"] not in ("pass", "refuse"):
+                    continue
+                return IntakeVerdict.model_validate(raw_obj)
+        except Exception:
+            continue
+
+    if re.search(r"INTAKE_VERDICT:\s*REFUSE", intake_text, flags=re.IGNORECASE):
+        return IntakeVerdict(
+            decision="refuse",
+            restatement=intake_text[-2000:],
+            findings=[IntakeFinding(severity="blocker", message="Goldfish refused (unstructured output).")],
+        )
+    return IntakeVerdict(decision="pass", restatement=intake_text[-2000:])
 
 
 def _parse_review_verdict(review_text: str) -> ArchitecturalReviewVerdict:
@@ -1054,6 +1176,159 @@ def _run_executable_feedback_gate(
     return True, summary
 
 
+class GoldfishAgent(BaseAgent):
+    """
+    Agent 0: `illya-nau/GAS` `src/goldfish/goldfish/goldfish.py` Spec-Completeness Pre-Screen.
+
+    A fresh reader who has never seen this project. It is SPEC-BLIND by construction: it receives
+    ONLY `work_kind`, `project_kind`, and `acceptance_criteria` (the escaped issue title + body) --
+    no repository access (`Read`/`Grep`/`Glob` are all disallowed), no wiki block, no skills block,
+    no findings-from-a-previous-run block. It grades only whether the spec itself carries enough
+    information for a stranger to act on.
+
+    On `refuse` it escalates immediately (`EventActions(escalate=True)`), aborting the pipeline in
+    a single turn for ~$0.02 rather than burning the full ~$0.80 Architect -> Coder <-> Reviewer run
+    on an issue no one could implement. Findings never change the decision (GAS `goldfish.md`).
+    """
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        meta = _load_issue_meta()
+        work_kind = str(meta.get("work_kind") or "feature")
+        project_kind = str(meta.get("project_kind") or "python-bigquery-finops-cli")
+        title = str(meta.get("title") or "")
+        criteria = str(meta.get("acceptance_criteria") or "")
+        bypass = bool(meta.get("goldfish_bypass"))
+
+        if not GOLDFISH_ENABLED or bypass or not criteria.strip():
+            reason = (
+                "disabled via GOLDFISH_ENABLED=false"
+                if not GOLDFISH_ENABLED
+                else ("bypassed via `agent:force` label" if bypass else "no acceptance criteria available")
+            )
+            print(f"⏭️ [ADK Agent 0: GoldfishAgent] Skipped ({reason}).")
+            # Emit anyway: the PR dashboard row and the `GAS Intake / 0.` commit status must resolve,
+            # otherwise every bypassed run leaves a permanently pending check on the PR.
+            _emit_pr_stage_event(
+                stage="0/3",
+                agent_name="Agent 0: GoldfishAgent (Spec-Completeness Pre-Screen)",
+                model=GOLDFISH_MODEL,
+                status=f"SKIPPED ({reason})",
+                turns=0,
+                duration_s=0.0,
+                cost_usd=0.0,
+                iteration=1,
+                details=f"**GAS Goldfish Spec-Completeness Pre-Screen:** skipped — {reason}.",
+            )
+            delta = {"goldfish_decision": "pass", "work_kind": work_kind, "goldfish_skipped": True}
+            ctx.session.state.update(delta)
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                content=types.Content(role="model", parts=[types.Part.from_text(text=f"Goldfish skipped ({reason}).")]),
+                actions=EventActions(state_delta=delta),
+            )
+            return
+
+        print(f"🐠 [ADK Agent 0: GoldfishAgent ({GOLDFISH_MODEL})] Spec-completeness pre-screen (work_kind={work_kind})...")
+
+        goldfish_prompt = f"""You are a fresh reader who has never seen this project before.
+You receive a work_kind, a project_kind, and a spec someone wants built. You have NO repository access and MUST NOT ask for any.
+
+Restate the spec in your own words: WHAT changes, WHERE, and HOW you would know it is done.
+If restating it forces you to INVENT any of those three, the spec is incomplete: emit `"decision": "refuse"` and say exactly what you had to invent.
+Otherwise emit `"decision": "pass"`.
+List any separate concerns the spec does not address as `findings`; they do NOT change your decision.
+
+<work_kind>{work_kind}</work_kind>
+<project_kind>{project_kind}</project_kind>
+<acceptance_criteria title="{title}">
+{criteria[:20000]}
+</acceptance_criteria>
+
+Respond with a short restatement followed by EXACTLY one fenced `INTAKE_VERDICT_JSON` block conforming to `IntakeVerdict`:
+```json
+{{
+  "decision": "pass",
+  "restatement": "<one-paragraph restatement: what changes, where, and how you would know it is done>",
+  "findings": [
+    {{"severity": "minor", "message": "<a separate concern the spec does not address>"}}
+  ]
+}}
+```
+(`severity` must be one of `blocker`, `major`, `minor`, `nit`. Free text alone never counts as a verdict — you MUST emit the JSON block.)"""
+
+        intake_text, turns, dur_s, cost = await asyncio.to_thread(
+            _run_claude_cli,
+            goldfish_prompt,
+            GOLDFISH_MODEL,
+            [],
+            ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebFetch", "WebSearch"],
+            2,
+            False,
+            "0/3",
+            "GoldfishAgent",
+        )
+
+        verdict = _parse_intake_verdict(intake_text)
+        refused = verdict.decision == "refuse"
+        findings_md = "\n".join(f"- `{f.severity}` — {f.message}" for f in verdict.findings) or "- _None_"
+        details = (
+            f"**GAS Goldfish Spec-Completeness Pre-Screen** (`work_kind={work_kind}`, `project_kind={project_kind}`)\n\n"
+            f"**Decision:** `{verdict.decision.upper()}`\n\n"
+            f"**Restatement (fresh reader):**\n> {verdict.restatement[:2000]}\n\n"
+            f"**Findings (do not change the decision):**\n{findings_md}"
+        )
+
+        delta: Dict[str, Any] = {
+            "goldfish_decision": verdict.decision,
+            "goldfish_restatement": verdict.restatement,
+            "goldfish_findings": [f.model_dump() for f in verdict.findings],
+            "work_kind": work_kind,
+            "total_turns": int(ctx.session.state.get("total_turns", 0)) + turns,
+            "total_duration_s": round(float(ctx.session.state.get("total_duration_s", 0.0)) + dur_s, 1),
+            "total_cost_usd": float(ctx.session.state.get("total_cost_usd", 0.0)) + cost,
+        }
+
+        _emit_pr_stage_event(
+            stage="0/3",
+            agent_name="Agent 0: GoldfishAgent (Spec-Completeness Pre-Screen)",
+            model=GOLDFISH_MODEL,
+            status="REFUSED (spec_gap)" if refused else "PASSED",
+            turns=turns,
+            duration_s=dur_s,
+            cost_usd=cost,
+            iteration=1,
+            details=details,
+        )
+
+        if refused:
+            hard_break_msg = (
+                "HARD_BREAK [SPEC_GAP]: GAS Goldfish refused the issue specification — a fresh reader "
+                "had to invent what changes, where, or how completion would be verified. "
+                "Terminating before the Architect -> Coder <-> Reviewer pipeline is dispatched."
+            )
+            print(f"🛑 {hard_break_msg}")
+            delta["termination_reason"] = hard_break_msg
+            delta["review_approved"] = False
+            ctx.session.state.update(delta)
+            yield Event(
+                author=self.name,
+                invocation_id=ctx.invocation_id,
+                content=types.Content(role="model", parts=[types.Part.from_text(text=f"{hard_break_msg}\n\n{details}")]),
+                actions=EventActions(state_delta=delta, escalate=True),
+            )
+            return
+
+        print(f"✅ [ADK Agent 0: GoldfishAgent] Spec PASSED ({turns} turns, {dur_s}s, ${cost:.4f}); dispatching pipeline.")
+        ctx.session.state.update(delta)
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.invocation_id,
+            content=types.Content(role="model", parts=[types.Part.from_text(text=details)]),
+            actions=EventActions(state_delta=delta),
+        )
+
+
 class ArchitectAgent(BaseAgent):
     """
     Agent 1: Claude Opus 5.5 Architect implementing MetaGPT Upfront Prompt Expansion (Sec. 4.4, Table 6)
@@ -1441,16 +1716,29 @@ class ReviewerAgent(BaseAgent):
 
         print(f"🔍 [ADK Agent 3: ReviewerAgent ({REVIEWER_MODEL})] Auditing diff (Iteration {iteration}/{MAX_REVIEW_LOOPS})...")
 
+        # GAS `config/lenses.yaml` `kinds:` — work-kind adaptive lens selection.
+        work_kind = str(ctx.session.state.get("work_kind") or _load_issue_meta().get("work_kind") or "feature")
+        active_lenses = _select_lenses_for_work_kind(work_kind)
+        ctx.session.state["active_lenses"] = active_lenses
+        lens_block = "\n".join(
+            f"{i}. **LENS {i} — `{lens}`:** {LENS_SCOPES[lens]}"
+            for i, lens in enumerate(active_lenses, start=1)
+        )
+        lens_json_rows = ",\n".join(f'    "{lens}": "PASS"' for lens in active_lenses)
+        lens_categories = "|".join(f'"{lens}"' for lens in active_lenses)
+        print(
+            f"🔬 [GAS Adaptive Lenses] work_kind=`{work_kind}` → {len(active_lenses)}/4 lenses: {active_lenses}"
+        )
+
         reviewer_prompt = f"""You are Agent 3 (Independent Spec-Blind Code & Security Reviewer, {REVIEWER_MODEL}) in a MetaGPT + GAS 3-agent Google ADK pipeline.
 Per `GAS` Spec-Blind Policy (`/opt/pinned/lenses.pinned.yaml`), you receive ONLY the acceptance specification (`<architect_sop_plan>`), deterministic gate receipts (`<executable_feedback_status>`), and the unified `<git_diff>` — never the author's (`CoderAgent`) own reasoning, prompt, or history.
 Deterministic Pre-Review Executable Feedback has ALREADY PASSED (`{exec_summary}`).
 Note: Outer Step 4 (`verify_agent_diff.py`) deterministically executes the full `CLAUDE.md` §2 offline gate suite (`pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -m "not integration" --strict-markers`, `ruff check --config /opt/pinned/ruff.pinned.toml`, `sync_docs_bundle.sh`, and `node tests/test_calculator_engine.js`) prior to `git push`.
 
-Evaluate the diff across all 4 `GAS` Spec-Blind Review Lenses (`/opt/pinned/lenses.pinned.yaml`):
-1. **LENS 1 — `CORRECTNESS`:** Does the diff implement every requirement, mathematical formula, type annotation, and boundary/edge case (`None`, `NaN`, `bool`, `inf`, negative numbers) in `<architect_sop_plan>`?
-2. **LENS 2 — `SECURITY`:** Ensure zero references to `bigquery.tables.getData`, strict adherence to `{sop_allowed_files}` (zero protected paths or `*conftest.py` files touched), and no SSRF, command injection, unescaped innerHTML, or credential leaks.
-3. **LENS 3 — `REGRESSION`:** Verify the diff changes ZERO behavior for existing callers who asked for none (no unintended changes to existing function signatures, return types, or untouched code).
-4. **LENS 4 — `OPERABILITY`:** Verify clean docstring contracts, deterministic exception messages, offline testability (`@pytest.mark.usefixtures("mock_bq_all")` if needed), and static bundle parity.
+This issue's GAS `work_kind` is `{work_kind}`, which selects exactly {len(active_lenses)} Spec-Blind Review Lens(es) from `/opt/pinned/lenses.pinned.yaml` (`kinds:` map). Evaluate the diff across ONLY these lenses — do NOT report on lenses outside this set:
+{lens_block}
+
+Note on the SOP file scope for this run: `{sop_allowed_files}`.
 
 <executable_feedback_status>
 {exec_summary}
@@ -1464,22 +1752,19 @@ Evaluate the diff across all 4 `GAS` Spec-Blind Review Lenses (`/opt/pinned/lens
 {current_diff[:90000]}
 </git_diff>
 
-Provide a concise 4-row Markdown Lens Review Table (`| GAS Lens | Scope | Verdict | Findings |`), followed by a structured `REVIEW_VERDICT_JSON` block conforming to `ArchitecturalReviewVerdict`:
+Provide a concise {len(active_lenses)}-row Markdown Lens Review Table (`| GAS Lens | Scope | Verdict | Findings |`), followed by a structured `REVIEW_VERDICT_JSON` block conforming to `ArchitecturalReviewVerdict`:
 ```json
 {{
   "decision": "APPROVE",
   "lens_verdicts": {{
-    "CORRECTNESS": "PASS",
-    "SECURITY": "PASS",
-    "REGRESSION": "PASS",
-    "OPERABILITY": "PASS"
+{lens_json_rows}
   }},
   "blocking_findings": []
 }}
 ```
-(If requesting changes, set `"decision": "REQUEST_CHANGES"`, mark the failing lens(es) `"REJECT"` in `"lens_verdicts"`, and populate `"blocking_findings"` with `file_path`, `line_start`, `line_end`, `category` ["CORRECTNESS"|"SECURITY"|"REGRESSION"|"OPERABILITY"], `critique`, and `actionable_remediation`.)
+(If requesting changes, set `"decision": "REQUEST_CHANGES"`, mark the failing lens(es) `"REJECT"` in `"lens_verdicts"`, and populate `"blocking_findings"` with `file_path`, `line_start`, `line_end`, `category` [{lens_categories}], `critique`, and `actionable_remediation`.)
 End your response with EXACTLY one of:
-- `VERDICT: PASS` (if all 4 lenses pass and the implementation is ready for PR)
+- `VERDICT: PASS` (if all {len(active_lenses)} selected lens(es) pass and the implementation is ready for PR)
 - `VERDICT: REVISE` (followed by specific bullet points for Agent 2 to fix in the next loop iteration)."""
 
         review_text, turns, dur_s, cost = await asyncio.to_thread(
@@ -1572,6 +1857,10 @@ End your response with EXACTLY one of:
 
 def build_adk_app() -> App:
     """Construct the Google ADK Sequential + Loop multi-agent application."""
+    goldfish = GoldfishAgent(
+        name="GoldfishAgent",
+        description="GAS spec-blind intake pre-screen that refuses under-specified issues in 1 turn.",
+    )
     architect = ArchitectAgent(
         name="ArchitectAgent",
         description="Claude Opus 5.5 Architect that creates the implementation plan.",
@@ -1594,8 +1883,8 @@ def build_adk_app() -> App:
 
     root_orchestrator = SequentialAgent(
         name="FinOpsIssueOrchestrator",
-        description="End-to-end Architect -> (Coder <-> Reviewer) ADK pipeline.",
-        sub_agents=[architect, code_and_review_loop],
+        description="End-to-end Goldfish -> Architect -> (Coder <-> Reviewer) ADK pipeline.",
+        sub_agents=[goldfish, architect, code_and_review_loop],
     )
 
     return App(name="bq_finops_adk_agent", root_agent=root_orchestrator)
@@ -1610,6 +1899,8 @@ async def run_pipeline() -> None:
     setup_distributed_observability(repo_name=repo_name, issue_id=issue_id)
 
     issue_prompt = PROMPT_FILE.read_text(encoding="utf-8")
+    issue_meta = _load_issue_meta()
+    seed_work_kind = str(issue_meta.get("work_kind") or "feature")
     app = build_adk_app()
     runner = InMemoryRunner(app=app)
 
@@ -1622,6 +1913,9 @@ async def run_pipeline() -> None:
             "app:max_iterations": MAX_REVIEW_LOOPS,
             "app:max_session_cost_usd": MAX_SESSION_COST_USD,
             "issue_prompt": issue_prompt,
+            "work_kind": seed_work_kind,
+            "active_lenses": _select_lenses_for_work_kind(seed_work_kind),
+            "goldfish_decision": "pending",
             "loop_iteration": 0,
             "total_turns": 0,
             "total_duration_s": 0.0,
@@ -1635,7 +1929,11 @@ async def run_pipeline() -> None:
 
     trigger_msg = types.Content(
         role="user",
-        parts=[types.Part.from_text(text="Execute the 3-agent ADK Architect -> Coder <-> Reviewer workflow.")],
+        parts=[
+            types.Part.from_text(
+                text="Execute the GAS/ADK Goldfish -> Architect -> Coder <-> Reviewer workflow."
+            )
+        ],
     )
 
     async for _ in runner.run_async(
@@ -1653,11 +1951,27 @@ async def run_pipeline() -> None:
     state = final_session.state if final_session else session.state
 
     approved = bool(state.get("review_approved", False))
+    goldfish_decision = str(state.get("goldfish_decision", "pass"))
+    goldfish_refused = goldfish_decision == "refuse"
+    active_lenses = list(state.get("active_lenses") or _select_lenses_for_work_kind(seed_work_kind))
     term_reason = str(
         state.get("termination_reason", "VERDICT: PASS" if approved else "MAX_ITERATIONS_EXHAUSTED")
     )
     if approved:
-        fail_class, fail_label, fail_glossary = ("none", "gate:passed", "All GAS/ADK gates and 4-Lens review passed.")
+        fail_class, fail_label, fail_glossary = (
+            "none",
+            "gate:passed",
+            f"All GAS/ADK gates and the {len(active_lenses)}-lens Spec-Blind review passed.",
+        )
+    elif goldfish_refused:
+        # GAS `failure_classification.py`: a Goldfish refusal is `spec_gap` by construction, and
+        # escalates to `agent:needs-clarification` rather than the generic failure label.
+        fail_class, fail_label = "spec_gap", "agent:needs-clarification"
+        fail_glossary = (
+            "Spec Gap (GAS Goldfish): A fresh reader could not restate what changes, where, and how "
+            "completion would be verified without inventing at least one of the three. "
+            "Clarify the issue and re-apply `agent:implement`."
+        )
     else:
         fail_class, fail_label, fail_glossary = classify_failure_cause(term_reason, exit_code=1)
 
@@ -1675,12 +1989,17 @@ async def run_pipeline() -> None:
         "failure_class": fail_class,
         "failure_label": fail_label,
         "failure_glossary": fail_glossary,
+        "work_kind": str(state.get("work_kind") or seed_work_kind),
+        "active_lenses": active_lenses,
+        "goldfish_decision": goldfish_decision,
+        "goldfish_restatement": str(state.get("goldfish_restatement", ""))[:2000],
+        "goldfish_findings": state.get("goldfish_findings", []),
     }
     TELEMETRY_FILE.write_text(json.dumps(telemetry_summary, indent=2), encoding="utf-8")
 
     if not approved:
         sys.exit(
-            f"FATAL [{fail_class} / {fail_label}]: ADK CodeAndReviewLoop terminated without approval ({term_reason}). {fail_glossary}"
+            f"FATAL [{fail_class} / {fail_label}]: ADK pipeline terminated without approval ({term_reason}). {fail_glossary}"
         )
 
 

@@ -92,7 +92,6 @@ handle_worker_exit() {
   if [ "${PIPELINE_SUCCEEDED}" -eq 1 ] || [ "${exit_code}" -eq 0 ]; then
     return 0
   fi
-  echo "⚠️ [GAS State Escalation] Worker exited with code ${exit_code}; transitioning issue #${TARGET_ISSUE_NUMBER} to agent:failed-needs-human..."
   touch /tmp/adk_watcher_stop 2>/dev/null || true
   if [ -n "${WATCHER_PID:-}" ]; then
     wait "${WATCHER_PID}" 2>/dev/null || true
@@ -113,27 +112,81 @@ print(f'{fc}|{fl}|{fg}')
   FAILURE_LABEL=$(echo "${FAILURE_META}" | cut -d'|' -f2)
   FAILURE_GLOSSARY=$(echo "${FAILURE_META}" | cut -d'|' -f3-)
 
-  gh label create "agent:failed-needs-human" --repo "${GITHUB_REPO}" --color "D93F0B" --description "Autonomous Agent escalated to human review" --force >/dev/null 2>&1 || true
-  gh label create "${FAILURE_LABEL}" --repo "${GITHUB_REPO}" --color "B60205" --description "GAS Failure Class: ${FAILURE_CLASS}" --force >/dev/null 2>&1 || true
-  gh issue edit "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --remove-label "agent:in-progress" --add-label "agent:failed-needs-human,${FAILURE_LABEL}" >/dev/null 2>&1 || true
+  # GAS `failure_classification.py`: a `spec_gap` is a request for the human author to sharpen the
+  # issue, NOT an agent crash. It gets an amber `agent:needs-clarification` label and skips the red
+  # `agent:failed-needs-human` state so the triage queue stays honest about what actually broke.
+  if [ "${FAILURE_CLASS}" = "spec_gap" ]; then
+    ESCALATION_LABELS="${FAILURE_LABEL}"
+    LABEL_COLOR="FBCA04"
+    LABEL_DESC="GAS Goldfish: issue spec is underspecified; author action required"
+    STATUS_CONTEXT="GAS Intake / 0. Goldfish Spec-Completeness"
+    echo "🐠 [GAS State Escalation] Goldfish refused issue #${TARGET_ISSUE_NUMBER} as underspecified; transitioning to ${FAILURE_LABEL}..."
+  else
+    ESCALATION_LABELS="agent:failed-needs-human,${FAILURE_LABEL}"
+    LABEL_COLOR="B60205"
+    LABEL_DESC="GAS Failure Class: ${FAILURE_CLASS}"
+    STATUS_CONTEXT="ADK / Pipeline Escalation"
+    echo "⚠️ [GAS State Escalation] Worker exited with code ${exit_code}; transitioning issue #${TARGET_ISSUE_NUMBER} to agent:failed-needs-human..."
+    gh label create "agent:failed-needs-human" --repo "${GITHUB_REPO}" --color "D93F0B" --description "Autonomous Agent escalated to human review" --force >/dev/null 2>&1 || true
+  fi
+
+  gh label create "${FAILURE_LABEL}" --repo "${GITHUB_REPO}" --color "${LABEL_COLOR}" --description "${LABEL_DESC}" --force >/dev/null 2>&1 || true
+  gh issue edit "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --remove-label "agent:in-progress" --add-label "${ESCALATION_LABELS}" >/dev/null 2>&1 || true
   if [ -n "${PR_URL:-}" ]; then
-    gh pr edit "${PR_URL}" --repo "${GITHUB_REPO}" --add-label "agent:failed-needs-human,${FAILURE_LABEL}" >/dev/null 2>&1 || true
+    gh pr edit "${PR_URL}" --repo "${GITHUB_REPO}" --add-label "${ESCALATION_LABELS}" >/dev/null 2>&1 || true
   fi
   if [ -n "${INITIAL_PR_SHA:-}" ]; then
     gh api "repos/${GITHUB_REPO}/statuses/${INITIAL_PR_SHA}" \
       -X POST \
       -f state="failure" \
-      -f context="ADK / Pipeline Escalation" \
+      -f context="${STATUS_CONTEXT}" \
       -f description="[${FAILURE_CLASS}] ${FAILURE_GLOSSARY:0:110}" \
       -f target_url="${PR_URL:-https://github.com/${GITHUB_REPO}}" >/dev/null 2>&1 || true
   fi
-  gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body "🛑 **Google ADK Pipeline Escalated (\`agent:failed-needs-human\` / \`${FAILURE_LABEL}\`)**
+
+  if [ "${FAILURE_CLASS}" = "spec_gap" ]; then
+    # Surface exactly what the spec-blind fresh reader had to invent, so the author knows what to add.
+    python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/claude_execution_log.json'))
+except Exception:
+    d = {}
+restatement = (d.get('goldfish_restatement') or '(no restatement produced)').strip()
+findings = d.get('goldfish_findings') or []
+lines = []
+for f in findings:
+    if not isinstance(f, dict):
+        continue
+    sev = str(f.get('severity', 'minor'))
+    msg = str(f.get('message', '')).strip()
+    if msg:
+        lines.append(f'- \`{sev}\` — {msg}')
+body = '\n'.join(lines) or '- _(no structured findings returned)_'
+print('### 🐠 Fresh-reader restatement attempt\n')
+print('> ' + restatement.replace(chr(10), chr(10) + '> '))
+print('\n### Unanswered questions\n')
+print(body)
+" > /tmp/goldfish_report.md 2>/dev/null || echo "" > /tmp/goldfish_report.md
+    {
+      printf '%s\n\n' "🐠 **GAS Goldfish Spec-Completeness Pre-Screen: \`refuse\`** (\`${FAILURE_LABEL}\`)"
+      printf '%s\n' "A spec-blind fresh reader — no repo access, no wiki, no prior context — read only this issue's acceptance criteria and could not restate *what changes, where, and how we would know it worked*. The pipeline stopped **before** any code was written, so nothing was committed and no budget was spent on implementation."
+      printf '\n'
+      cat /tmp/goldfish_report.md
+      printf '\n%s\n' "---"
+      printf '%s\n' "- **GAS Cause Glossary:** ${FAILURE_GLOSSARY}"
+      printf '%s\n' "- **Action:** Removed \`agent:in-progress\`. Sharpen the acceptance criteria and re-apply \`agent:ready\`, or add the \`agent:force\` label to bypass this gate."
+    } > /tmp/goldfish_comment.md
+    gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body-file /tmp/goldfish_comment.md >/dev/null 2>&1 || true
+  else
+    gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body "🛑 **Google ADK Pipeline Escalated (\`agent:failed-needs-human\` / \`${FAILURE_LABEL}\`)**
 
 - **Draft Pull Request:** ${PR_URL:-N/A}
 - **GAS Failure Classification:** \`${FAILURE_CLASS}\` (\`${FAILURE_LABEL}\`)
 - **GAS Cause Glossary:** ${FAILURE_GLOSSARY}
 - **Exit Code:** \`${exit_code}\`
 - **Action:** Removed \`agent:in-progress\` lock and escalated for human inspection." >/dev/null 2>&1 || true
+  fi
 }
 trap handle_worker_exit EXIT
 

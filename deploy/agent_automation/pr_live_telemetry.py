@@ -109,6 +109,7 @@ def build_dashboard_markdown(
     is_final: bool = False,
 ) -> str:
     """Render the unified Markdown dashboard used by both the Sticky Comment and the PR Body."""
+    s0 = stages.get("0/3", {})
     s1 = stages.get("1/3", {})
     s2 = stages.get("2/3", {})
     s25 = stages.get("2.5/3", {})
@@ -121,6 +122,7 @@ def build_dashboard_markdown(
         cost = f"${st['cost_usd']:.4f}" if "cost_usd" in st else "—"
         return f"| **{step_label}** | {role_label} | `{model}` | {status} | {turns} | {dur} | {cost} |"
 
+    check_0 = "x" if any(k in str(s0.get("status", "")).upper() for k in ("PASS", "COMPLETE", "SKIP", "✅", "⏭")) else " "
     check_1 = "x" if any(k in str(s1.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
     check_2 = "x" if any(k in str(s2.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
     check_25 = "x" if any(k in str(s25.get("status", "")).upper() for k in ("PASS", "COMPLETE", "✅")) else " "
@@ -128,10 +130,14 @@ def build_dashboard_markdown(
 
     header_badge = "✅ **Pipeline Status: COMPLETE (Ready for Review)**" if is_final else "🔄 **Pipeline Status: IN PROGRESS (Live Container Stream)**"
 
+    # GAS runs Goldfish on its own model rung; trust the event payload over any harness default.
+    goldfish_model = str(s0.get("model") or "spec-blind")
+
     sections = [
         f"### 🤖 ADK Multi-Agent Pipeline Status — Issue #{issue_num}",
         header_badge,
         "",
+        f"- [{check_0}] **Agent 0 (Goldfish — spec-completeness pre-screen):** {s0.get('status', '⏳ Reading acceptance criteria...')}",
         f"- [{check_1}] **Agent 1 (Architect — `{arch_model}`):** {s1.get('status', '⏳ Generating Upfront SOP Plan...')}",
         f"- [{check_2}] **Agent 2 (Coder — `{coder_model}`):** {s2.get('status', '⏳ Waiting for SOP Plan...')}",
         f"- [{check_25}] **Step 2.5 (Pre-Review Executable Gate — `ruff` + `pytest`):** {s25.get('status', '⏳ Pending code edits...')}",
@@ -139,10 +145,11 @@ def build_dashboard_markdown(
         "",
         "| Stage | Agent Role | Model | Status | Turns | Duration | Est. Cost |",
         "| :--- | :--- | :--- | :--- | :---: | :---: | :---: |",
-        _row("1/4", "**ArchitectAgent** (Upfront SOP Plan)", arch_model, s1),
-        _row("2/4", "**CoderAgent** (Implementation)", coder_model, s2),
-        _row("3/4", "**Pre-Review Gate** (`ruff` + `pytest`)", "deterministic", s25),
-        _row("4/4", "**ReviewerAgent** (Adversarial Audit)", rev_model, s3),
+        _row("0/5", "**GoldfishAgent** (Spec-Completeness Pre-Screen)", goldfish_model, s0),
+        _row("1/5", "**ArchitectAgent** (Upfront SOP Plan)", arch_model, s1),
+        _row("2/5", "**CoderAgent** (Implementation)", coder_model, s2),
+        _row("3/5", "**Pre-Review Gate** (`ruff` + `pytest`)", "deterministic", s25),
+        _row("4/5", "**ReviewerAgent** (Adversarial Audit)", rev_model, s3),
     ]
 
     if final_telemetry:
@@ -219,6 +226,7 @@ def stamp_all_commit_statuses(
     if not sha:
         return
 
+    s0 = stages.get("0/3", {})
     s1 = stages.get("1/3", {})
     s2 = stages.get("2/3", {})
     s25 = stages.get("2.5/3", {})
@@ -232,6 +240,25 @@ def stamp_all_commit_statuses(
             return "success"
         return "pending"
 
+    # Goldfish speaks `pass`/`refuse`, not the reviewer's `pass`/`revise`, and a bypassed run must
+    # read green rather than sit yellow forever.
+    s0_status = str(s0.get("status", "PENDING"))
+    s0_up = s0_status.upper()
+    if "REFUSE" in s0_up:
+        s0_state = "failure"
+    elif "SKIP" in s0_up or "⏭" in s0_status:
+        s0_state = "success"
+    else:
+        s0_state = _map_state(s0_status)
+
+    set_commit_status(
+        repo,
+        sha,
+        "GAS Intake / 0. Goldfish Spec-Completeness",
+        s0_state,
+        f"Spec-Blind Pre-Screen: {s0_status}"[:135],
+        pr_url,
+    )
     set_commit_status(
         repo,
         sha,
@@ -325,6 +352,7 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
     head_sha = os.environ.get("INITIAL_PR_SHA", "") or _get_head_sha()
 
     stages: Dict[str, Dict[str, Any]] = {
+        "0/3": {"status": "⏳ Spec-blind pre-screen..."},
         "1/3": {"status": "⏳ Running Upfront SOP Plan..."},
         "2/3": {"status": "⬜ Pending"},
         "2.5/3": {"status": "⬜ Pending"},
@@ -367,7 +395,32 @@ def run_watcher(repo: str, pr_url: str, issue_num: str) -> None:
                         stamp_all_commit_statuses(repo, head_sha, pr_url, arch_model, coder_model, rev_model, stages)
                         continue
 
-                    if stage == "1/3":
+                    if stage == "0/3":
+                        up = status.upper()
+                        if "REFUSE" in up:
+                            s0_label = "🛑 REFUSED — issue underspecified (`spec_gap`)"
+                        elif "SKIP" in up:
+                            s0_label = f"⏭️ Skipped — {status}"
+                        else:
+                            s0_label = "✅ Passed — a fresh reader could restate the spec"
+                        stages["0/3"] = {
+                            "status": s0_label,
+                            "model": model,
+                            "turns": turns,
+                            "duration_s": dur,
+                            "cost_usd": cost,
+                            "details": details,
+                        }
+                        if "SKIP" not in up:
+                            post_milestone_comment(
+                                repo,
+                                pr_number,
+                                f"### 🐠 [Step 0/5] GAS Goldfish Spec-Completeness Pre-Screen (`{model}`)\n"
+                                f"- **Status:** `{status}` | **Turns:** `{turns}` | **Duration:** `{dur}s` | **Est. Cost:** `${cost:.4f}`\n\n"
+                                f"{details}",
+                            )
+
+                    elif stage == "1/3":
                         stages["1/3"] = {
                             "status": "✅ Complete — SOP Plan generated",
                             "turns": turns,
@@ -476,7 +529,17 @@ def _replay_events_to_stages(stages: Dict[str, Dict[str, Any]]) -> Dict[str, Dic
             cost = float(ev.get("cost_usd", 0.0))
             details = str(ev.get("details", ""))
             iteration = int(ev.get("iteration", 1))
-            if stage == "1/3":
+            model = str(ev.get("model", ""))
+            if stage == "0/3":
+                up = status.upper()
+                if "REFUSE" in up:
+                    s0_label = "🛑 REFUSED — issue underspecified (`spec_gap`)"
+                elif "SKIP" in up:
+                    s0_label = f"⏭️ Skipped — {status}"
+                else:
+                    s0_label = "✅ Passed — a fresh reader could restate the spec"
+                stages["0/3"] = {"status": s0_label, "model": model, "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}
+            elif stage == "1/3":
                 stages["1/3"] = {"status": "✅ Complete — SOP Plan generated", "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}
             elif stage == "2/3":
                 stages["2/3"] = {"status": f"✅ Complete (Pass {iteration}/3)", "turns": turns, "duration_s": dur, "cost_usd": cost, "details": details}

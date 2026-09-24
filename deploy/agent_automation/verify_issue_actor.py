@@ -15,6 +15,56 @@ from typing import Any
 OWNER_IMMUTABLE_ID = 14251830  # Immutable GitHub Database ID for mbettan
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ALLOWED_LABELS = ("agent:implement", "agent:in-progress")
+ISSUE_META_FILE = Path("/tmp/adk_issue_meta.json")
+
+# `illya-nau/GAS` `config/lenses.yaml` `kinds:` — the closed set of work kinds that select the
+# Spec-Blind Reviewer lens subset. Derived from GitHub labels first, then Conventional Commit
+# title prefixes, defaulting to the strictest kind (`feature` = all 4 lenses).
+WORK_KIND_LABELS = {
+    "kind:chore": "chore",
+    "chore": "chore",
+    "documentation": "chore",
+    "docs": "chore",
+    "kind:bug": "bug",
+    "bug": "bug",
+    "bugfix": "bug",
+    "kind:feature": "feature",
+    "feature": "feature",
+    "enhancement": "feature",
+}
+WORK_KIND_TITLE_PREFIXES = (
+    ("chore", "chore"),
+    ("docs", "chore"),
+    ("style", "chore"),
+    ("refactor", "chore"),
+    ("fix", "bug"),
+    ("bugfix", "bug"),
+    ("hotfix", "bug"),
+    ("feat", "feature"),
+    ("feature", "feature"),
+    ("perf", "feature"),
+)
+
+
+def derive_work_kind(issue: Any) -> str:
+    """
+    `illya-nau/GAS` `config/lenses.yaml`: resolve the issue's `work_kind`
+    (`chore` | `bug` | `feature`) so the ReviewerAgent runs only the lens subset that kind needs.
+    Labels win over the title; an unrecognized issue defaults to `feature` (all 4 lenses, strictest).
+    """
+    labels = issue.get("labels") or []
+    for label in labels:
+        raw = label.get("name") if isinstance(label, dict) else label
+        name = str(raw or "").strip().lower()
+        if name in WORK_KIND_LABELS:
+            return WORK_KIND_LABELS[name]
+
+    title = (issue.get("title") or "").strip().lower()
+    prefix = title.split(":", 1)[0].split("(", 1)[0].strip() if ":" in title else ""
+    for candidate, kind in WORK_KIND_TITLE_PREFIXES:
+        if prefix == candidate:
+            return kind
+    return "feature"
 
 
 def _gh_get(url: str, gh_pat: str) -> Any:
@@ -92,7 +142,35 @@ Implement the requested feature, add comprehensive offline pytest unit tests in 
 """
     prompt_path = Path("/tmp/sanitized_issue_prompt.txt")
     prompt_path.write_text(prompt_text, encoding="utf-8")
-    print(f"[Security Gate] Issue #{issue_num} verified for {repo}. Prompt written to {prompt_path}.")
+
+    # `illya-nau/GAS` `src/goldfish/goldfish/goldfish.py`: the Goldfish intake pre-screen is
+    # SPEC-BLIND — it receives ONLY `work_kind`, `project_kind`, and `acceptance_criteria`
+    # (the escaped issue title + body), never the repo wiki, skills, or prior findings.
+    work_kind = derive_work_kind(issue)
+    label_names = [
+        str(lbl.get("name") if isinstance(lbl, dict) else lbl)
+        for lbl in (issue.get("labels") or [])
+    ]
+    ISSUE_META_FILE.write_text(
+        json.dumps(
+            {
+                "issue_number": issue_num,
+                "repo": repo,
+                "work_kind": work_kind,
+                "project_kind": os.environ.get("PROJECT_KIND", "python-bigquery-finops-cli"),
+                "labels": label_names,
+                "title": safe_title,
+                "acceptance_criteria": safe_body,
+                "goldfish_bypass": "agent:force" in [n.lower() for n in label_names],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        f"[Security Gate] Issue #{issue_num} verified for {repo}. Prompt written to {prompt_path}. "
+        f"GAS work_kind={work_kind} (labels={label_names}) written to {ISSUE_META_FILE}."
+    )
 
 
 if __name__ == "__main__":
