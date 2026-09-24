@@ -23,6 +23,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -176,15 +177,46 @@ def _install_claude_pre_tool_hook(sop_allowed_files: List[str]) -> None:
     BEFORE execution, and cleans up `.claude/` immediately after `CoderAgent` exits so `git status` stays clean.
     """
     hook_code = f'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, re, shlex, sys
 PROTECTED = {list(PROTECTED_PREFIXES)!r}
 ALLOWED = {list(sop_allowed_files)!r}
+# Git subcommands that mutate working-tree or history state. The harness -- not the agent -- owns
+# git. On issue #67 the CoderAgent answered a diff-coverage shortfall by running
+# `git checkout -- src/utils.py` three times, destroying its own work and taking coverage from
+# 76.5% down to 36.8%. Reverting can never satisfy a gate that measures the diff: erasing the diff
+# only shrinks the evidence. Commit/push are blocked too, so the agent cannot bypass the gates.
+GIT_MUTATORS = (
+    "checkout", "restore", "reset", "stash", "clean", "revert",
+    "rebase", "merge", "cherry-pick", "commit", "push", "apply", "am",
+)
+GIT_FLAGS_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 try:
     payload = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 tool_name = str(payload.get("tool_name", ""))
 tool_input = payload.get("tool_input") or {{}}
+if tool_name == "Bash" and isinstance(tool_input, dict):
+    for segment in re.split(r"&&|\\|\\||;|\\|", str(tool_input.get("command") or "")):
+        try:
+            tokens = shlex.split(segment)
+        except Exception:
+            tokens = segment.split()
+        for idx, tok in enumerate(tokens):
+            if tok != "git" and not tok.endswith("/git"):
+                continue
+            j = idx + 1
+            while j < len(tokens) and tokens[j].startswith("-"):
+                j += 2 if tokens[j] in GIT_FLAGS_WITH_VALUE else 1
+            if j < len(tokens) and tokens[j].lower() in GIT_MUTATORS:
+                sys.stderr.write(
+                    "POLICY HOOK BLOCKED: `git " + tokens[j] + "` mutates repository state, which "
+                    "the harness owns. Never revert, stash or restructure to satisfy a gate -- the "
+                    "gate measures your diff, so erasing it cannot help. Edit the files directly "
+                    "and add tests. Read-only git (status/diff/log/show) remains allowed.\\\\n"
+                )
+                sys.exit(2)
+            break
 if tool_name in ("Edit", "Write", "MultiEdit") and isinstance(tool_input, dict):
     raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
     if raw_path:
@@ -210,7 +242,7 @@ sys.exit(0)
                 "hooks": {
                     "PreToolUse": [
                         {
-                            "matcher": "Edit|Write|MultiEdit",
+                            "matcher": "Edit|Write|MultiEdit|Bash",
                             "hooks": [{"type": "command", "command": f"/opt/venv/bin/python3 {PRE_TOOL_HOOK_SCRIPT}"}],
                         }
                     ]
@@ -554,6 +586,26 @@ def _select_lenses_for_work_kind(work_kind: str) -> List[str]:
     return valid or DEFAULT_LENS_KINDS["feature"]
 
 
+def _build_lens_prompt_fragments(work_kind: str) -> Tuple[List[str], str, str, str]:
+    """
+    Build the ReviewerAgent prompt fragments for the lens subset `work_kind` selects.
+
+    Extracted from `ReviewerAgent` so the adaptive-lens behaviour is unit-testable: inside the
+    agent it is only reachable after a full pipeline run survives the Architect, the Coder, and
+    the executable-feedback gate, which makes it expensive and unreliable to verify live.
+
+    Returns `(active_lenses, lens_block, lens_json_rows, lens_categories)`.
+    """
+    active_lenses = _select_lenses_for_work_kind(work_kind)
+    lens_block = "\n".join(
+        f"{i}. **LENS {i} — `{lens}`:** {LENS_SCOPES[lens]}"
+        for i, lens in enumerate(active_lenses, start=1)
+    )
+    lens_json_rows = ",\n".join(f'    "{lens}": "PASS"' for lens in active_lenses)
+    lens_categories = "|".join(f'"{lens}"' for lens in active_lenses)
+    return active_lenses, lens_block, lens_json_rows, lens_categories
+
+
 def _parse_intake_verdict(intake_text: str) -> IntakeVerdict:
     """
     `illya-nau/GAS` `src/goldfish/goldfish/goldfish.py`: parse the Goldfish turn into a typed
@@ -847,10 +899,16 @@ def _compute_diff_coverage(
     pct = round((total_covered_added / total_executable_added) * 100.0, 1)
     passed = pct >= floor_pct
     if not passed:
+        needed = max(0, math.ceil(floor_pct / 100.0 * total_executable_added) - total_covered_added)
         err_msg = (
             f"EXECUTABLE FEEDBACK FAILURE [GAS Diff-Coverage Gate]: Diff coverage on newly added `src/` lines is "
             f"`{pct:.1f}%` ({total_covered_added}/{total_executable_added} lines), which is below the `{floor_pct:.1f}%` floor.\n"
-            f"Add unit tests covering these newly added lines:\n- " + "\n- ".join(gaps)
+            f"REMEDY: add tests that execute at least {needed} more of the added line(s) listed below. "
+            f"Write ONLY new test cases in the test file.\n"
+            f"DO NOT revert, restructure, reformat, or delete source lines to shrink the diff. This gate measures "
+            f"your diff, so making the diff smaller does not raise coverage -- it lowers it and burns an iteration. "
+            f"Leave the implementation exactly as it is unless a test reveals a genuine bug.\n"
+            f"Uncovered added lines:\n- " + "\n- ".join(gaps)
         )
         return False, pct, gaps, err_msg
 
@@ -1731,14 +1789,8 @@ class ReviewerAgent(BaseAgent):
 
         # GAS `config/lenses.yaml` `kinds:` — work-kind adaptive lens selection.
         work_kind = str(ctx.session.state.get("work_kind") or _load_issue_meta().get("work_kind") or "feature")
-        active_lenses = _select_lenses_for_work_kind(work_kind)
+        active_lenses, lens_block, lens_json_rows, lens_categories = _build_lens_prompt_fragments(work_kind)
         ctx.session.state["active_lenses"] = active_lenses
-        lens_block = "\n".join(
-            f"{i}. **LENS {i} — `{lens}`:** {LENS_SCOPES[lens]}"
-            for i, lens in enumerate(active_lenses, start=1)
-        )
-        lens_json_rows = ",\n".join(f'    "{lens}": "PASS"' for lens in active_lenses)
-        lens_categories = "|".join(f'"{lens}"' for lens in active_lenses)
         print(
             f"🔬 [GAS Adaptive Lenses] work_kind=`{work_kind}` → {len(active_lenses)}/4 lenses: {active_lenses}"
         )

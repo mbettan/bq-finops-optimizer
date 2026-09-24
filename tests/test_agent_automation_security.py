@@ -745,3 +745,132 @@ def test_worker_entrypoint_makes_intake_metadata_readable_by_agentuser():
     # And the orchestrator must genuinely tolerate the file being absent (fail-safe work_kind).
     orch = _load_adk_orchestrator()
     assert orch._load_issue_meta.__doc__
+
+
+def _generated_hook_verdict(tmp_path, command=None, file_path=None, allowed=("src/utils.py",)):
+    """Write the REAL generated hook to disk and execute it, rather than asserting on source text."""
+    import json, subprocess, sys as _sys
+    orch = _load_adk_orchestrator()
+    hook = tmp_path / "hook.py"
+    orch.PRE_TOOL_HOOK_SCRIPT = hook
+    orch.WORKSPACE_DIR = tmp_path / "nonexistent-workspace"
+    orch._install_claude_pre_tool_hook(list(allowed))
+    if command is not None:
+        payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    else:
+        payload = {"tool_name": "Write", "tool_input": {"file_path": file_path}}
+    proc = subprocess.run(
+        [_sys.executable, str(hook)], input=json.dumps(payload),
+        capture_output=True, text=True, timeout=30,
+    )
+    return proc.returncode, proc.stderr
+
+
+def test_policy_hook_blocks_self_destructive_git_from_bash(tmp_path):
+    """
+    Regression for issue #67: CoderAgent ran `git checkout -- src/utils.py` three times to answer a
+    diff-coverage shortfall, destroying its own work (76.5% -> 36.8%). The hook only matched
+    Edit/Write/MultiEdit, so Bash was an open escape hatch.
+    """
+    orch = _load_adk_orchestrator()
+
+    # The guard is inert unless Bash is registered in the matcher.
+    src = (ROOT_DIR / "deploy/agent_automation/adk_orchestrator.py").read_text(encoding="utf-8")
+    assert '"matcher": "Edit|Write|MultiEdit|Bash"' in src
+
+    blocked = [
+        "git checkout -- src/utils.py",
+        "git checkout .",
+        "git restore src/utils.py",
+        "git reset --hard HEAD",
+        "git stash",
+        "git clean -fd",
+        "git apply .utils_full.patch",
+        "git commit -m 'bypass'",
+        "git push --force",
+        "git -C /workspace checkout -- src/utils.py",          # flag-with-value must not hide the verb
+        "pytest -q && git checkout -- src/utils.py",            # chained after a benign command
+        "echo hi; git reset --hard",
+    ]
+    for cmd in blocked:
+        rc, err = _generated_hook_verdict(tmp_path, command=cmd)
+        assert rc == 2, f"should have been blocked: {cmd}"
+        assert "POLICY HOOK BLOCKED" in err
+
+    allowed = [
+        "git status -s",
+        "git diff src/utils.py",
+        "git diff --stat; git status",
+        "git log --oneline -5",
+        "git show HEAD",
+        "./.venv/bin/pytest -q",
+        "./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml src/utils.py",
+        "wc -l src/utils.py && tail -n 30 src/utils.py",
+        "echo 'git checkout is mentioned only in this string'",  # not a git invocation
+    ]
+    for cmd in allowed:
+        rc, err = _generated_hook_verdict(tmp_path, command=cmd)
+        assert rc == 0, f"should have been allowed: {cmd} (stderr={err})"
+
+    # The pre-existing Edit/Write protection must still work.
+    rc, err = _generated_hook_verdict(tmp_path, file_path="/workspace/deploy/agent_automation/poller.py")
+    assert rc == 2 and "POLICY HOOK BLOCKED" in err
+    assert orch  # keep the loader referenced
+
+
+def test_diff_coverage_feedback_forbids_shrinking_the_diff():
+    """
+    The old message only said 'add tests', which the Coder read as license to restructure the
+    source. It must now state the remedy and explicitly rule out shrinking the diff.
+    """
+    orch = _load_adk_orchestrator()
+    src = (ROOT_DIR / "deploy/agent_automation/adk_orchestrator.py").read_text(encoding="utf-8")
+    assert "DO NOT revert, restructure, reformat, or delete source lines to shrink the diff" in src
+    assert "REMEDY: add tests that execute at least" in src
+    assert orch.math is not None  # `math.ceil` is used to compute the shortfall
+
+
+def test_reviewer_prompt_fragments_adapt_to_work_kind(monkeypatch):
+    """
+    GAS Tier 2 #0, validated WITHOUT a paid pipeline run.
+
+    The live E2E on issue #67 never reached stage 3 (the Coder exhausted its budget on the
+    diff-coverage gate), so the adaptive-lens behaviour was never observed end-to-end. These
+    assertions cover the exact fragments that get interpolated into the ReviewerAgent prompt.
+    """
+    orch = _load_adk_orchestrator()
+    monkeypatch.setattr(
+        orch, "LENSES_PINNED_FILE", ROOT_DIR / "deploy/agent_automation/pinned/lenses.pinned.yaml"
+    )
+
+    lenses, block, json_rows, categories = orch._build_lens_prompt_fragments("chore")
+    assert lenses == ["CORRECTNESS"]
+    # Exactly one numbered lens line, and no mention of the three excluded lenses anywhere.
+    assert block.count("**LENS ") == 1
+    assert block.startswith("1. **LENS 1 — `CORRECTNESS`:**")
+    for excluded in ("SECURITY", "REGRESSION", "OPERABILITY"):
+        assert excluded not in block
+        assert excluded not in json_rows
+        assert excluded not in categories
+    # The verdict skeleton the model is told to emit must have exactly one row.
+    assert json_rows == '    "CORRECTNESS": "PASS"'
+    assert categories == '"CORRECTNESS"'
+
+    lenses, block, json_rows, categories = orch._build_lens_prompt_fragments("bug")
+    assert lenses == ["CORRECTNESS", "REGRESSION"]
+    assert block.count("**LENS ") == 2
+    assert "SECURITY" not in block and "OPERABILITY" not in block
+
+    lenses, block, json_rows, categories = orch._build_lens_prompt_fragments("feature")
+    assert len(lenses) == 4
+    assert block.count("**LENS ") == 4
+    for expected in ("CORRECTNESS", "SECURITY", "REGRESSION", "OPERABILITY"):
+        assert expected in block and expected in json_rows and expected in categories
+
+    # Unknown kind must fail SAFE to the full set, never to the cheap one.
+    lenses, block, _, _ = orch._build_lens_prompt_fragments("not-a-kind")
+    assert len(lenses) == 4 and block.count("**LENS ") == 4
+
+    # Every emitted lens must carry a real scope sentence -- no silent empty instructions.
+    for lens in orch._select_lenses_for_work_kind("feature"):
+        assert orch.LENS_SCOPES[lens].strip()
