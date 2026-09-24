@@ -41,6 +41,19 @@ from pydantic import BaseModel, Field
 ARCHITECT_MODEL = os.environ.get("ARCHITECT_MODEL", "claude-opus-5-5")
 CODER_MODEL = os.environ.get("CODER_MODEL", "claude-sonnet-5")
 REVIEWER_MODEL = os.environ.get("REVIEWER_MODEL", "claude-opus-5-5")
+# TODO(cost): move Goldfish to a cheaper model. It is a ~1-turn, tool-free, text-in/JSON-out spec
+# read -- the cheapest unit of work in the pipeline -- but it currently defaults to the Coder's
+# Sonnet rung. A Haiku-class Anthropic rung needs NO code change: just set GOLDFISH_MODEL on the
+# Cloud Run jobs. It defaults to CODER_MODEL only because Haiku availability on this Vertex
+# project was never verified.
+# WARNING when doing this: `_parse_intake_verdict` fails OPEN to `pass`, so an unavailable or
+# misspelled model ID will NOT surface as a crash -- Goldfish will silently approve every issue
+# while still posting a green `GAS Intake / 0.` check. Confirm the new rung by watching a
+# deliberately vague issue actually get refused; do not trust the check turning green.
+# Note a non-Anthropic rung (e.g. Gemini) is a bigger change, not an env var: this value is
+# forwarded to ANTHROPIC_MODEL for the `claude` CLI in `_run_claude_cli`. Goldfish is the only
+# agent that could take a direct `google.genai` path, since spec-blindness means it needs no
+# tools or repo access -- which would also let `IntakeVerdict` be a real response schema.
 GOLDFISH_MODEL = os.environ.get("GOLDFISH_MODEL", CODER_MODEL)
 GOLDFISH_ENABLED = os.environ.get("GOLDFISH_ENABLED", "true").strip().lower() != "false"
 MAX_REVIEW_LOOPS = int(os.environ.get("MAX_REVIEW_LOOPS", "3"))
