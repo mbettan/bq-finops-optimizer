@@ -98,22 +98,40 @@ handle_worker_exit() {
     wait "${WATCHER_PID}" 2>/dev/null || true
   fi
   export GH_TOKEN="${GITHUB_PAT}"
+  FAILURE_META=$(python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/claude_execution_log.json'))
+    fc = d.get('failure_class') or 'infrastructure'
+    fl = d.get('failure_label') or 'failure:infrastructure'
+    fg = d.get('failure_glossary') or 'Infrastructure Failure: Worker container exited before completion.'
+except Exception:
+    fc, fl, fg = 'infrastructure', 'failure:infrastructure', f'Infrastructure Failure (exit ${exit_code}): Worker container exited before completion.'
+print(f'{fc}|{fl}|{fg}')
+")
+  FAILURE_CLASS=$(echo "${FAILURE_META}" | cut -d'|' -f1)
+  FAILURE_LABEL=$(echo "${FAILURE_META}" | cut -d'|' -f2)
+  FAILURE_GLOSSARY=$(echo "${FAILURE_META}" | cut -d'|' -f3-)
+
   gh label create "agent:failed-needs-human" --repo "${GITHUB_REPO}" --color "D93F0B" --description "Autonomous Agent escalated to human review" --force >/dev/null 2>&1 || true
-  gh issue edit "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --remove-label "agent:in-progress" --add-label "agent:failed-needs-human" >/dev/null 2>&1 || true
+  gh label create "${FAILURE_LABEL}" --repo "${GITHUB_REPO}" --color "B60205" --description "GAS Failure Class: ${FAILURE_CLASS}" --force >/dev/null 2>&1 || true
+  gh issue edit "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --remove-label "agent:in-progress" --add-label "agent:failed-needs-human,${FAILURE_LABEL}" >/dev/null 2>&1 || true
   if [ -n "${PR_URL:-}" ]; then
-    gh pr edit "${PR_URL}" --repo "${GITHUB_REPO}" --add-label "agent:failed-needs-human" >/dev/null 2>&1 || true
+    gh pr edit "${PR_URL}" --repo "${GITHUB_REPO}" --add-label "agent:failed-needs-human,${FAILURE_LABEL}" >/dev/null 2>&1 || true
   fi
   if [ -n "${INITIAL_PR_SHA:-}" ]; then
     gh api "repos/${GITHUB_REPO}/statuses/${INITIAL_PR_SHA}" \
       -X POST \
       -f state="failure" \
       -f context="ADK / Pipeline Escalation" \
-      -f description="Escalated to human review (exit ${exit_code})" \
+      -f description="[${FAILURE_CLASS}] ${FAILURE_GLOSSARY:0:110}" \
       -f target_url="${PR_URL:-https://github.com/${GITHUB_REPO}}" >/dev/null 2>&1 || true
   fi
-  gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body "🛑 **Google ADK Pipeline Escalated (\`agent:failed-needs-human\`)**
+  gh issue comment "${TARGET_ISSUE_NUMBER}" --repo "${GITHUB_REPO}" --body "🛑 **Google ADK Pipeline Escalated (\`agent:failed-needs-human\` / \`${FAILURE_LABEL}\`)**
 
 - **Draft Pull Request:** ${PR_URL:-N/A}
+- **GAS Failure Classification:** \`${FAILURE_CLASS}\` (\`${FAILURE_LABEL}\`)
+- **GAS Cause Glossary:** ${FAILURE_GLOSSARY}
 - **Exit Code:** \`${exit_code}\`
 - **Action:** Removed \`agent:in-progress\` lock and escalated for human inspection." >/dev/null 2>&1 || true
 }

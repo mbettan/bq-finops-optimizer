@@ -29,7 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from google.adk.agents import BaseAgent, InvocationContext, LoopAgent, SequentialAgent
 from google.adk.apps import App
@@ -722,6 +722,103 @@ def _compute_diff_coverage(
     return True, pct, gaps, f"{pct:.1f}% ({total_covered_added}/{total_executable_added} added lines >= {floor_pct:.0f}%)"
 
 
+_CONCISE_RULE_CODE = re.compile(r"^.+?:\d+:\d+: ([A-Za-z][A-Za-z0-9-]*)", re.MULTILINE)
+
+
+def _finding_counts(concise_stdout: str) -> Dict[str, int]:
+    """
+    `illya-nau/GAS` `src/worker/worker/autofix.py`:
+    Extracts rule code counts from `ruff --output-format concise` (`path:line:col: CODE msg`)
+    so Cloud Logging never prints source lines containing hardcoded secret literals (`S105/S106/S107`).
+    """
+    counts: Dict[str, int] = {}
+    for code in _CONCISE_RULE_CODE.findall(concise_stdout):
+        counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def _run_harness_ruff_autofix(
+    py_files: List[str],
+    cwd: str,
+    ruff_bin: str,
+    pinned_ruff: Optional[str],
+) -> Dict[str, int]:
+    """
+    `illya-nau/GAS` `src/worker/worker/autofix.py`:
+    Deterministic pre-commit lint auto-fix (worker harness, not the agent).
+    Applies `ruff check --fix` + `ruff format` strictly to the `.py` files the agent changed,
+    under the same `/opt/pinned/ruff.pinned.toml` config enforced by the gate, sparing the loop
+    a round-trip on mechanical classes (`I001`, `F401`, `UP`).
+    """
+    if not py_files or not Path(ruff_bin).exists():
+        return {}
+    cfg_args = ["--config", pinned_ruff] if pinned_ruff else []
+    try:
+        subprocess.run(
+            [ruff_bin, "check", "--fix", "--output-format=concise", *cfg_args, *py_files],
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        subprocess.run(
+            [ruff_bin, "format", *cfg_args, *py_files],
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        check_proc = subprocess.run(
+            [ruff_bin, "check", "--output-format=concise", *cfg_args, *py_files],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return _finding_counts(check_proc.stdout.decode("utf-8", errors="replace"))
+    except Exception:
+        return {}
+
+
+def classify_failure_cause(termination_reason: str, exit_code: int = 1) -> Tuple[str, str, str]:
+    """
+    `illya-nau/GAS` `src/orchestrator/orchestrator/failure_classification.py` &
+    `src/harness/harness/cause_glossary.py`:
+    Closed 3-valued classification of failure cause: `spec_gap` | `agent_error` | `infrastructure`.
+    Returns `(failure_class, github_label, cause_glossary_sentence)`.
+    """
+    reason_upper = (termination_reason or "").upper()
+    if any(k in reason_upper for k in ("SPEC_GAP", "UNPLANNABLE", "ARCHITECT_ABORT", "SOP_INVALID")):
+        return (
+            "spec_gap",
+            "failure:spec-gap",
+            "Spec Gap: The issue specification could not be decomposed into valid repository files or lacked actionable acceptance criteria.",
+        )
+    if any(
+        k in reason_upper
+        for k in (
+            "DIFF_STAGNATION",
+            "TEST_NON_CONVERGENCE",
+            "COST_CEILING",
+            "MAX_ITERATIONS",
+            "EXHAUSTED",
+            "NO_CHANGES",
+            "REVISE",
+            "EXECUTABLE FEEDBACK FAILURE",
+        )
+    ):
+        return (
+            "agent_error",
+            "failure:agent-error",
+            "Agent Error: The autonomous coding/review loop exhausted its refinement budget or failed deterministic verification gates.",
+        )
+    return (
+        "infrastructure",
+        "failure:infrastructure",
+        f"Infrastructure Failure (exit {exit_code}): An infrastructure, runtime, or upstream API error interrupted the worker container before verdict completion.",
+    )
+
+
 def _verify_modified_module_imports(py_files: List[str], cwd: str, python_bin: str) -> Tuple[bool, str]:
     """
     `illya-nau/GAS` `cicd/integrity_checks/integrity_checks/import_check.py`:
@@ -830,10 +927,15 @@ def _run_executable_feedback_gate(
     except Exception:
         pass
 
-    # 2. Pre-Compilation Syntax / Undefined Names Check (ruff with /opt/pinned/ruff.pinned.toml)
+    # 2. GAS Deterministic Pre-Commit Lint Auto-Fix (`src/worker/worker/autofix.py`)
+    #    + Pre-Compilation Syntax / Undefined Names Check (`ruff` with `/opt/pinned/ruff.pinned.toml`)
     py_files = [f for f in changed_files if f.endswith(".py") and (Path(cwd) / f).exists()]
     if py_files and Path(ruff_bin).exists():
-        ruff_cmd = [ruff_bin, "check"]
+        autofix_counts = _run_harness_ruff_autofix(py_files, cwd, ruff_bin, pinned_ruff)
+        if autofix_counts:
+            print(f"🧹 [GAS autofix.py] Remaining concise rule counts after harness auto-fix: {dict(autofix_counts)}")
+
+        ruff_cmd = [ruff_bin, "check", "--output-format=concise"]
         if pinned_ruff:
             ruff_cmd.extend(["--config", pinned_ruff])
         else:
@@ -1550,6 +1652,15 @@ async def run_pipeline() -> None:
     )
     state = final_session.state if final_session else session.state
 
+    approved = bool(state.get("review_approved", False))
+    term_reason = str(
+        state.get("termination_reason", "VERDICT: PASS" if approved else "MAX_ITERATIONS_EXHAUSTED")
+    )
+    if approved:
+        fail_class, fail_label, fail_glossary = ("none", "gate:passed", "All GAS/ADK gates and 4-Lens review passed.")
+    else:
+        fail_class, fail_label, fail_glossary = classify_failure_cause(term_reason, exit_code=1)
+
     telemetry_summary = {
         "num_turns": state.get("total_turns", 0),
         "duration_ms": int(float(state.get("total_duration_s", 0.0)) * 1000),
@@ -1559,15 +1670,17 @@ async def run_pipeline() -> None:
         "diff_coverage_pct": state.get("diff_coverage_pct", LAST_DIFF_COVERAGE_PCT),
         "diff_hash_history": state.get("diff_hash_history", []),
         "d_test_history": state.get("d_test_history", []),
-        "termination_reason": state.get("termination_reason", "VERDICT: PASS" if state.get("review_approved") else "MAX_ITERATIONS"),
-        "review_approved": state.get("review_approved", False),
+        "termination_reason": term_reason,
+        "review_approved": approved,
+        "failure_class": fail_class,
+        "failure_label": fail_label,
+        "failure_glossary": fail_glossary,
     }
     TELEMETRY_FILE.write_text(json.dumps(telemetry_summary, indent=2), encoding="utf-8")
 
-    if not state.get("review_approved", False):
-        term_reason = state.get("termination_reason", f"Exhausted {MAX_REVIEW_LOOPS} iterations")
+    if not approved:
         sys.exit(
-            f"FATAL: ADK CodeAndReviewLoop terminated without approval ({term_reason}). Aborting before push."
+            f"FATAL [{fail_class} / {fail_label}]: ADK CodeAndReviewLoop terminated without approval ({term_reason}). {fail_glossary}"
         )
 
 

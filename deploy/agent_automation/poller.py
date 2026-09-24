@@ -126,6 +126,36 @@ def dispatch_worker_job(project_id: str, region: str, worker_job: str, issue_num
         )
 
 
+KNOWN_BOT_LOGINS = frozenset({
+    "bq-finops-agent",
+    "github-actions",
+    "github-actions[bot]",
+    "dependabot",
+    "dependabot[bot]",
+    "renovate",
+    "renovate[bot]",
+})
+
+
+def is_bot_author(issue: Dict[str, Any]) -> bool:
+    """
+    GAS Bot-Author Intake Guard (`src/orchestrator/orchestrator/intake.py` &
+    `tests/test_issue_intake_ignores_bot_authors.py`):
+    Prevent autonomous self-triggering loops by rejecting any issue authored by a GitHub Bot
+    (`user.type == "Bot"`, `login` ending in `[bot]`/`-bot`, or known automation accounts).
+    """
+    user = issue.get("user") or {}
+    if not isinstance(user, dict):
+        return False
+    user_type = str(user.get("type", "")).strip().lower()
+    login = str(user.get("login", "")).strip().lower()
+    if user_type == "bot":
+        return True
+    if login.endswith("[bot]") or login.endswith("-bot") or login in KNOWN_BOT_LOGINS:
+        return True
+    return False
+
+
 def verify_and_lock_issue(
     issue: Dict[str, Any],
     repo: str,
@@ -133,6 +163,10 @@ def verify_and_lock_issue(
     worker_job: str,
 ) -> bool:
     issue_num = int(issue["number"])
+
+    if is_bot_author(issue):
+        print(f"[Issue #{issue_num}] GAS Bot-Author Intake Guard: Skipping issue authored by bot '{issue.get('user', {}).get('login')}'.")
+        return False
 
     # 1. ACQUIRE LOCK FIRST to freeze issue body and comments against mid-flight TOCTOU edits
     _gh_api_request(
@@ -149,6 +183,10 @@ def verify_and_lock_issue(
         gh_pat,
     )
     fresh_issue: Dict[str, Any] = fetched_issue if isinstance(fetched_issue, dict) else issue
+    if is_bot_author(fresh_issue):
+        print(f"[Issue #{issue_num}] GAS Bot-Author Intake Guard: Fresh issue author is bot. Unlocking and skipping.")
+        _gh_api_request("DELETE", f"https://api.github.com/repos/{repo}/issues/{issue_num}/lock", gh_pat)
+        return False
     events_url = f"https://api.github.com/repos/{repo}/issues/{issue_num}/events?per_page=100"
     events: List[Dict[str, Any]] = _gh_api_request("GET", events_url, gh_pat) or []
 
@@ -214,6 +252,7 @@ def verify_and_lock_issue(
             "body": (
                 f"🔒 **Autonomous Agent Dispatched**\n"
                 f"- Verified Maintainer Approval (`ID: {OWNER_IMMUTABLE_ID}`)\n"
+                f"- Verified Non-Bot Author (`GAS Bot-Author Intake Guard`)\n"
                 f"- Issue locked to prevent mid-flight prompt modification.\n"
                 f"- Spinning up ephemeral Cloud Run Worker micro-VM (`{worker_job}`)..."
             )
@@ -233,7 +272,7 @@ def main() -> None:
         return
 
     for issue in issues:
-        if "pull_request" in issue:
+        if "pull_request" in issue or is_bot_author(issue):
             continue
         issue_num = int(issue["number"])
         if verify_and_lock_issue(issue, cfg["repo"], cfg["gh_pat"], cfg["worker_job"]):

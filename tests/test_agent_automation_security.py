@@ -518,6 +518,86 @@ VERDICT: REVISE
     assert v6.blocking_findings[0].category == "REGRESSION"
 
 
+def test_gas_tier_1_autofix_stage_checks_failure_class_and_bot_guard(monkeypatch):
+    """
+    Verify all 4 GAS Tier-1 upgrades:
+      1. `autofix.py` (`_finding_counts` extracts rule codes without leaking S105 secrets)
+      2. `stage_checks.py` (`stamp_all_commit_statuses` posts granular GAS Gate & Review statuses)
+      3. `failure_classification.py` (`classify_failure_cause` maps spec_gap, agent_error, infrastructure)
+      4. `intake.py` (`is_bot_author` blocks Bot accounts and `[bot]` logins while allowing human maintainers)
+    """
+    orch = _load_adk_orchestrator()
+    poller = _load_module("poller", "deploy/agent_automation/poller.py")
+    telemetry = _load_module("pr_live_telemetry", "deploy/agent_automation/pr_live_telemetry.py")
+
+    # 1. GAS `autofix.py` `_finding_counts`
+    concise_out = (
+        "src/utils.py:10:5: F401 `os` imported but unused\n"
+        "src/utils.py:22:1: E501 Line too long (122 > 100)\n"
+        "src/utils.py:30:12: S105 Possible hardcoded password assigned to: 'SUPER_SECRET_TOKEN'\n"
+    )
+    counts = orch._finding_counts(concise_out)
+    assert counts == {"F401": 1, "E501": 1, "S105": 1}
+    assert "SUPER_SECRET_TOKEN" not in str(counts)
+
+    # 2. GAS `failure_classification.py` (`spec_gap` / `agent_error` / `infrastructure`)
+    fc_spec, lbl_spec, gl_spec = orch.classify_failure_cause("SPEC_GAP: SOP_INVALID target files missing")
+    assert fc_spec == "spec_gap"
+    assert lbl_spec == "failure:spec-gap"
+    assert "Spec Gap:" in gl_spec
+
+    fc_agent, lbl_agent, gl_agent = orch.classify_failure_cause("HARD_BREAK [DIFF_STAGNATION]: ΔDiff=0")
+    assert fc_agent == "agent_error"
+    assert lbl_agent == "failure:agent-error"
+    assert "Agent Error:" in gl_agent
+
+    fc_infra, lbl_infra, gl_infra = orch.classify_failure_cause("Vertex AI 503 Unavailable", exit_code=137)
+    assert fc_infra == "infrastructure"
+    assert lbl_infra == "failure:infrastructure"
+    assert "exit 137" in gl_infra
+
+    # 3. GAS `intake.py` Bot-Author Intake Guard (`is_bot_author`)
+    assert poller.is_bot_author({"user": {"login": "mbettan", "type": "User"}}) is False
+    assert poller.is_bot_author({"user": {"login": "dependabot[bot]", "type": "Bot"}}) is True
+    assert poller.is_bot_author({"user": {"login": "bq-finops-agent", "type": "User"}}) is True
+    assert poller.is_bot_author({"user": {"login": "custom-ci-bot", "type": "User"}}) is True
+
+    # 4. GAS `stage_checks.py` granular commit statuses
+    recorded_statuses = []
+
+    def fake_set_commit_status(repo, sha, context, state, description, target_url=""):
+        recorded_statuses.append((context, state, description))
+
+    monkeypatch.setattr(telemetry, "set_commit_status", fake_set_commit_status)
+    stages = {
+        "1/3": {"status": "✅ Complete", "turns": 10, "duration_s": 50.0},
+        "2/3": {"status": "✅ Complete", "turns": 7, "duration_s": 40.0},
+        "2.5/3": {
+            "status": "✅ PASSED",
+            "details": "Ruff=0 errors | GAS Mock-Gate=PASSED | GAS Diff-Coverage=100.0% (>=80% floor)",
+        },
+        "3/3": {"status": "✅ PASS", "turns": 2, "duration_s": 30.0},
+    }
+    telemetry.stamp_all_commit_statuses(
+        "mbettan/bq-finops-optimizer-private",
+        "abc1234",
+        "https://github.com/mbettan/bq-finops-optimizer-private/pull/66",
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        stages,
+    )
+    contexts = {c: (st, desc) for c, st, desc in recorded_statuses}
+    assert "GAS Gate / 1. Ruff Pinned (LINT_SCOPE=diff)" in contexts
+    assert contexts["GAS Gate / 1. Ruff Pinned (LINT_SCOPE=diff)"][0] == "success"
+    assert "GAS Gate / 2. AST Mock-Gate & Import Check" in contexts
+    assert "GAS Gate / 3. Diff-Coverage (>=80% floor)" in contexts
+    assert "100.0%" in contexts["GAS Gate / 3. Diff-Coverage (>=80% floor)"][1]
+    assert "GAS Review / 4-Lens Spec-Blind Audit" in contexts
+    assert contexts["GAS Review / 4-Lens Spec-Blind Audit"][0] == "success"
+
+
+
 
 
 
