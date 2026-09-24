@@ -16,8 +16,15 @@
 5. **Protected Files (NEVER MODIFY):** You are strictly forbidden from modifying `.github/`, `deploy/`, `Dockerfile`, `.gitattributes`, `.gitignore`, `tests/conftest.py`, or `CLAUDE.md`.
 
 ## 2. Mandatory Pre-Completion Verification
-Before finishing your turn, run these commands in order and ensure zero errors:
-1. `./.venv/bin/ruff check .`
-2. `./.venv/bin/pytest`
-3. `node tests/test_calculator_engine.js`
-4. `./scripts/sync_docs_bundle.sh && git status -s`
+Run verification appropriate for your execution context:
+- **Autonomous Agent Mode (diff-scoped verification):**
+  1. `./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml <modified_py_files>`
+  2. `./.venv/bin/pytest <targeted_tests>`
+  3. `node tests/test_calculator_engine.js` (if touching pricing or calculator logic)
+  4. `./scripts/sync_docs_bundle.sh && git status -s` (if touching `static/`, `docs/`, or `RELEASE_NOTES.md`)
+- **Full Repository CI Verification:**
+  1. `./.venv/bin/ruff check .`
+  2. `./.venv/bin/pytest`
+  3. `node tests/test_calculator_engine.js`
+  4. `./scripts/sync_docs_bundle.sh && git status -s`
+

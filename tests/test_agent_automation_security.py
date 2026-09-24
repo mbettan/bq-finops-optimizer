@@ -874,3 +874,64 @@ def test_reviewer_prompt_fragments_adapt_to_work_kind(monkeypatch):
     # Every emitted lens must carry a real scope sentence -- no silent empty instructions.
     for lens in orch._select_lenses_for_work_kind("feature"):
         assert orch.LENS_SCOPES[lens].strip()
+
+
+def test_extract_sop_metadata_multi_block_and_fallbacks():
+    """
+    Verify ArchitectAgent SOP metadata parsing handles:
+    1. Multiple code blocks where an API schema precedes the metadata block
+    2. Trailing commas / non-strict JSON via regex fallback
+    3. Markdown bullet list fallback
+    """
+    orch = _load_adk_orchestrator()
+
+    # Case 1: Multiple JSON blocks (API schema followed by SOP_METADATA_JSON)
+    multi_block = """
+### API Request Example
+```json
+{
+  "prompt": "diagnose query contention",
+  "project_id": "test-finops"
+}
+```
+
+### 1. SOP_METADATA_JSON
+```json
+{
+  "allowed_file_list": ["src/main.py", "src/mcp_server.py"],
+  "targeted_test_files": ["tests/test_ai_doctor.py", "tests/test_mcp_server.py"]
+}
+```
+"""
+    res1 = orch._extract_sop_metadata(multi_block)
+    assert res1["sop_allowed_files"] == ["src/main.py", "src/mcp_server.py"]
+    assert res1["sop_targeted_tests"] == ["tests/test_ai_doctor.py", "tests/test_mcp_server.py"]
+
+    # Case 2: Trailing comma / non-strict JSON
+    trailing_comma = """
+```json
+{
+  "allowed_file_list": [
+    "src/utils.py",
+    "static/app.js",
+  ],
+  "targeted_test_files": [
+    "tests/test_utils.py",
+  ]
+}
+```
+"""
+    res2 = orch._extract_sop_metadata(trailing_comma)
+    assert res2["sop_allowed_files"] == ["src/utils.py", "static/app.js"]
+    assert res2["sop_targeted_tests"] == ["tests/test_utils.py"]
+
+    # Case 3: Markdown bullet points
+    markdown_list = """
+### 1. Allowed Files
+- `src/main.py`
+- `static/index.html`
+- `tests/test_ai.py`
+"""
+    res3 = orch._extract_sop_metadata(markdown_list)
+    assert res3["sop_allowed_files"] == ["src/main.py", "static/index.html", "tests/test_ai.py"]
+

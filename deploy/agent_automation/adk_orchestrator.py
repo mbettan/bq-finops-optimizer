@@ -782,33 +782,72 @@ def _extract_sop_metadata(plan_text: str) -> Dict[str, List[str]]:
     """
     MetaGPT Sec. 3.2 & Sec. 4.4 (Table 6): Parse structured SOP JSON block (`ALLOWED_FILE_LIST`
     and `TARGETED_TEST_FILES`) emitted by ArchitectAgent during Upfront Prompt Expansion.
+    Supports multi-block scans, trailing-comma regex fallbacks, and markdown list extraction.
     """
     allowed_files: List[str] = []
     targeted_tests: List[str] = []
 
-    json_match = re.search(r"```json\s*(\{.*?\})\s*```", plan_text, flags=re.DOTALL)
-    if json_match:
+    # 1. Search all fenced code blocks (json or unmarked) for a dict with "allowed_file_list"
+    for match in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", plan_text, flags=re.DOTALL):
         try:
-            parsed = json.loads(json_match.group(1))
-            if isinstance(parsed.get("allowed_file_list"), list):
-                allowed_files = [
-                    os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
-                    for p in parsed["allowed_file_list"]
-                    if str(p).strip()
-                ]
-            if isinstance(parsed.get("targeted_test_files"), list):
-                targeted_tests = [
-                    os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
-                    for p in parsed["targeted_test_files"]
-                    if str(p).strip()
-                ]
+            parsed = json.loads(match.group(1))
+            if isinstance(parsed, dict) and "allowed_file_list" in parsed:
+                if isinstance(parsed["allowed_file_list"], list):
+                    allowed_files = [
+                        os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
+                        for p in parsed["allowed_file_list"]
+                        if str(p).strip()
+                    ]
+                if isinstance(parsed.get("targeted_test_files"), list):
+                    targeted_tests = [
+                        os.path.normpath(str(p)).replace("\\", "/").removeprefix("./")
+                        for p in parsed["targeted_test_files"]
+                        if str(p).strip()
+                    ]
+                if allowed_files:
+                    break
         except Exception:
-            pass
+            continue
+
+    # 2. Fallback regex for "allowed_file_list": [...]
+    if not allowed_files:
+        m = re.search(r'["\']?allowed_file_list["\']?\s*:\s*\[([^\]]*)\]', plan_text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            allowed_files = [
+                os.path.normpath(f).replace("\\", "/").removeprefix("./")
+                for f in re.findall(r'["\']([^"\']+)["\']', m.group(1))
+                if f.strip()
+            ]
+
+    # 3. Fallback regex for "targeted_test_files": [...]
+    if not targeted_tests:
+        m = re.search(r'["\']?targeted_test_files["\']?\s*:\s*\[([^\]]*)\]', plan_text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            targeted_tests = [
+                os.path.normpath(f).replace("\\", "/").removeprefix("./")
+                for f in re.findall(r'["\']([^"\']+)["\']', m.group(1))
+                if f.strip()
+            ]
+
+    # 4. Fallback: bullet points under "Allowed Files" or "allowed_file_list"
+    if not allowed_files:
+        m = re.search(
+            r'(?:allowed_file_list|allowed files)[^\n]*\n((?:\s*[-*]\s*[`"\'\']?[a-zA-Z0-9_\-\./]+[`"\'\']?\s*\n)+)',
+            plan_text,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            lines = m.group(1).splitlines()
+            for line in lines:
+                f = re.sub(r'^\s*[-*]\s*[`"\'\']?|[`"\'\']?\s*$', '', line).strip()
+                if f and ('.' in f or '/' in f):
+                    allowed_files.append(os.path.normpath(f).replace("\\", "/").removeprefix("./"))
 
     return {
         "sop_allowed_files": allowed_files,
         "sop_targeted_tests": targeted_tests,
     }
+
 
 
 def _collect_changed_files(cwd: str) -> List[str]:
@@ -1415,6 +1454,9 @@ class ArchitectAgent(BaseAgent):
 Inspect the repository in Read-Only mode (`Read`, `Grep`, `Glob`) and perform **Upfront Prompt Expansion** into a strict **SOP Handover Specification** for Agent 2 (CoderAgent).
 Do NOT edit or write any files.
 
+CRITICAL INSPECTION BUDGET:
+You have a budget of up to 15 tool inspections. Keep your repository survey tightly focused. Once you have inspected the key integration points, you MUST STOP calling tools and output your final SOP specification with the `### 1. SOP_METADATA_JSON` block containing `allowed_file_list` and `targeted_test_files`.
+
 {issue_prompt}
 
 You MUST output your response in the following standardized SOP structure:
@@ -1445,13 +1487,64 @@ You MUST output your response in the following standardized SOP structure:
             ARCHITECT_MODEL,
             ["Read", "Grep", "Glob"],
             ["Edit", "Write", "Bash", "WebFetch", "WebSearch"],
-            12,
+            25,
             False,
             "1/3",
             "ArchitectAgent",
         )
 
         sop_meta = _extract_sop_metadata(plan_text)
+
+        # If Architect ran out of turns or emitted free text without JSON, run a quick 1-turn synthesis
+        if not sop_meta["sop_allowed_files"]:
+            print("⚠️ [ADK Agent 1: ArchitectAgent] Plan lacked allowed_file_list; running 1-turn synthesis...", flush=True)
+            synth_prompt = f"""You are Agent 1 (Principal Software Architect, {ARCHITECT_MODEL}).
+In your previous turn, you inspected the repository for the following issue:
+{issue_prompt}
+
+Your preliminary analysis output was:
+{plan_text[:4000]}
+
+You MUST now immediately emit the required SOP specification and `allowed_file_list`.
+Do NOT call any tools. Output the standardized SOP structure:
+
+### 1. SOP_METADATA_JSON
+```json
+{{
+  "allowed_file_list": ["<exact relative paths of files to modify or create>"],
+  "targeted_test_files": ["<exact relative paths of pytest files to run>"]
+}}
+```
+
+### 2. INTERFACE_AND_DATA_STRUCTURES
+### 3. LOGIC_ANALYSIS_BY_FILE
+### 4. SECURITY_AND_REPO_INVARIANTS
+### 5. ANYTHING_UNCLEAR_RESOLVED"""
+            synth_text, s_turns, s_dur, s_cost = await asyncio.to_thread(
+                _run_claude_cli,
+                synth_prompt,
+                ARCHITECT_MODEL,
+                [],
+                ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebFetch", "WebSearch"],
+                2,
+                False,
+                "1/3",
+                "ArchitectAgent (Synthesis)",
+            )
+            synth_meta = _extract_sop_metadata(synth_text)
+            if synth_meta["sop_allowed_files"]:
+                plan_text = synth_text + "\n\n" + plan_text
+                sop_meta = synth_meta
+                turns += s_turns
+                dur_s += s_dur
+                cost += s_cost
+
+        if not sop_meta["sop_allowed_files"]:
+            raise RuntimeError(
+                f"ArchitectAgent failed to emit a non-empty `allowed_file_list` in SOP plan. "
+                f"Cannot proceed to CoderAgent without authorized files."
+            )
+
         delta = {
             "architecture_plan": plan_text,
             "sop_allowed_files": sop_meta["sop_allowed_files"],
@@ -1530,6 +1623,11 @@ The previous iteration did NOT pass verification. Fix ONLY the defects reported 
         coder_prompt = f"""You are Agent 2 (Autonomous Software Engineer, {CODER_MODEL}) in a MetaGPT-inspired 3-agent Google ADK pipeline.
 Implement the specification in Agent 1's SOP Architecture Plan below.
 Strictly restrict your file edits/creations to `allowed_file_list`: {sop_allowed_files}.
+
+[AUTHORITATIVE VERIFICATION OVERRIDE]:
+In this automated pipeline, verification is governed strictly by diff-scoped checks (`LINT_SCOPE="diff"`).
+Do NOT run full-repo `./.venv/bin/ruff check .` across untouched files (any conflicting instruction in CLAUDE.md is superseded for this autonomous run).
+
 {issue_section}
 <architect_sop_plan>
 {arch_plan}
@@ -1539,6 +1637,7 @@ CRITICAL LINT & TEST SCOPE (`LINT_SCOPE="diff"`):
 1. Run targeted unit tests: `./.venv/bin/pytest --rootdir=. --override-ini=addopts= -c /opt/pinned/pytest.pinned.ini -q {test_hint}`
 2. Run diff-scoped Ruff ONLY on your modified Python files: `./.venv/bin/ruff check --config /opt/pinned/ruff.pinned.toml {py_allowed_hint}`
 3. NEVER run unfiltered `./.venv/bin/ruff check .` across the entire repository, and NEVER waste turns running `git stash`, `git show HEAD:...`, or inspecting pre-existing warnings in untouched lines/files. Finish immediately once your targeted `pytest` and diff-scoped `ruff` commands pass."""
+
 
         _install_claude_pre_tool_hook(sop_allowed_files)
         try:
