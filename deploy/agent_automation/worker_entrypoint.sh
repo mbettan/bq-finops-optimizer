@@ -8,6 +8,10 @@ export ANTHROPIC_VERTEX_PROJECT_ID="${GCP_PROJECT_ID:-bq-finops-optimizer}"
 export ARCHITECT_MODEL="${ARCHITECT_MODEL:-claude-opus-5-5}"
 export CODER_MODEL="${CODER_MODEL:-claude-sonnet-5}"
 export REVIEWER_MODEL="${REVIEWER_MODEL:-claude-opus-5-5}"
+# Declared here (not just in the su block) so `set -u` cannot abort the worker when an operator
+# has not set them. GOLDFISH_ENABLED is the kill switch for the GAS intake gate.
+export GOLDFISH_MODEL="${GOLDFISH_MODEL:-${CODER_MODEL}}"
+export GOLDFISH_ENABLED="${GOLDFISH_ENABLED:-true}"
 
 echo "=== [1/6] Independent Security & Timeline Re-Verification ==="
 python3 /app/verify_issue_actor.py
@@ -192,6 +196,9 @@ trap handle_worker_exit EXIT
 
 if id -u agentuser >/dev/null 2>&1; then
   chown -R agentuser:agentuser /workspace /tmp/sanitized_issue_prompt.txt /tmp/adk_stage_events.jsonl
+  # Written by root in step [1/6] but read by agentuser. Without this the read fails, and because
+  # `_load_issue_meta` swallows the error the Goldfish gate would skip silently on every issue.
+  chmod 0644 /tmp/adk_issue_meta.json 2>/dev/null || true
   su -s /bin/bash agentuser -c "
     export PATH='/opt/venv/bin:/usr/local/bin:/usr/bin:/bin'
     export HOME='/home/agentuser'
@@ -201,6 +208,8 @@ if id -u agentuser >/dev/null 2>&1; then
     export ARCHITECT_MODEL='${ARCHITECT_MODEL}'
     export CODER_MODEL='${CODER_MODEL}'
     export REVIEWER_MODEL='${REVIEWER_MODEL}'
+    export GOLDFISH_MODEL='${GOLDFISH_MODEL}'
+    export GOLDFISH_ENABLED='${GOLDFISH_ENABLED}'
     export PYTHONUNBUFFERED=1
     git config --global --add safe.directory /workspace
     cd /workspace

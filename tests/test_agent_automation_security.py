@@ -5,6 +5,7 @@ Unit tests for the Autonomous Issue-to-PR Agent Security Gates:
 - deploy/agent_automation/verify_agent_diff.py
 """
 import importlib.util
+import re
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -708,3 +709,39 @@ def test_gas_tier_2_goldfish_surfaces_in_pr_dashboard_and_commit_statuses():
             {"0/3": {"status": "SKIPPED (bypassed via `agent:force` label)"}},
         )
     assert dict(stamped)["GAS Intake / 0. Goldfish Spec-Completeness"] == "success"
+
+
+def test_worker_entrypoint_forwards_every_tunable_across_the_privilege_drop():
+    """
+    `adk_orchestrator.py` runs as `agentuser` via `su -c` with an EXPLICIT allowlist of exported
+    vars, so any tunable declared at the top of the script but omitted from that block is
+    silently dropped. That already bit GOLDFISH_ENABLED -- the kill switch for the intake gate
+    was unreachable from the Cloud Run job config. Fail loudly if it regresses.
+    """
+    script = (ROOT_DIR / "deploy/agent_automation/worker_entrypoint.sh").read_text(encoding="utf-8")
+
+    su_block = script.split('su -s /bin/bash agentuser -c "', 1)
+    assert len(su_block) == 2, "privilege-drop block not found; did the entrypoint get restructured?"
+    su_body = su_block[1].split('\n  "', 1)[0]
+
+    # Every MODEL/ENABLED tunable exported at the top must survive the privilege drop.
+    declared = set(re.findall(r'^export ([A-Z0-9_]+(?:_MODEL|_ENABLED))=', script, flags=re.MULTILINE))
+    assert {"GOLDFISH_MODEL", "GOLDFISH_ENABLED"} <= declared
+
+    forwarded = set(re.findall(r"export ([A-Z0-9_]+)='", su_body))
+    missing = declared - forwarded
+    assert not missing, f"tunables declared but not forwarded to agentuser: {sorted(missing)}"
+
+
+def test_worker_entrypoint_makes_intake_metadata_readable_by_agentuser():
+    """
+    `/tmp/adk_issue_meta.json` is written by root but read by agentuser. `_load_issue_meta`
+    swallows read errors, so an unreadable file makes Goldfish skip silently on every issue
+    while still posting a green check -- it must not depend on the image umask.
+    """
+    script = (ROOT_DIR / "deploy/agent_automation/worker_entrypoint.sh").read_text(encoding="utf-8")
+    assert "chmod 0644 /tmp/adk_issue_meta.json" in script
+
+    # And the orchestrator must genuinely tolerate the file being absent (fail-safe work_kind).
+    orch = _load_adk_orchestrator()
+    assert orch._load_issue_meta.__doc__
