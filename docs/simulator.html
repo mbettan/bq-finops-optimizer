@@ -12,7 +12,7 @@
          actually blocks <script>/onerror=/javascript: XSS payloads. -->
     <meta http-equiv="Content-Security-Policy" content="
         default-src 'self';
-        script-src 'self' 'sha256-8LNDZkMHjR96MtkOldOdByl+Bo/+XQst5q6R5V89nEY=' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
+        script-src 'self' 'sha256-zd871AKQWmvzAQz4k/d+lJdO8kNNlra98hTjDWRNgxc=' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.datatables.net;
         style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.datatables.net;
         font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:;
         img-src 'self' data:;
@@ -297,7 +297,7 @@
 
                 if (urlStr.includes('/api/about')) {
                     const releases = window.SIMULATOR_PARSED_RELEASES || [];
-                    const latestVersion = releases.length ? releases[0].version : '1.4.4';
+                    const latestVersion = releases.length ? releases[0].version : '1.4.5';
                     const latestDate = releases.length ? releases[0].release_date : '—';
                     return new Response(JSON.stringify({
                         "name": "FinOps Optimizer for BigQuery",
@@ -3096,7 +3096,9 @@
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             Temporary, dev, and sandbox datasets without expiration rules are one of the biggest sources of passive storage waste.
+                            Checks every dataset in up to 50 projects: your Focus Projects if set, otherwise the 50 largest projects by storage.
                         </p>
+                        <p id="expiration-coverage-note" role="status" hidden style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 1rem;"></p>
                         <div class="table-responsive">
                             <table id="expiration-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -3120,7 +3122,9 @@
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             If "Require Partition Filter" is off, users will accidentally run full-table scans on massive tables instead of filtering by date.
+                            Checks the 50 largest datasets by storage (within your Focus Projects, if set).
                         </p>
+                        <p id="filter-coverage-note" role="status" hidden style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 1rem;"></p>
                         <div class="table-responsive">
                             <table id="filter-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>

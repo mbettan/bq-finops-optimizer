@@ -5992,6 +5992,51 @@ write_client.append_rows(iter([request]))`;
         safeInitDataTable('#filter-results-table', { pageLength: 10, responsive: true });
     };
 
+    // Tell the user what each governance scan covered. Both scans are capped
+    // (largest projects/datasets by storage first), so say when some were skipped.
+    const renderGovernanceCoverage = (govData) => {
+        const setNote = (id, text) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = text || '';
+            el.hidden = !text;
+        };
+        const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+        const expChecked = govData.expiration_projects_checked;
+        const expTotal = govData.expiration_projects_total;
+        const expFailed = Array.isArray(govData.expiration_projects_failed) ? govData.expiration_projects_failed : [];
+        let expText = '';
+        if (typeof expChecked === 'number' && typeof expTotal === 'number') {
+            expText = `Checked ${expChecked.toLocaleString()} of ${plural(expTotal, 'project')}.`;
+            const skipped = expTotal - expChecked - expFailed.length;
+            if (skipped > 0) {
+                expText += ` ${plural(skipped, 'smaller project')} not checked; set Focus Projects to check specific projects.`;
+            }
+            if (expFailed.length) {
+                expText += ` Could not read ${plural(expFailed.length, 'project')} (check permissions): ${expFailed.join(', ')}.`;
+            }
+        }
+        setNote('expiration-coverage-note', expText);
+
+        const fltChecked = govData.filter_datasets_checked;
+        const fltTotal = govData.filter_datasets_total;
+        let fltText = '';
+        if (typeof fltChecked === 'number' && typeof fltTotal === 'number') {
+            if (fltTotal > fltChecked) {
+                fltText = `Checked the ${fltChecked.toLocaleString()} largest of ${plural(fltTotal, 'dataset')}. `
+                    + `${plural(fltTotal - fltChecked, 'smaller dataset')} not checked; set Focus Projects to narrow the scope.`;
+            } else {
+                fltText = `Checked all ${plural(fltTotal, 'dataset')} with stored data.`;
+            }
+        }
+        setNote('filter-coverage-note', fltText);
+    };
+
+    const pickKeys = (obj, prefix) => Object.fromEntries(
+        Object.entries(obj || {}).filter(([k]) => k.startsWith(prefix))
+    );
+
     const renderMvResults = (data) => {
         const tbody = document.querySelector('#mv-results-table tbody');
         if (!tbody) return;
@@ -6271,7 +6316,9 @@ write_client.append_rows(iter([request]))`;
                     cachedGov = JSON.parse(localStorage.getItem('bq_gov_results')) || {};
                 } catch(e) {}
                 cachedGov.expiration_issues = govData.expiration_issues || [];
+                Object.assign(cachedGov, pickKeys(govData, 'expiration_projects_'));
                 safeSetLocalStorage('bq_gov_results', JSON.stringify(cachedGov));
+                renderGovernanceCoverage(cachedGov);
 
                 showNotification('Dataset expiration policy scan completed.', 'success');
             } catch (error) {
@@ -6314,7 +6361,9 @@ write_client.append_rows(iter([request]))`;
                     cachedGov = JSON.parse(localStorage.getItem('bq_gov_results')) || {};
                 } catch(e) {}
                 cachedGov.filter_issues = govData.filter_issues || [];
+                Object.assign(cachedGov, pickKeys(govData, 'filter_datasets_'));
                 safeSetLocalStorage('bq_gov_results', JSON.stringify(cachedGov));
+                renderGovernanceCoverage(cachedGov);
 
                 showNotification('Partitioned tables filter scan completed.', 'success');
             } catch (error) {
@@ -6460,6 +6509,7 @@ write_client.append_rows(iter([request]))`;
             const govData = JSON.parse(cachedGovResults);
             renderExpirationResults(govData.expiration_issues || []);
             renderFilterResults(govData.filter_issues || []);
+            renderGovernanceCoverage(govData);
         } catch (e) { console.warn("Failed to parse cached governance results", e); }
     }
 
@@ -7477,6 +7527,7 @@ write_client.append_rows(iter([request]))`;
                 const govData = JSON.parse(cachedGov);
                 renderExpirationResults(govData.expiration_issues || []);
                 renderFilterResults(govData.filter_issues || []);
+                renderGovernanceCoverage(govData);
             } catch (e) { console.warn("Failed to parse cached governance results", e); }
         }
         const cachedPerf = localStorage.getItem('bq_performance_results');
@@ -8096,6 +8147,33 @@ const ReportModule = (() => {
 })();
 
 /**
+ * Replace a DataTable whose destroy() failed with a clean, un-initialized copy:
+ * same attributes and header, empty <tbody>, and no DataTables wrapper. The
+ * new node is not registered with DataTables, so it can be initialized again.
+ *
+ * @param {HTMLTableElement} tableEl  the broken table
+ * @returns {HTMLTableElement} the replacement table, already in the DOM
+ */
+function _rebuildDataTableElement(tableEl) {
+  const fresh = tableEl.cloneNode(false);
+  fresh.classList.remove('dataTable', 'no-footer');
+  fresh.removeAttribute('aria-describedby');
+  if (tableEl.tHead) {
+    const thead = tableEl.tHead.cloneNode(true);
+    thead.querySelectorAll('th, td').forEach(cell => {
+      [...cell.classList].filter(c => c.startsWith('sorting')).forEach(c => cell.classList.remove(c));
+      ['tabindex', 'aria-controls', 'aria-label', 'aria-sort'].forEach(a => cell.removeAttribute(a));
+    });
+    fresh.appendChild(thead);
+  }
+  fresh.appendChild(document.createElement('tbody'));
+  if (tableEl.tFoot) fresh.appendChild(tableEl.tFoot.cloneNode(true));
+  const wrapper = tableEl.closest('.dataTables_wrapper');
+  (wrapper || tableEl).replaceWith(fresh);
+  return fresh;
+}
+
+/**
  * Initialize a DataTable only after verifying the table's DOM is internally
  * consistent. Prevents the `RangeError: Maximum call stack size exceeded`
  * recursion by failing loudly on a thead/tbody column mismatch.
@@ -8109,12 +8187,12 @@ const ReportModule = (() => {
  * - Validates only at init, so rows added later via the DataTables API are unchecked.
  */
 function safeInitDataTable(selector, options) {
-  const $table = $(selector);
+  let $table = $(selector);
   if ($table.length === 0) {
     console.warn(`[safeInitDataTable] ${selector} not found in DOM; skipping init.`);
     return null;
   }
-  const tableEl = $table[0];
+  let tableEl = $table[0];
 
   // 1) Always tear down a prior instance cleanly without wiping DOM rows.
   //    Callers re-render the <tbody> themselves and then call back in here, so
@@ -8125,10 +8203,21 @@ function safeInitDataTable(selector, options) {
   if ($.fn.DataTable && $.fn.DataTable.isDataTable(tableEl)) {
     const liveBody = tableEl.tBodies[0];
     const freshRows = liveBody ? liveBody.innerHTML : null;
-    $table.DataTable().destroy();
+    try {
+      $table.DataTable().destroy();
+    } catch (err) {
+      // A broken instance cannot be destroyed; swap in a clean copy instead.
+      console.warn(`[safeInitDataTable] ${selector}: destroy() failed; rebuilding the table element.`, err);
+      tableEl = _rebuildDataTableElement(tableEl);
+      $table = $(tableEl);
+    }
     const restoredBody = tableEl.tBodies[0];
     if (freshRows !== null && restoredBody) {
       restoredBody.innerHTML = freshRows;
+      // The snapshot can include DataTables' own "No data available in table"
+      // row (td.dataTables_empty). It is not data: re-reading it as a row
+      // leaves an entry with missing cells and breaks the new instance.
+      restoredBody.querySelectorAll('td.dataTables_empty').forEach(td => td.parentElement.remove());
     }
   }
 

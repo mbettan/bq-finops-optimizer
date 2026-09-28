@@ -796,6 +796,85 @@ def run_static_schema_audit(params: StaticAuditParams):
         handle_endpoint_exception(e, "Static schema audit")
 
 
+# ── Active Assist savings (#77) ─────────────────────────────────────────────
+# On-demand is billed per binary TiB (2**40 bytes) -- see
+# https://cloud.google.com/bigquery/pricing#data-size-calculation. The
+# recommender reports `overview.bytesSavedMonthly` as a byte count (Google's
+# own example reads it with LAX_INT64(...) / POW(1024, 3)), so the dollar
+# figure is bytes / 2**40 * regional $/TiB.
+_BYTES_PER_TIB = 1024 ** 4
+_BYTES_PER_TB = 10 ** 12
+
+
+def _active_assist_number(value: object, *, allow_negative: bool = False) -> Optional[float]:
+    """int / float / numeric string -> float; None for missing or unusable values.
+
+    INT64 values in Google JSON payloads are commonly serialized as strings, so
+    numeric strings are accepted. Booleans, non-finite values and (unless
+    allowed) negatives are rejected rather than priced.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num) or (num < 0 and not allow_negative):
+        return None
+    return num
+
+
+def active_assist_bytes_saved_monthly(overview: object) -> Optional[float]:
+    """Monthly bytes saved from a PartitionClusterRecommender `overview`.
+
+    Reads `bytesSavedMonthly` (bytes). If it is absent, falls back to
+    `bytesSavedMonthlyTb`, read as decimal TB (10**12 bytes), the more
+    conservative of the two possible units, so savings are never overstated.
+    """
+    if not isinstance(overview, dict):
+        return None
+    bytes_saved = _active_assist_number(overview.get("bytesSavedMonthly"))
+    if bytes_saved is not None:
+        return bytes_saved
+    tb_saved = _active_assist_number(overview.get("bytesSavedMonthlyTb"))
+    if tb_saved is not None:
+        return tb_saved * _BYTES_PER_TB
+    return None
+
+
+def active_assist_on_demand_savings(
+    primary_impact: object, overview: object, usd_per_tib: float
+) -> float:
+    """Estimated monthly on-demand USD savings for one recommendation.
+
+    1. bytesSavedMonthly priced at the regional $/TiB (consistent across rows).
+    2. Fallback: a plain numeric `cost_projection` value (sign dropped -- the
+       Recommender reports savings as negative amounts). Structured
+       google.type.Money values are ignored here (tracked in #83).
+    3. Otherwise 0.0.
+    """
+    bytes_saved = active_assist_bytes_saved_monthly(overview)
+    if bytes_saved is not None:
+        return bytes_saved / _BYTES_PER_TIB * usd_per_tib
+    if isinstance(primary_impact, dict):
+        cost_proj = primary_impact.get("cost_projection")
+        if isinstance(cost_proj, dict):
+            projected = _active_assist_number(
+                cost_proj.get("cost_in_local_currency"), allow_negative=True
+            )
+            if projected is not None:
+                return abs(projected)
+    return 0.0
+
+
+def active_assist_editions_savings(overview: object, usd_per_slot_hour: float) -> float:
+    """Estimated monthly Editions USD savings: slotMsSavedMonthly -> slot-hours."""
+    if not isinstance(overview, dict):
+        return 0.0
+    slot_ms = _active_assist_number(overview.get("slotMsSavedMonthly"))
+    return (slot_ms / 3_600_000.0) * usd_per_slot_hour if slot_ms else 0.0
+
+
 class ActiveAssistResult(BaseModel):
     project_id: str
     dataset_id: str
@@ -888,6 +967,7 @@ def fetch_active_assist_recommendations(params: StorageParams):
                     logger.warning(f"Project-scoped RECOMMENDATIONS query also failed ({e_proj}); returning empty recommendations list.")
                     results = []
         output = []
+        rp = get_pricing(params.region)
         
         # If the view exists but returns nothing, or if it succeeds
         for row in results:
@@ -914,24 +994,23 @@ def fetch_active_assist_recommendations(params: StorageParams):
                     
             desc = (row['description'] or "").lower()
             rec_type = "Partition" if "partition" in desc else "Cluster"
-            
-            # Parse savings from primary_impact if available
-            savings = 0.0
-            primary_impact = row.get('primary_impact')
-            if primary_impact and isinstance(primary_impact, dict):
-                cost_proj = primary_impact.get('cost_projection')
-                if cost_proj and isinstance(cost_proj, dict):
-                    savings = float(cost_proj.get('cost_in_local_currency') or cost_proj.get('cost_savings') or 0.0)
-
-            editions_savings = 0.0
 
             # Parse column suggestions from additional_details if available
             cluster_cols: List[str] = []
             part_col: Optional[str] = None
             additional_details = row.get('additional_details') or {}
+            overview: object = {}
             if isinstance(additional_details, dict):
-                # BigQuery stores recommendations in an 'overview' JSON node
-                overview = additional_details.get('overview', {})
+                # BigQuery stores recommendations in an 'overview' JSON node.
+                # Some client versions hand JSON columns back as text.
+                overview = additional_details.get('overview') or {}
+                if isinstance(overview, str):
+                    try:
+                        overview = json.loads(overview)
+                    except ValueError:
+                        overview = {}
+                if not isinstance(overview, dict):
+                    overview = {}
                 if rec_type == 'Partition':
                     part_col = overview.get('partitionColumn') or additional_details.get('recommended_partition_column') or None
                 else:
@@ -940,25 +1019,23 @@ def fetch_active_assist_recommendations(params: StorageParams):
                         cluster_cols = [str(c) for c in cols]
                     elif isinstance(cols, str):
                         cluster_cols = [cols]
-                
-                # Estimate savings if not provided in primary_impact
-                # On-Demand: $6.25 per TB (decimal TB = 10**12 bytes to match bytesSavedMonthlyTb)
-                tb_saved = overview.get('bytesSavedMonthlyTb')
-                if tb_saved is None:
-                    b_saved = overview.get('bytesSavedMonthly') or 0.0
-                    tb_saved = float(b_saved) / (10**12)  # Decimal TB matching bytesSavedMonthlyTb
-                else:
-                    tb_saved = float(tb_saved)
-                
-                if tb_saved and savings == 0.0:
-                    rp = get_pricing(params.region)
-                    savings = float(tb_saved) * rp.on_demand_usd_per_tib
-                
-                # Editions: $0.06 per slot-hour (1 hr = 3600000 ms)
-                slot_ms_saved = overview.get('slotMsSavedMonthly') or 0.0
-                if slot_ms_saved:
-                    rp = get_pricing(params.region)
-                    editions_savings = (float(slot_ms_saved) / 3600000.0) * rp.editions_slot_hr_rate
+
+            # #77: bytes priced per binary TiB; one malformed row must not
+            # fail the whole list -- keep the recommendation with $0 savings.
+            savings = 0.0
+            editions_savings = 0.0
+            try:
+                savings = active_assist_on_demand_savings(
+                    row.get('primary_impact'), overview, rp.on_demand_usd_per_tib
+                )
+                editions_savings = active_assist_editions_savings(
+                    overview, rp.editions_slot_hr_rate
+                )
+            except (TypeError, ValueError, AttributeError) as e_row:
+                logger.warning(
+                    f"Active Assist: could not compute savings for "
+                    f"{dataset_id}.{table_id} ({type(e_row).__name__}); reporting $0."
+                )
 
             output.append(ActiveAssistResult(
                 project_id=row['project_id'] or resolved_project,
@@ -1170,6 +1247,40 @@ def get_org_storage_billing_model(scoped_client: bigquery.Client, region: str, p
         logger.warning(f"Failed to query ORGANIZATION_OPTIONS: {e}. Assuming LOGICAL or not set.")
     return "LOGICAL"
 
+
+_STORAGE_BILLING_MODELS = ("LOGICAL", "PHYSICAL")
+STORAGE_BILLING_MODEL_WARNING = (
+    "-- WARNING: storage_billing_model changes take up to 24 hours to take effect.\n"
+    "-- After this change, the dataset's billing model cannot be changed again for 14 days."
+)
+
+
+def build_storage_billing_ddl(project: str, dataset: str, target_model: str,
+                              time_travel_hours: int | None = None) -> str:
+    """Return ALTER SCHEMA DDL that switches a dataset's storage billing model.
+
+    BigQuery documents only the uppercase values 'PHYSICAL' and 'LOGICAL', so the
+    model is normalised and allowlisted here. The leading comment travels with the
+    copied statement: the change takes up to 24h and locks the model for 14 days.
+    """
+    model = str(target_model).strip().upper()
+    if model not in _STORAGE_BILLING_MODELS:
+        raise ValueError(
+            f"target_model must be one of {_STORAGE_BILLING_MODELS}, got {target_model!r}"
+        )
+    # Same identifier check as the other generated ALTER SCHEMA statements (hygiene,
+    # time travel, shard consolidation): rejects backticks, whitespace and newlines.
+    p_safe = _safe_ident(project, "storage_project")
+    d_safe = _safe_ident(dataset, "storage_dataset")
+    options = f"storage_billing_model='{model}'"
+    if time_travel_hours is not None:
+        options += f", max_time_travel_hours={int(time_travel_hours)}"
+    return (
+        f"{STORAGE_BILLING_MODEL_WARNING}\n"
+        f"ALTER SCHEMA `{p_safe}.{d_safe}` SET OPTIONS({options});"
+    )
+
+
 @app.post("/api/storage/analyze")
 def analyze_storage(params: StorageParams):
     _validate_safe_params(params)
@@ -1229,10 +1340,9 @@ def analyze_storage(params: StorageParams):
             if monthly_savings_pct <= params.min_monthly_saving_pct:
                 continue
                 
-            if params.time_travel_hours is None:
-                ddl = f"ALTER SCHEMA `{project}.{dataset}` SET OPTIONS(storage_billing_model='{better_on}' );"
-            else:
-                ddl = f"ALTER SCHEMA `{project}.{dataset}` SET OPTIONS(storage_billing_model='{better_on}', max_time_travel_hours={params.time_travel_hours});"
+            # better_on / currently_on stay lowercase in the response (UI badges and
+            # report_generator read them); only the DDL uses BigQuery's uppercase values.
+            ddl = build_storage_billing_ddl(project, dataset, better_on, params.time_travel_hours)
                 
             processed_data.append({
                 "project_name": project,
@@ -1799,7 +1909,8 @@ def analyze_shard_consolidation(params: ShardConsolidationParams):
             REGEXP_EXTRACT(table_name, r'^(.+)_[0-9]{{8}}$') AS table_prefix,
             REGEXP_EXTRACT(table_name, r'_([0-9]{{8}})$') AS date_suffix,
             active_logical_bytes,
-            active_physical_bytes
+            active_physical_bytes,
+            total_logical_bytes
           FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.TABLE_STORAGE_BY_ORGANIZATION
           WHERE deleted = FALSE
             AND REGEXP_CONTAINS(table_name, r'^.+_[0-9]{{8}}$')
@@ -1814,7 +1925,8 @@ def analyze_shard_consolidation(params: ShardConsolidationParams):
           MIN(date_suffix) AS min_date,
           MAX(date_suffix) AS max_date,
           SUM(active_logical_bytes) / POW(1024,3) AS total_logical_gib,
-          SUM(active_physical_bytes) / POW(1024,3) AS total_physical_gib
+          SUM(active_physical_bytes) / POW(1024,3) AS total_physical_gib,
+          SUM(total_logical_bytes) / POW(1024,3) AS total_scan_gib
         FROM sharded
         WHERE table_prefix IS NOT NULL
         GROUP BY project_id, dataset_id, table_prefix
@@ -1831,6 +1943,7 @@ def analyze_shard_consolidation(params: ShardConsolidationParams):
             query_parameters=query_params,
         ))
 
+        rp = get_pricing(params.region)
         output = []
         for row in rows:
             p_safe = _safe_ident(row.project_id, "shard_project")
@@ -1845,15 +1958,18 @@ def analyze_shard_consolidation(params: ShardConsolidationParams):
                     f"Consider MONTH-level partitioning or splitting into multiple tables."
                 )
 
-            physical_gib = float(row.total_physical_gib or 0)
-            est_cost = physical_gib / 1024 * 6.25  # on-demand: $6.25/TiB
+            # On-demand CTAS bills the logical (uncompressed) bytes of every column
+            # read from every scanned table; SELECT * over prefix_* reads all
+            # columns of all shards, active and long-term alike.
+            scan_gib = float(row.total_scan_gib or 0)
+            est_cost = scan_gib / 1024 * rp.on_demand_usd_per_tib
 
             ddl = (
                 f"-- Consolidate {row.shard_count} date-sharded tables "
                 f"({row.min_date} to {row.max_date}) into a single partitioned table:\n"
                 f"--\n"
-                f"-- ⚠ WARNING: Full scan of ~{physical_gib:,.1f} GiB "
-                f"(estimated on-demand cost: ${est_cost:,.2f} at $6.25/TiB).\n"
+                f"-- ⚠ WARNING: Full scan of ~{scan_gib:,.1f} GiB of logical (uncompressed) data "
+                f"(estimated on-demand cost: ${est_cost:,.2f} at ${rp.on_demand_usd_per_tib:,.2f}/TiB).\n"
                 f"-- After verifying the new table, manually DROP the original "
                 f"{row.shard_count} shards to stop paying double storage.\n"
                 f"--\n"
@@ -2140,6 +2256,8 @@ def analyze_query_linter(params: AntiPatternParams):
             WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {params.lookback_days} DAY)
               AND job_type = 'QUERY'
               AND state = 'DONE'
+              -- #76: script parent jobs repeat their children's bytes and whole-script text
+              AND (statement_type != 'SCRIPT' OR statement_type IS NULL)
               AND query IS NOT NULL
               AND total_bytes_billed > 107374182400 -- > 100 GB
               AND REGEXP_CONTAINS(query, r'(?i)SELECT\\s+\\*\\s+FROM')
@@ -3474,6 +3592,39 @@ class PartitionFilterResult(BaseModel):
 class GovernanceResponse(BaseModel):
     expiration_issues: List[ExpirationResult]
     filter_issues: List[PartitionFilterResult]
+    # Scan coverage, so the UI can tell the user what was and wasn't checked.
+    # None when the corresponding audit did not run.
+    expiration_projects_checked: Optional[int] = None
+    expiration_projects_total: Optional[int] = None
+    expiration_projects_failed: List[str] = []
+    filter_datasets_checked: Optional[int] = None
+    filter_datasets_total: Optional[int] = None
+
+# Each audited project adds one SCHEMATA/SCHEMATA_OPTIONS block, and each
+# audited dataset adds three dataset-scoped INFORMATION_SCHEMA subqueries, to a
+# single UNION ALL query. The caps keep those queries a reasonable size; the
+# largest projects/datasets by storage are checked first.
+GOVERNANCE_MAX_PROJECTS = 50
+GOVERNANCE_MAX_DATASETS = 50
+
+
+def _expiration_block(project: str, region: str, focus_clause: str) -> str:
+    """Datasets in one project with no default_table_expiration_days option.
+
+    SCHEMATA and SCHEMATA_OPTIONS are project-scoped, so each project must be
+    queried through its own `project`.`region` qualifier.
+    """
+    return (
+        f"SELECT s.catalog_name AS project_id, s.schema_name AS dataset_id, "
+        f"CAST(NULL AS STRING) AS default_table_expiration "
+        f"FROM `{project}`.`{region}`.INFORMATION_SCHEMA.SCHEMATA s "
+        f"LEFT JOIN `{project}`.`{region}`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS o "
+        f"ON s.catalog_name = o.catalog_name "
+        f"AND s.schema_name = o.schema_name "
+        f"AND o.option_name = 'default_table_expiration_days' "
+        f"WHERE o.option_name IS NULL {focus_clause}"
+    )
+
 
 @app.post("/api/governance/analyze", response_model=GovernanceResponse)
 def analyze_governance(params: GovernanceParams):
@@ -3484,39 +3635,19 @@ def analyze_governance(params: GovernanceParams):
     exp_focus_clause, exp_focus_params = build_project_filter(
         params.focus_projects, column="catalog_name", table_alias="s"
     )
+    run_expiration = params.audit_type in ("all", "expiration")
+    run_filter = params.audit_type in ("all", "filter")
     try:
         expiration_issues = []
         filter_issues = []
+        coverage = {}
 
-        # 1. Audit Dataset Expiration
-        if params.audit_type in ("all", "expiration"):
-            exp_sql = f"""
-            SELECT
-              s.catalog_name AS project_id,
-              s.schema_name AS dataset_id,
-              CAST(NULL AS STRING) AS default_table_expiration
-            FROM `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.SCHEMATA s
-            LEFT JOIN `{target_project}`.`{params.region}`.INFORMATION_SCHEMA.SCHEMATA_OPTIONS o
-              ON s.catalog_name = o.catalog_name
-              AND s.schema_name = o.schema_name
-              AND o.option_name = 'default_table_expiration_days'
-            WHERE o.option_name IS NULL
-              {exp_focus_clause}
-            """
-
-            exp_results = run_query_and_log(scoped_client, exp_sql, "Expiration Audit", params=params, query_parameters=exp_focus_params)
-
-            for row in exp_results:
-                expiration_issues.append(ExpirationResult(
-                    project_id=row.project_id,
-                    dataset_id=row.dataset_id,
-                    default_table_expiration=row.default_table_expiration
-                ))
-
-        # 2. Audit Require Partition Filter on TOP HEAVY datasets
-        if params.audit_type in ("all", "filter"):
-            # First, find top datasets by size
-            top_datasets_sql = f"""
+        # 0. Discover datasets across the org (or the focus projects), largest
+        # first. Needed by the filter audit, and by the expiration audit when
+        # no focus projects are given.
+        datasets_by_size = []
+        if run_filter or (run_expiration and not params.focus_projects):
+            discovery_sql = f"""
             SELECT
               project_id,
               table_schema AS dataset_id,
@@ -3527,10 +3658,72 @@ def analyze_governance(params: GovernanceParams):
               {focus_clause}
             GROUP BY 1, 2
             ORDER BY total_bytes DESC
-            LIMIT 5
             """
-            logger.debug("Fetching top heavy datasets:\n%s", top_datasets_sql)
-            top_datasets_results = run_query_and_log(scoped_client, top_datasets_sql, "Top Datasets", params=params, query_parameters=focus_params)
+            logger.debug("Discovering datasets:\n%s", discovery_sql)
+            datasets_by_size = list(run_query_and_log(
+                scoped_client, discovery_sql, "Governance Dataset Discovery",
+                params=params, query_parameters=focus_params,
+            ))
+
+        # 1. Audit Dataset Expiration, one project at a time
+        if run_expiration:
+            if params.focus_projects:
+                all_projects = list(dict.fromkeys(params.focus_projects))
+            else:
+                project_bytes = {}
+                for row in datasets_by_size:
+                    project_bytes[row.project_id] = (
+                        project_bytes.get(row.project_id, 0) + (row.total_bytes or 0)
+                    )
+                all_projects = sorted(project_bytes, key=project_bytes.get, reverse=True)
+            projects = [
+                _safe_ident(p, "project_id (derived)")
+                for p in all_projects[:GOVERNANCE_MAX_PROJECTS]
+            ]
+            failed_projects = []
+
+            if projects:
+                exp_sql = "\nUNION ALL\n".join(
+                    _expiration_block(p, params.region, exp_focus_clause) for p in projects
+                )
+                try:
+                    exp_rows = list(run_query_and_log(
+                        scoped_client, exp_sql, "Expiration Audit",
+                        params=params, query_parameters=exp_focus_params,
+                    ))
+                except Exception as e:
+                    # One inaccessible project fails the whole UNION; retry each
+                    # project on its own so the others are still reported.
+                    logger.warning("Expiration audit UNION failed: %s. Retrying per project.", e)
+                    exp_rows = []
+                    for p in projects:
+                        try:
+                            exp_rows.extend(run_query_and_log(
+                                scoped_client,
+                                _expiration_block(p, params.region, exp_focus_clause),
+                                f"Expiration Audit ({p})",
+                                params=params, query_parameters=exp_focus_params,
+                            ))
+                        except Exception as pe:
+                            logger.warning("Expiration audit failed for project %s: %s", p, pe)
+                            failed_projects.append(p)
+
+                for row in exp_rows:
+                    expiration_issues.append(ExpirationResult(
+                        project_id=row.project_id,
+                        dataset_id=row.dataset_id,
+                        default_table_expiration=row.default_table_expiration
+                    ))
+
+            coverage["expiration_projects_checked"] = len(projects) - len(failed_projects)
+            coverage["expiration_projects_total"] = len(all_projects)
+            coverage["expiration_projects_failed"] = failed_projects
+
+        # 2. Audit Require Partition Filter on the largest datasets
+        if run_filter:
+            top_datasets_results = datasets_by_size[:GOVERNANCE_MAX_DATASETS]
+            coverage["filter_datasets_checked"] = len(top_datasets_results)
+            coverage["filter_datasets_total"] = len(datasets_by_size)
 
             if top_datasets_results:
                 partitioned_tables_clauses = []
@@ -3625,7 +3818,8 @@ def analyze_governance(params: GovernanceParams):
         log_endpoint_end("Governance Auditor", t0, _logger=logger)
         return GovernanceResponse(
             expiration_issues=expiration_issues,
-            filter_issues=filter_issues
+            filter_issues=filter_issues,
+            **coverage,
         )
         
     except (gax_exc.Forbidden, gax_exc.NotFound, gax_exc.BadRequest) as e:

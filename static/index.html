@@ -2760,7 +2760,9 @@
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             Temporary, dev, and sandbox datasets without expiration rules are one of the biggest sources of passive storage waste.
+                            Checks every dataset in up to 50 projects: your Focus Projects if set, otherwise the 50 largest projects by storage.
                         </p>
+                        <p id="expiration-coverage-note" role="status" hidden style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 1rem;"></p>
                         <div class="table-responsive">
                             <table id="expiration-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
@@ -2784,7 +2786,9 @@
                         </div>
                         <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
                             If "Require Partition Filter" is off, users will accidentally run full-table scans on massive tables instead of filtering by date.
+                            Checks the 50 largest datasets by storage (within your Focus Projects, if set).
                         </p>
+                        <p id="filter-coverage-note" role="status" hidden style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 1rem;"></p>
                         <div class="table-responsive">
                             <table id="filter-results-table" class="showcase-table" style="width: 100%; border-collapse: collapse; text-align: left;">
                                 <thead>
