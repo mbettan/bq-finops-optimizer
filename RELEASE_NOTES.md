@@ -6,6 +6,40 @@ For architecture details and tech stack information, see the [README](README.md)
 
 ---
 
+## September 28, 2026 — v1.4.5
+
+**Fixed (Storage Billing Model DDL)**
+* Storage billing model recommendations on the **Storage Cost** tab now generate `ALTER SCHEMA` statements with BigQuery's documented uppercase values, `'PHYSICAL'` and `'LOGICAL'`. Previously the statements used lowercase values, and statements without a time travel window had a stray space before the closing parenthesis.
+* Each statement now starts with a SQL comment warning that billing model changes take up to 24 hours to take effect and that the dataset's billing model cannot be changed again for 14 days. The warning is included when you click **Copy DDL**.
+* For API integrations, the `ddl` field returned by `POST /api/storage/analyze` now includes these two comment lines before the statement. SQL comments are valid GoogleSQL, so the statement still runs as-is. The `better_on` and `currently_on` fields are unchanged and stay lowercase.
+* Regenerated the sample storage recommendations in the interactive simulator to match the new format.
+
+**Fixed (Query Linter)**
+* The `SELECT *` check on the **Query Anti-Patterns** tab no longer counts multi-statement scripts twice. BigQuery records a parent job for each script that repeats the bytes of the queries it runs, so the same scan was reported once for the query and again for the script. This inflated **Total Data Billed** and **Estimated Waste ($)**.
+* Scripts are no longer flagged when their statements each scan less than 100 GiB but add up to more. Each query inside a script is still checked on its own.
+
+**Fixed (Active Assist Savings)**
+* **On-Demand Savings** in **Google Active Assist Recommendations** are now calculated from the recommender's monthly bytes saved, priced per TiB (2^40 bytes) at your region's on-demand rate. Previously the bytes were converted to decimal terabytes (10^12 bytes) and then priced per TiB, so every estimate was about 9.95% too high.
+* A recommendation whose savings data can't be read no longer fails the whole list. It is still shown, with $0 savings.
+
+**Fixed (Date-Shard Consolidation Cost)**
+* The cost warning in each consolidation statement on the **Storage Cost** tab now estimates the rebuild from the logical (uncompressed) size of all shards, including shards in long-term storage, priced at your region's on-demand rate. This matches how BigQuery bills an on-demand `CREATE TABLE ... AS SELECT`.
+* The warning now shows the rate used, for example `$6.25/TiB` in the US multi-region. The **Size** column and the API response fields are unchanged.
+
+**Fixed (Governance Scans)**
+* **Datasets Missing Expiration Policy** now checks the datasets of each of your Focus Projects, or of the 50 largest projects by storage when no Focus Projects are set. A project that can't be read is listed below the table instead of hiding results from the other projects.
+* **Partitioned Tables Missing Filter Guardrail** now checks the 50 largest datasets by storage.
+* Both scans show how much they covered, for example "Checked the 50 largest of 312 datasets", and suggest Focus Projects when some were skipped.
+* For API integrations, `POST /api/governance/analyze` adds `expiration_projects_checked`, `expiration_projects_total`, `expiration_projects_failed`, `filter_datasets_checked`, and `filter_datasets_total`. Existing fields are unchanged.
+
+**Fixed (Empty Result Tables)**
+* A results table that shows "No data available in table", such as **Top Queries** in the **Workload Profiler** when there are no repeated queries, now redraws correctly when you switch tabs or run the scan again. The page no longer needs a reload before the scan can show results.
+
+**Security**
+* Storage billing model statements now validate project and dataset identifiers before building the SQL, using the same check as the hygiene, time travel, and shard consolidation statements.
+
+---
+
 ## September 16, 2026 — v1.4.4
 
 **Breaking**

@@ -7,7 +7,7 @@ circular dependency.
 """
 
 
-__version__ = "1.4.4"
+__version__ = "1.4.5"
 
 # ---------------------------------------------------------------------------
 # Legacy pricing sentinels (US-baseline defaults)
