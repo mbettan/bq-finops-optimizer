@@ -405,10 +405,34 @@ class TestResponseSchemas:
             linter_sql = mock_run.call_args_list[1][0][1]
             assert "REGEXP_CONTAINS(query, r'(?i)SELECT\\s+\\*\\s+FROM')" in linter_sql
             assert "ORDER BY total_bytes_billed DESC" in linter_sql
+            # #76: script parent jobs must not be double-counted
+            assert "AND (statement_type != 'SCRIPT' OR statement_type IS NULL)" in linter_sql
 
             data = response.json()
             assert len(data) == 1
             # Short snippet should not have trailing ...
             assert data[0]["query_snippet"] == "SELECT * FROM short_table"
+
+    def test_linter_excludes_script_parents_for_every_focus_project(self):
+        """#76: with focus_projects there is no discovery query; every per-project
+        scan must still exclude script parent jobs (NULL-safe, like analyze_jobs)."""
+        from unittest.mock import patch
+        with patch("src.main.run_query_and_log") as mock_run:
+            mock_run.side_effect = [[], []]  # one scan per focus project, no discovery
+            response = client.post("/api/antipatterns/linter", json={
+                "org_project_id": "valid-proj",
+                "region": "region-us",
+                "lookback_days": 7,
+                "limit_per_project": 10,
+                "focus_projects": ["proj-a", "proj-b"],
+            })
+            assert response.status_code == 200
+            scan_sqls = [c[0][1] for c in mock_run.call_args_list]
+            assert len(scan_sqls) == 2
+            for project, sql in zip(["proj-a", "proj-b"], scan_sqls):
+                assert f"`{project}`.`region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT" in sql
+                assert "AND (statement_type != 'SCRIPT' OR statement_type IS NULL)" in sql
+                assert "AND job_type = 'QUERY'" in sql
+                assert "AND state = 'DONE'" in sql
 
 
