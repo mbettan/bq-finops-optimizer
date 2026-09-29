@@ -57,7 +57,7 @@
         "operatingSystem": "Cross-platform",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "isAccessibleForFree": true,
-        "softwareVersion": "1.4.4",
+        "softwareVersion": "1.4.5",
         "license": "https://www.apache.org/licenses/LICENSE-2.0",
         "url": "https://mbettan.github.io/bq-finops-optimizer/",
         "downloadUrl": "https://github.com/mbettan/bq-finops-optimizer",
@@ -72,7 +72,7 @@
         },
         "publisher": { "@type": "Person", "name": "Michael Bettan", "url": "https://github.com/mbettan" },
         "datePublished": "2026-07-15",
-        "dateModified": "2026-09-17",
+        "dateModified": "2026-09-28",
         "inLanguage": "en",
         "mainEntityOfPage": "https://mbettan.github.io/bq-finops-optimizer/",
         "disambiguatingDescription": "Independent open-source project. Not a Google or Google Cloud product, and not endorsed or supported by Google.",
@@ -1835,7 +1835,11 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
             <div class="releases-layout reveal">
                 <!-- Left Nav / Version Timeline -->
                 <div class="releases-nav" id="releases-nav" role="tablist" aria-label="Release versions">
-                    <button class="release-nav-btn is-active" data-version="v1.4.4" role="tab" aria-selected="true">
+                    <button class="release-nav-btn is-active" data-version="v1.4.5" role="tab" aria-selected="true">
+                        <span>v1.4.5</span>
+                        <span class="release-nav-date">Sep 28, 2026</span>
+                    </button>
+                    <button class="release-nav-btn" data-version="v1.4.4" role="tab" aria-selected="false">
                         <span>v1.4.4</span>
                         <span class="release-nav-date">Sep 16, 2026</span>
                     </button>
@@ -1881,12 +1885,12 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
                 <div class="release-detail-card" id="release-detail-card">
                     <div class="release-detail-header">
                         <div class="release-tag-pill" id="release-title-badge">
-                            <span id="release-version-text">v1.4.4</span>
+                            <span id="release-version-text">v1.4.5</span>
                             <span class="latest-pill" id="release-latest-pill">Latest Release</span>
                         </div>
                         <div class="release-meta">
-                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>September 16, 2026</span>
-                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.4" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
+                            <span id="release-date-text"><i class="far fa-calendar-alt" style="margin-right: 6px;"></i>September 28, 2026</span>
+                            <a id="release-github-link" href="https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.5" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding: 0.35rem 0.85rem; font-size: 0.78rem;">
                                 <i class="fab fa-github"></i>View on GitHub ↗
                             </a>
                         </div>
@@ -1894,13 +1898,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 
                     <div class="release-content-wrapper" id="release-content-wrapper">
                         <div class="release-content" id="release-body-content">
-                            <h3>🌟 Highlights &amp; Major Capabilities</h3>
-                            <ul>
-                                <li><strong>59-Region Dynamic SKU Pricing Engine:</strong> Replaced US-only defaults with live per-region Cloud Billing SKU rates for On-Demand, Logical/Physical Storage, and Editions across 59 global BigQuery regions.</li>
-                                <li><strong>Corporate Light Mode &amp; Dual Theme Architecture:</strong> Added Google Cloud Console-styled Corporate Light Mode with strict WCAG AA contrast compliance (≥ 4.5:1) and zero-FOUC bootstrap (<code>theme-boot.js</code>).</li>
-                                <li><strong>4-Tier Storage Risk Model &amp; Native Windows Support:</strong> Upgraded Storage Optimizer risk grading into a 4-tier scale (Critical, High, Medium, Low) and added one-click Windows launchers (<code>run.bat</code> / <code>run.ps1</code>).</li>
-                                <li><strong>Enterprise Least-Privilege IAM &amp; Cloud Run Automation:</strong> Formal control-plane IAM specification (<code>deploy/roles/bq_finops_reader.yaml</code>) excluding <code>bigquery.tables.getData</code>, plus automated Cloud Run &amp; Cloud Shell deployment.</li>
-                            </ul>
+                            <p style="margin-bottom: 0.5rem;">Maintenance release: accuracy fixes for cost estimates and governance scans, plus UI reliability fixes. See the full release notes on GitHub.</p>
                         </div>
                         <div class="release-fade-overlay" id="release-fade-overlay"></div>
                     </div>
@@ -2735,15 +2733,45 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
 
   var releasesData = [];
 
-  function formatDate(isoStr) {
-    if (!isoStr) return '';
-    var d = new Date(isoStr);
+  function extractTagName(rel) {
+    if (rel.tag_name) return rel.tag_name;
+    var name = rel.name || '';
+    var m = name.match(/^(v\d+\.\d+\.\d+)/);
+    return m ? m[1] : name;
+  }
+
+  function extractReleaseDate(rel) {
+    // 1. Try date in title parentheses, e.g. "v1.4.3 (August 13, 2026)"
+    var nameMatch = (rel.name || '').match(/\(([^)]+)\)/);
+    if (nameMatch) {
+      var d1 = new Date(nameMatch[1]);
+      if (!isNaN(d1.getTime())) return d1;
+    }
+
+    // 2. Try date in markdown body header, e.g. "### v1.4.3 — August 13, 2026"
+    var bodyMatch = (rel.body || '').match(/###\s+[^\n—–-]+[—–-]\s+([^\n]+)/);
+    if (bodyMatch) {
+      var d2 = new Date(bodyMatch[1].trim());
+      if (!isNaN(d2.getTime())) return d2;
+    }
+
+    // 3. Fallback to GitHub published_at
+    if (rel.published_at) {
+      var d3 = new Date(rel.published_at);
+      if (!isNaN(d3.getTime())) return d3;
+    }
+    return null;
+  }
+
+  function formatDate(rel) {
+    var d = extractReleaseDate(rel);
+    if (!d) return '';
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
-  function formatFullDate(isoStr) {
-    if (!isoStr) return '';
-    var d = new Date(isoStr);
+  function formatFullDate(rel) {
+    var d = extractReleaseDate(rel);
+    if (!d) return '';
     return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   }
 
@@ -2827,9 +2855,10 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
     var ghLink = document.getElementById('release-github-link');
     var contentEl = document.getElementById('release-body-content');
 
-    if (versionText) versionText.textContent = rel.tag_name || rel.name;
+    var tag = extractTagName(rel);
+    if (versionText) versionText.textContent = tag;
     if (latestPill) latestPill.style.display = isLatest ? 'inline-block' : 'none';
-    if (dateText) dateText.innerHTML = '<i class="far fa-calendar-alt" style="margin-right: 6px;"></i>' + formatFullDate(rel.published_at);
+    if (dateText) dateText.innerHTML = '<i class="far fa-calendar-alt" style="margin-right: 6px;"></i>' + formatFullDate(rel);
     if (ghLink) ghLink.href = rel.html_url;
     if (contentEl) contentEl.innerHTML = formatMarkdownBody(rel.body);
     checkReleaseOverflow();
@@ -2859,16 +2888,13 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
     });
   }
 
-  var LOCAL_V144_RELEASE = {
-    tag_name: 'v1.4.4',
-    name: 'v1.4.4',
-    published_at: '2026-09-16T00:00:00Z',
-    html_url: 'https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.4',
-    body: '### 🌟 Highlights & Major Capabilities\n\n' +
-          '* **59-Region Dynamic SKU Pricing Engine:** Replaced US-only defaults with live per-region Cloud Billing SKU rates for On-Demand, Logical/Physical Storage, and Editions across 59 global BigQuery regions.\n' +
-          '* **Corporate Light Mode & Dual Theme Architecture:** Added Google Cloud Console-styled Corporate Light Mode with strict WCAG AA contrast compliance (≥ 4.5:1) and zero-FOUC bootstrap (`theme-boot.js`).\n' +
-          '* **4-Tier Storage Risk Model & Native Windows Support:** Upgraded Storage Optimizer risk grading into a 4-tier scale (Critical, High, Medium, Low) and added one-click Windows launchers (`run.bat` / `run.ps1`).\n' +
-          '* **Enterprise Least-Privilege IAM & Cloud Run Automation:** Formal control-plane IAM specification (`deploy/roles/bq_finops_reader.yaml`) excluding `bigquery.tables.getData`, plus automated Cloud Run & Cloud Shell deployment.'
+  // Shown when the latest release is not on GitHub yet (or GitHub is unreachable).
+  var LOCAL_LATEST_RELEASE = {
+    tag_name: 'v1.4.5',
+    name: 'v1.4.5',
+    published_at: '2026-09-28T00:00:00Z',
+    html_url: 'https://github.com/mbettan/bq-finops-optimizer/releases/tag/v1.4.5',
+    body: 'Maintenance release: accuracy fixes for cost estimates and governance scans, plus UI reliability fixes. See the full release notes on GitHub.'
   };
 
   async function loadLiveReleases() {
@@ -2879,20 +2905,32 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
       var releases = await res.json();
       if (!Array.isArray(releases)) releases = [];
 
-      var has144 = releases.some(function(r) { return (r.tag_name || r.name) === 'v1.4.4'; });
-      if (!has144) {
-        releases.unshift(LOCAL_V144_RELEASE);
+      var hasLatest = releases.some(function(r) { return (r.tag_name || r.name) === LOCAL_LATEST_RELEASE.tag_name; });
+      if (!hasLatest) {
+        releases.unshift(LOCAL_LATEST_RELEASE);
       }
+
+      function parseSemver(v) {
+        var m = (v || '').match(/(\d+)\.(\d+)\.(\d+)/);
+        return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : [0, 0, 0];
+      }
+      releases.sort(function(a, b) {
+        var sa = parseSemver(a.tag_name || a.name);
+        var sb = parseSemver(b.tag_name || b.name);
+        if (sb[0] !== sa[0]) return sb[0] - sa[0];
+        if (sb[1] !== sa[1]) return sb[1] - sa[1];
+        return sb[2] - sa[2];
+      });
 
       releasesData = releases;
 
       if (navContainer) {
         navContainer.innerHTML = releases.map(function(rel, idx) {
-          var tag = rel.tag_name || rel.name;
+          var tag = extractTagName(rel);
           var isAct = idx === 0;
           return '<button class="release-nav-btn ' + (isAct ? 'is-active' : '') + '" data-idx="' + idx + '" data-version="' + tag + '" role="tab" aria-selected="' + (isAct ? 'true' : 'false') + '">' +
                    '<span>' + tag + '</span>' +
-                   '<span class="release-nav-date">' + formatDate(rel.published_at) + '</span>' +
+                   '<span class="release-nav-date">' + formatDate(rel) + '</span>' +
                  '</button>';
         }).join('');
 
@@ -2916,7 +2954,7 @@ WHERE _PARTITIONDATE = CURRENT_DATE()</pre>
       // Display latest release
       displayRelease(releases[0], true);
     } catch (e) {
-      // Graceful fallback to pre-rendered v1.4.4
+      // Graceful fallback to the pre-rendered latest release
       checkReleaseOverflow();
     }
   }
